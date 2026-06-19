@@ -62,8 +62,10 @@
 
     <section class="metrics">
       <div><span>菜单菜品</span><b id="items">-</b></div>
-      <div><span>识别品类</span><b id="category">-</b></div>
-      <div><span>正式图片张数</span><b id="imageCount">-</b></div>
+      <div><span>单品图片</span><b id="singleCount">-</b></div>
+      <div><span>套餐图片</span><b id="comboCount">-</b></div>
+      <div><span>小吃/其他图片</span><b id="snackCount">-</b></div>
+      <div><span>正式图片总数</span><b id="imageCount">-</b></div>
       <div><span>出图所需消耗积分</span><b id="cash">-</b></div>
     </section>
 
@@ -90,6 +92,29 @@
       <div class="section-main">
         <div id="styleBox" class="style-grid"></div>
         <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 5 张免费样图</div>
+        <div class="platform-card">
+          <div class="platform-head">
+            <div>
+              <b>交付平台和尺寸</b>
+              <p>默认生成美团主图；每增加一个平台，额外 100 积分/单。</p>
+            </div>
+            <span id="platformChargeHint">美团 800×600</span>
+          </div>
+          <div id="platformOptions" class="platform-options">
+            <label class="platform-option required">
+              <input type="checkbox" value="meituan" checked disabled>
+              <span><b>美团外卖</b><em>800×600 · 默认</em></span>
+            </label>
+            <label class="platform-option">
+              <input class="platform-check" type="checkbox" value="taobao">
+              <span><b>淘宝</b><em>800×800 · +100积分</em></span>
+            </label>
+            <label class="platform-option">
+              <input class="platform-check" type="checkbox" value="jd">
+              <span><b>京东</b><em>800×800 · +100积分</em></span>
+            </label>
+          </div>
+        </div>
         <div class="watermark-card">
           <div class="watermark-head">
             <label><input id="watermarkEnabled" type="checkbox"> 添加品牌水印</label>
@@ -106,7 +131,7 @@
               <input id="watermarkText" type="text" maxlength="24" placeholder="请输入品牌名">
             </label>
             <label id="watermarkLogoWrap">上传 Logo
-              <input id="watermarkLogo" type="file" accept="image/*">
+              <input id="watermarkLogo" type="file" accept="image/png,.png">
             </label>
             <label>位置
               <select id="watermarkPosition">
@@ -163,6 +188,14 @@
         <p>正式图可单张保存，也可以勾选后统一打包导出。</p>
       </div>
       <div class="export-grid">
+        <label>导出平台
+          <select id="platformSelect">
+            <option value="purchased">导出已选平台</option>
+            <option value="meituan">只导出美团</option>
+            <option value="taobao">只导出淘宝</option>
+            <option value="jd">只导出京东</option>
+          </select>
+        </label>
         <label>导出范围
           <select id="scopeSelect">
             <option value="selected">导出勾选图片</option>

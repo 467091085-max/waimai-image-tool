@@ -222,7 +222,7 @@ main {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
   margin: 18px 0;
 }
@@ -252,12 +252,7 @@ main {
 .panel {
   padding: 18px;
   margin-bottom: 16px;
-  scroll-margin-top: 96px;
-}
-.progress-panel {
-  position: sticky;
-  top: 86px;
-  z-index: 8;
+  scroll-margin-top: 92px;
 }
 .panel.locked {
   opacity: .72;
@@ -430,6 +425,75 @@ main {
   flex-wrap: wrap;
 }
 .style-confirm p { font-size: 13px; margin-top: 3px; }
+.platform-card {
+  margin-top: 14px;
+  border: 1px solid #e3d5c1;
+  border-radius: 18px;
+  padding: 14px;
+  background: #fffaf2;
+  display: grid;
+  gap: 12px;
+}
+.platform-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.platform-head b {
+  font-size: 17px;
+}
+.platform-head p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+.platform-head span {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #fff;
+  color: #8a5617;
+  font-size: 12px;
+  font-weight: 900;
+}
+.platform-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.platform-option {
+  min-height: 74px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.platform-option.required {
+  border-color: #b9dcd3;
+  background: #f5fbf8;
+}
+.platform-option input {
+  width: 18px;
+  height: 18px;
+}
+.platform-option span {
+  display: grid;
+  gap: 4px;
+}
+.platform-option b {
+  line-height: 1.1;
+}
+.platform-option em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
 .watermark-card {
   margin-top: 14px;
   border: 1px solid #d9e6e0;
@@ -484,6 +548,11 @@ main {
   border-radius: 10px;
   padding: 0 10px;
   background: #fff;
+}
+.watermark-options input:disabled,
+.watermark-options select:disabled,
+.platform-option input:disabled {
+  opacity: .72;
 }
 .watermark-demo {
   min-height: 128px;
@@ -640,10 +709,10 @@ main {
   display: inline-flex;
   align-items: center;
   max-width: 56%;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .68);
-  box-shadow: 0 8px 18px rgba(24, 32, 42, .12);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .wm-overlay.corner.top-left { top: 12px; left: 12px; }
 .wm-overlay.corner.top-right { top: 12px; right: 12px; }
@@ -655,15 +724,16 @@ main {
   transform: translate(-50%, -50%);
 }
 .wm-overlay b {
-  color: rgba(24, 32, 42, .72);
+  color: rgba(24, 32, 42, .62);
   font-size: 14px;
   line-height: 1;
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .45);
 }
 .wm-overlay img {
   width: auto;
-  max-width: 92px;
-  height: 30px;
+  max-width: 96px;
+  height: 34px;
   object-fit: contain;
   display: block;
 }
@@ -681,7 +751,7 @@ main {
   transform: rotate(-22deg);
 }
 .watermark-preview-canvas .wm-overlay.corner {
-  padding: 6px 9px;
+  padding: 0;
 }
 .watermark-preview-canvas .wm-overlay.tile {
   opacity: .5;
@@ -905,7 +975,6 @@ main {
     display: block;
   }
   .topbar { position: static; }
-  .progress-panel { position: static; }
   .account-card {
     margin-top: 12px;
     width: 100%;
@@ -926,7 +995,6 @@ main {
   .round-step b { font-size: 14px; }
   .round-step span span,
   .round-step > em { font-size: 11px; }
-  .metrics,
   .workflow {
     grid-template-columns: repeat(2, 1fr);
   }

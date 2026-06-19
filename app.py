@@ -35,10 +35,17 @@ POINT_RATE = 10
 BASE_IMAGE_POINTS = 10
 CUSTOM_EDIT_POINTS = 10
 WATERMARK_POINTS = 50
+EXTRA_PLATFORM_POINTS = 100
 PREVIEW_SAMPLE_COUNT = 5
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
+
+PLATFORMS = {
+    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "default": True},
+    "taobao": {"name": "淘宝", "width": 800, "height": 800, "default": False},
+    "jd": {"name": "京东", "width": 800, "height": 800, "default": False},
+}
 
 
 @dataclass
@@ -175,6 +182,13 @@ def demo_menu_items() -> list[dict[str, Any]]:
     ]
 
 
+def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    single = sum(1 for item in items if item.get("kind") == "单品")
+    combo = sum(1 for item in items if item.get("kind") == "套餐/组合")
+    snack = max(0, len(items) - single - combo)
+    return {"single": single, "combo": combo, "snack": snack, "total": len(items)}
+
+
 def split_components(name: str, attrs: str) -> list[str]:
     parts = re.split(r"[+#/／、,，|丨]+", unicodedata.normalize("NFKC", f"{name} {attrs}"))
     out = []
@@ -200,7 +214,7 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
         path = current_menu_path()
     if path is None:
         items = demo_menu_items()
-        return {"file": "demo_menu.xlsx", "store": "演示盖码饭门店", "count": len(items), "items": items, "demo": True}
+        return {"file": "demo_menu.xlsx", "store": "演示盖码饭门店", "count": len(items), "kindCounts": kind_counts(items), "items": items, "demo": True}
     raw = pd.read_excel(path, sheet_name=0, header=None, dtype=str).fillna("")
     header_row = 0
     name_col = None
@@ -237,7 +251,7 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
             continue
         seen.add(key)
         items.append({"row": ridx + 1, "category": cat, "name": name, "price": price, "kind": detect_kind(name, attrs), "norm": norm, "components": split_components(name, attrs)})
-    return {"file": path.name, "store": re.sub(r"^运营数据_", "", path.stem), "count": len(items), "items": items, "demo": False}
+    return {"file": path.name, "store": re.sub(r"^运营数据_", "", path.stem), "count": len(items), "kindCounts": kind_counts(items), "items": items, "demo": False}
 
 
 def library_images() -> list[LibraryImage]:
@@ -413,6 +427,8 @@ def pricing_payload(total: int = 0) -> dict[str, Any]:
         "customEditCash": round(CUSTOM_EDIT_POINTS / POINT_RATE, 2),
         "watermarkPoints": WATERMARK_POINTS,
         "watermarkCash": round(WATERMARK_POINTS / POINT_RATE, 2),
+        "extraPlatformPoints": EXTRA_PLATFORM_POINTS,
+        "platforms": PLATFORMS,
         "freeReworkQuota": free_rework_quota(total),
         "manualRetouch": {
             "name": "复杂人工精修",
@@ -535,6 +551,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
                 {"name": "正式出图", "price": f"{BASE_IMAGE_POINTS} 积分/张"},
                 {"name": "自定义修改", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
                 {"name": "品牌水印", "price": f"{WATERMARK_POINTS} 积分/单"},
+                {"name": "增加平台尺寸", "price": f"{EXTRA_PLATFORM_POINTS} 积分/平台"},
                 {"name": "免费重做额度", "price": f"{pricing['freeReworkQuota']} 张/单"},
                 {"name": "复杂人工精修", "price": "人工报价"},
             ],
@@ -576,12 +593,11 @@ def make_text_watermark(text: str, width: int) -> Image.Image:
     probe = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
     tw, th = text_size(draw, text, mark_font)
-    pad_x = max(18, width // 70)
-    pad_y = max(10, width // 110)
+    pad_x = max(4, width // 160)
+    pad_y = max(3, width // 220)
     mark = Image.new("RGBA", (tw + pad_x * 2, th + pad_y * 2), (0, 0, 0, 0))
     mark_draw = ImageDraw.Draw(mark)
-    mark_draw.rounded_rectangle(mark.getbbox() or (0, 0, mark.width, mark.height), radius=18, fill=(255, 255, 255, 130))
-    mark_draw.text((pad_x, pad_y), text, fill=(24, 32, 42, 185), font=mark_font)
+    mark_draw.text((pad_x, pad_y), text, fill=(24, 32, 42, 175), font=mark_font)
     return mark
 
 
@@ -630,12 +646,56 @@ def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.
     return Image.alpha_composite(base, overlay)
 
 
-def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int] | None = None, image_format: str = "jpg", watermark: dict[str, Any] | None = None) -> dict[str, Any]:
+def parse_platforms(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        value = ["meituan"]
+    out = []
+    for item in value:
+        key = str(item)
+        if key in PLATFORMS and key not in out:
+            out.append(key)
+    if not out:
+        out = ["meituan"]
+    return out
+
+
+def edge_background(img: Image.Image) -> tuple[int, int, int, int]:
+    rgba = img.convert("RGBA")
+    samples = [
+        rgba.getpixel((0, 0)),
+        rgba.getpixel((rgba.width - 1, 0)),
+        rgba.getpixel((0, rgba.height - 1)),
+        rgba.getpixel((rgba.width - 1, rgba.height - 1)),
+    ]
+    return tuple(int(sum(pixel[i] for pixel in samples) / len(samples)) for i in range(4))
+
+
+def fit_to_platform(img: Image.Image, platform_id: str) -> Image.Image:
+    spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
+    target = (int(spec["width"]), int(spec["height"]))
+    src = img.convert("RGBA")
+    fitted = ImageOps.contain(src, target, Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", target, edge_background(src))
+    canvas.alpha_composite(fitted, ((target[0] - fitted.width) // 2, (target[1] - fitted.height) // 2))
+    return canvas
+
+
+def export_zip(
+    selected_style: str,
+    scope: str = "all",
+    selected_rows: list[int] | None = None,
+    image_format: str = "jpg",
+    watermark: dict[str, Any] | None = None,
+    platforms: list[str] | str | None = None,
+) -> dict[str, Any]:
     plan = build_plan(selected_style)
     run_dir = EXPORT_DIR / f"export_{int(time.time())}"
     image_dir = run_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
     selected = set(selected_rows or [])
+    selected_platforms = parse_platforms(platforms)
     image_format = image_format.lower()
     if image_format not in {"jpg", "jpeg", "png", "webp"}:
         image_format = "jpg"
@@ -660,11 +720,13 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
         copied = ""
         if candidate:
             src = Path(candidate["path"])
-            target = image_dir / f"{idx:03d}_{safe_filename(row['name'])}{ext}"
-            if src.suffix.lower() == ext and image_format != "webp" and not watermark_enabled:
-                shutil.copy2(src, target)
-            else:
-                with Image.open(src) as img:
+            with Image.open(src) as raw_img:
+                for platform_id in selected_platforms:
+                    spec = PLATFORMS[platform_id]
+                    platform_dir = image_dir / f"{platform_id}_{spec['name']}_{spec['width']}x{spec['height']}"
+                    platform_dir.mkdir(parents=True, exist_ok=True)
+                    target = platform_dir / f"{idx:03d}_{safe_filename(row['name'])}{ext}"
+                    img = fit_to_platform(raw_img, platform_id)
                     img = apply_watermark(img, watermark)
                     if image_format in {"jpg", "jpeg", "webp"}:
                         img = img.convert("RGB")
@@ -674,17 +736,20 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
                         img.save(target, "WEBP", quality=92)
                     else:
                         img.save(target, "PNG")
-            copied = str(target)
-            images += 1
-        rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "图片状态": "已生成" if candidate else "待补图", "预计积分": row["points"], "品牌水印": "已添加" if watermark_enabled and candidate else "未添加", "交付文件": Path(copied).name if copied else ""})
+                    copied = str(target)
+                    images += 1
+                    rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": spec["name"], "尺寸": f"{spec['width']}x{spec['height']}", "图片状态": "已生成", "预计积分": row["points"], "品牌水印": "已添加" if watermark_enabled else "未添加", "交付文件": f"{platform_dir.name}/{target.name}"})
+        else:
+            rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": "", "尺寸": "", "图片状态": "待补图", "预计积分": row["points"], "品牌水印": "未添加", "交付文件": ""})
     report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows).to_excel(report, index=False)
     zip_path = run_dir / "result.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(report, report.name)
-        for file in image_dir.glob("*"):
-            zf.write(file, f"images/{file.name}")
-    return {"rows": len(rows), "images": images, "watermark": watermark_enabled, "download": f"/download/{zip_path.relative_to(EXPORT_DIR).as_posix()}"}
+        for file in image_dir.rglob("*"):
+            if file.is_file():
+                zf.write(file, f"images/{file.relative_to(image_dir).as_posix()}")
+    return {"rows": len(rows), "images": images, "platforms": selected_platforms, "watermark": watermark_enabled, "download": f"/download/{zip_path.relative_to(EXPORT_DIR).as_posix()}"}
 
 
 @app.get("/")
@@ -774,7 +839,8 @@ def api_export():
         selected_rows = []
     selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
-    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark))
+    platforms = payload.get("platforms") or ["meituan"]
+    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark, platforms))
 
 
 @app.get("/media/<path:name>")

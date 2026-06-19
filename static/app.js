@@ -15,7 +15,8 @@ const state = {
   refineRow: null,
   freeReworkRemaining: 0,
   stylePreview: null,
-  watermark: defaultWatermark()
+  watermark: defaultWatermark(),
+  deliveryPlatforms: ["meituan"]
 };
 
 const $ = s => document.querySelector(s);
@@ -37,6 +38,12 @@ function defaultWatermark() {
   };
 }
 
+const platformMeta = {
+  meituan: { name: "美团外卖", size: "800×600" },
+  taobao: { name: "淘宝", size: "800×800" },
+  jd: { name: "京东", size: "800×800" }
+};
+
 function toast(text) {
   const el = $("#toast");
   el.textContent = text;
@@ -52,7 +59,12 @@ async function api(url, opt = {}) {
 }
 
 function scrollToPanel(id) {
-  $(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const el = $(id);
+  if (!el) return;
+  const topbar = $(".topbar")?.getBoundingClientRect().height || 0;
+  const offset = topbar + 14;
+  const top = window.scrollY + el.getBoundingClientRect().top - offset;
+  window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
 }
 
 function watermarkCharge() {
@@ -61,7 +73,22 @@ function watermarkCharge() {
 }
 
 function totalCharge() {
-  return (state.plan?.quote.points || estimatedFormalPoints()) + watermarkCharge();
+  return (state.plan?.quote.points || estimatedFormalPoints()) + watermarkCharge() + platformCharge();
+}
+
+function platformCharge() {
+  if (!state.plan) return 0;
+  const extraCount = Math.max(0, state.deliveryPlatforms.length - 1);
+  return extraCount * (state.plan.pricing.extraPlatformPoints || 0);
+}
+
+function menuCounts() {
+  const counts = state.plan?.menu?.kindCounts || state.menu?.kindCounts || {};
+  const total = counts.total ?? state.plan?.summary?.total ?? state.menu?.count ?? 0;
+  const single = counts.single ?? state.plan?.results?.filter(row => row.kind === "单品").length ?? 0;
+  const combo = counts.combo ?? state.plan?.results?.filter(row => row.kind === "套餐/组合").length ?? 0;
+  const snack = counts.snack ?? Math.max(0, total - single - combo);
+  return { total, single, combo, snack };
 }
 
 function watermarkPayload() {
@@ -73,6 +100,16 @@ function watermarkPayload() {
     position: state.watermark.position,
     pattern: state.watermark.pattern
   };
+}
+
+function exportPlatforms() {
+  const chosen = $("#platformSelect")?.value || "purchased";
+  if (chosen === "purchased") return [...state.deliveryPlatforms];
+  if (!state.deliveryPlatforms.includes(chosen)) {
+    toast(`请先在正式出图前购买${platformMeta[chosen]?.name || "该平台"}尺寸`);
+    return [];
+  }
+  return [chosen];
 }
 
 function setProgress(percent, text, stage = state.stage) {
@@ -131,13 +168,15 @@ function setControls() {
 function updateChargeText() {
   if (!state.plan) return;
   const base = state.plan.quote.points;
-  const extra = watermarkCharge();
-  $("#cash").textContent = `${base + extra} 积分`;
+  const wm = watermarkCharge();
+  const platform = platformCharge();
+  $("#cash").textContent = `${base + wm + platform} 积分`;
   const hint = $("#confirmChargeHint");
   if (hint) {
-    hint.textContent = extra
-      ? `正式出图 ${base} 积分 + 品牌水印 ${extra} 积分，确认后一次性扣除。`
-      : `确认后会扣除 ${base} 积分，并生成全部正式图。`;
+    const parts = [`正式出图 ${base} 积分`];
+    if (wm) parts.push(`品牌水印 ${wm} 积分`);
+    if (platform) parts.push(`增加平台 ${platform} 积分`);
+    hint.textContent = `${parts.join(" + ")}，确认后一次性扣除。`;
   }
 }
 
@@ -173,8 +212,11 @@ function renderRecharge() {
 
 function renderWaiting() {
   const count = state.menu?.count || 0;
+  const counts = menuCounts();
   $("#items").textContent = count || "-";
-  $("#category").textContent = state.uploaded ? "待识别" : "-";
+  $("#singleCount").textContent = state.uploaded ? `${counts.single || 0} 张` : "-";
+  $("#comboCount").textContent = state.uploaded ? `${counts.combo || 0} 张` : "-";
+  $("#snackCount").textContent = state.uploaded ? `${counts.snack || 0} 张` : "-";
   $("#imageCount").textContent = count ? `${count} 张` : "-";
   $("#cash").textContent = count ? `${estimatedFormalPoints()} 积分` : "-";
   setProgress(state.uploaded ? 22 : 8, state.uploaded ? "菜单已上传，正在自动生成风格方案" : "等待选择菜单", state.uploaded ? 2 : 1);
@@ -199,12 +241,15 @@ function renderPlan(showPreview = false) {
   const p = state.plan;
   const ready = p.results.filter(r => r.candidates?.length).length;
   const needsWork = p.summary.total - ready;
+  const counts = menuCounts();
   if (p.account && !state.accountLoaded) {
     state.account = p.account;
     state.accountLoaded = true;
   }
   $("#items").textContent = p.menu.count;
-  $("#category").textContent = p.category.category;
+  $("#singleCount").textContent = `${counts.single} 张`;
+  $("#comboCount").textContent = `${counts.combo} 张`;
+  $("#snackCount").textContent = `${counts.snack} 张`;
   $("#imageCount").textContent = `${p.summary.total} 张`;
   $("#cash").textContent = `${totalCharge()} 积分`;
   renderWorkflow([
@@ -216,12 +261,14 @@ function renderPlan(showPreview = false) {
   ]);
   renderStyles();
   renderStylePreview();
+  renderPlatformControls();
   renderWatermarkControls();
   if (showPreview) renderPreview();
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
     `出图 ${p.pricing.baseImagePoints} 积分/张`,
+    `交付平台 ${state.deliveryPlatforms.length} 个`,
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
@@ -229,6 +276,26 @@ function renderPlan(showPreview = false) {
   renderReworkBanner();
   renderRecharge();
   setControls();
+}
+
+function renderPlatformControls() {
+  const locked = state.confirmed;
+  $$(".platform-check").forEach(input => {
+    input.checked = state.deliveryPlatforms.includes(input.value);
+    input.disabled = locked;
+  });
+  const names = state.deliveryPlatforms.map(id => `${platformMeta[id]?.name || id} ${platformMeta[id]?.size || ""}`);
+  const charge = platformCharge();
+  $("#platformChargeHint").textContent = charge ? `${names.join(" / ")} · +${charge}积分` : names.join(" / ");
+  const select = $("#platformSelect");
+  if (select) {
+    Array.from(select.options).forEach(option => {
+      option.disabled = option.value !== "purchased" && !state.deliveryPlatforms.includes(option.value);
+    });
+    if (select.value !== "purchased" && !state.deliveryPlatforms.includes(select.value)) {
+      select.value = "purchased";
+    }
+  }
 }
 
 function renderWatermarkControls() {
@@ -445,6 +512,7 @@ async function uploadMenu() {
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
     state.watermark = defaultWatermark();
+    state.deliveryPlatforms = ["meituan"];
     state.selectedRows.clear();
     renderWaiting();
     shouldAutoStart = true;
@@ -564,23 +632,27 @@ async function exportImages() {
   const scope = $("#scopeSelect").value;
   const selectedRows = scope === "selected" ? [...state.selectedRows] : [];
   if (scope === "selected" && !selectedRows.length) return toast("请先勾选要导出的图片");
+  const platforms = exportPlatforms();
+  if (!platforms.length) return;
   const data = await api("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload() })
+    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms })
   });
-  toast(`已打包 ${data.images} 张图片${data.watermark ? "，已添加品牌水印" : ""}`);
+  toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
   location.href = data.download;
 }
 
 async function exportSingle(rowNo) {
   if (!state.confirmed) return toast("请先生成正式图片");
+  const platforms = exportPlatforms();
+  if (!platforms.length) return;
   const data = await api("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload() })
+    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms })
   });
-  toast(`已准备单张图片${data.watermark ? "，已添加品牌水印" : ""}`);
+  toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
   location.href = data.download;
 }
 
@@ -671,6 +743,20 @@ $("#closeRechargeBtn").onclick = closeRecharge;
 $("#closeRefineBtn").onclick = closeRefine;
 $("#submitRefineBtn").onclick = submitRefine;
 $("#loginBtn").onclick = () => toast("登录系统接口已预留，下一步接手机号/微信登录");
+$$(".platform-check").forEach(input => {
+  input.onchange = event => {
+    const value = event.target.value;
+    if (event.target.checked && !state.deliveryPlatforms.includes(value)) {
+      state.deliveryPlatforms.push(value);
+    }
+    if (!event.target.checked) {
+      state.deliveryPlatforms = state.deliveryPlatforms.filter(id => id !== value);
+      if (!state.deliveryPlatforms.includes("meituan")) state.deliveryPlatforms.unshift("meituan");
+    }
+    renderPlatformControls();
+    renderPlan(state.confirmed);
+  };
+});
 $("#watermarkEnabled").onchange = event => {
   state.watermark.enabled = event.target.checked;
   renderWatermarkControls();
@@ -699,7 +785,10 @@ $("#watermarkPattern").onchange = event => {
 $("#watermarkLogo").onchange = event => {
   const file = event.target.files?.[0];
   if (!file) return;
-  if (!file.type.startsWith("image/")) return toast("请上传图片格式 Logo");
+  if (file.type !== "image/png" && !file.name.toLowerCase().endsWith(".png")) {
+    event.target.value = "";
+    return toast("Logo 请上传透明 PNG 文件");
+  }
   const reader = new FileReader();
   reader.onload = () => {
     state.watermark.logoData = String(reader.result || "");
