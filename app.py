@@ -30,6 +30,8 @@ for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR):
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MENU_EXTS = {".xls", ".xlsx"}
+POINT_RATE = 10
+DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
@@ -116,7 +118,7 @@ def safe_filename(name: str) -> str:
 
 
 def draw_demo_image(path: Path, dish: str, style_id: str) -> None:
-    style_name, bg, accent = STYLE_COLORS[style_id]
+    style_name, bg, accent = STYLE_COLORS.get(style_id, ("统一出图风格", (232, 235, 238), (85, 103, 120)))
     img = Image.new("RGB", (900, 720), bg)
     draw = ImageDraw.Draw(img)
     draw.ellipse((190, 100, 710, 620), fill=(248, 248, 244), outline=accent, width=14)
@@ -241,6 +243,8 @@ def library_images() -> list[LibraryImage]:
             continue
         rel = path.relative_to(LIBRARY_DIR)
         parts = rel.parts
+        if parts and parts[0].startswith("_"):
+            continue
         store = parts[0] if len(parts) > 1 else "uploaded"
         style_id = next((p for p in parts if p.startswith("style-")), "style-upload")
         dish = path.stem
@@ -298,8 +302,41 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
     ]
 
 
+def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score: float = 100.0) -> dict[str, Any]:
+    return {
+        "imageId": hashlib.sha1(str(path).encode()).hexdigest()[:18],
+        "score": score,
+        "dishName": dish,
+        "store": source,
+        "styleId": style_id,
+        "url": f"/media/{path.relative_to(LIBRARY_DIR).as_posix()}",
+        "path": str(path),
+        "generated": source.startswith("generated"),
+    }
+
+
+def style_sample_candidate(style_id: str) -> dict[str, Any]:
+    sample = next((p for p in sorted((LIBRARY_DIR / "demo_store" / style_id).glob("*.jpg"))), None)
+    if sample is None:
+        sample = LIBRARY_DIR / "_style_samples" / style_id / "整店风格预览.jpg"
+        if not sample.exists():
+            draw_demo_image(sample, "整店风格预览", style_id)
+    return candidate_from_path(sample, "整店风格预览", style_id, "generated-sample")
+
+
+def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str, Any] | None:
+    if not style_id:
+        return None
+    target = LIBRARY_DIR / "_generated_previews" / style_id / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
+    if not target.exists():
+        draw_demo_image(target, item["name"], style_id)
+    return candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
+
+
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = sorted({c["styleId"] for r in results for c in r["candidates"] if c["styleId"]})
+    if not style_ids:
+        style_ids = list(STYLE_COLORS)
     options = []
     total = max(1, len(results))
     for idx, style_id in enumerate(style_ids[:5], start=1):
@@ -318,6 +355,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 review += 1
             else:
                 bg_replace += 1
+        sample = sample or style_sample_candidate(style_id)
         style_name = STYLE_COLORS.get(style_id, (f"上传风格 {idx}", (230, 230, 230), (80, 80, 80)))[0]
         color = STYLE_COLORS.get(style_id, ("", (230, 230, 230), (80, 80, 80)))[1]
         options.append(
@@ -351,16 +389,40 @@ def status_for(candidates: list[dict[str, Any]]) -> str:
 
 
 def points_for(status: str, action: str, kind: str) -> int:
-    if status == "未找到":
+    if action == "智能补图":
         return 49
     points = 10
     if kind == "套餐/组合":
         points += 8
-    if action == "需抠图换背景":
+    if action in {"需抠图换背景", "智能统一风格"}:
         points += 8
-    if status != "直接可用":
+    if status != "直接可用" and action != "背景一致，直接复用":
         points += 2
     return points
+
+
+def account_payload() -> dict[str, Any]:
+    return {
+        "balance": DEMO_BALANCE_POINTS,
+        "rate": f"1 元 = {POINT_RATE} 积分",
+        "packages": [
+            {"name": "体验充值", "cash": 49, "points": 490, "bonus": 0},
+            {"name": "整店常用", "cash": 99, "points": 990, "bonus": 80},
+            {"name": "小团队包", "cash": 299, "points": 2990, "bonus": 360},
+        ],
+        "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
+    }
+
+
+def pipeline_payload() -> dict[str, Any]:
+    provider = os.environ.get("IMAGE_EDIT_PROVIDER", "mock")
+    return {
+        "provider": provider,
+        "imageEditApiReady": bool(os.environ.get("IMAGE_EDIT_API_KEY")),
+        "objectStorageReady": bool(os.environ.get("OBJECT_STORAGE_BUCKET")),
+        "expectedEnv": ["IMAGE_EDIT_PROVIDER", "IMAGE_EDIT_API_KEY", "OBJECT_STORAGE_BUCKET"],
+        "stages": ["菜单解析", "风格确认", "图库匹配", "统一背景", "预览导出"],
+    }
 
 
 def build_plan(selected_style: str = "") -> dict[str, Any]:
@@ -369,7 +431,8 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
     results = []
     for item in menu["items"]:
         candidates = top_candidates(item, library)
-        results.append({**item, "status": status_for(candidates), "candidates": candidates})
+        original_status = status_for(candidates)
+        results.append({**item, "status": original_status, "originalStatus": original_status, "candidates": candidates})
     styles = style_options(results)
     selected_style = selected_style or (styles[0]["id"] if styles else "")
     for row in results:
@@ -378,34 +441,53 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
             same = next((c for c in candidates if c["styleId"] == selected_style), None)
             if same:
                 candidates.insert(0, candidates.pop(candidates.index(same)))
+            elif candidates:
+                generated = generated_preview_candidate(row, selected_style)
+                if generated:
+                    candidates.insert(0, generated)
+            else:
+                generated = generated_preview_candidate(row, selected_style)
+                if generated:
+                    candidates.append(generated)
         chosen = candidates[0] if candidates else None
-        action = "需要定制/生成" if not chosen else "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
+        if not chosen:
+            action = "需要定制/生成"
+        elif chosen.get("generated") and row["originalStatus"] == "未找到":
+            action = "智能补图"
+        elif chosen.get("generated"):
+            action = "智能统一风格"
+        else:
+            action = "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
+        row["publicStatus"] = "已生成" if chosen else "待补图"
         row["points"] = points_for(row["status"], action, row["kind"])
     summary = {
         "total": len(results),
-        "direct": sum(1 for r in results if r["status"] == "直接可用"),
-        "review": sum(1 for r in results if r["status"] in {"需人工确认", "弱匹配"}),
-        "missing": sum(1 for r in results if r["status"] == "未找到"),
+        "direct": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
+        "review": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
+        "missing": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
         "reuse": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
-        "bgReplace": sum(1 for r in results if r["backgroundAction"] == "需抠图换背景"),
-        "custom": sum(1 for r in results if r["backgroundAction"] == "需要定制/生成"),
+        "bgReplace": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
+        "custom": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
         "points": sum(r["points"] for r in results),
     }
     price = 49 if summary["total"] <= 50 else 69 if summary["total"] <= 100 else 99 if summary["total"] <= 160 else 129
+    menu_count = sum(1 for p in UPLOAD_DIR.iterdir() if p.suffix.lower() in MENU_EXTS) or 1
     return {
         "menu": {k: v for k, v in menu.items() if k != "items"},
         "category": category_report(menu),
         "standardization": standardization_report(menu),
-        "assetLayer": {"libraryImages": len(library), "libraryStores": len({x.store for x in library}), "menus": len(list(UPLOAD_DIR.glob('*.xlsx'))) or 1},
+        "assetLayer": {"libraryImages": len(library), "libraryStores": len({x.store for x in library}), "menus": menu_count},
         "styles": styles,
         "selectedStyle": selected_style,
         "summary": summary,
+        "account": account_payload(),
+        "pipeline": pipeline_payload(),
         "quote": {
             "package": "基础整店出图" if price <= 69 else "标准整店套图" if price <= 99 else "大菜单整店套图",
             "cash": price,
-            "points": price * 10,
-            "rate": "1 元 = 10 积分",
+            "points": price * POINT_RATE,
+            "rate": f"1 元 = {POINT_RATE} 积分",
             "addOns": [
                 {"name": "全店品牌水印", "price": 9.9},
                 {"name": "ZIP 打包导出", "price": 4.9},
@@ -491,6 +573,16 @@ def api_menu_status():
         return jsonify({"uploaded": False})
     menu = parse_menu(path)
     return jsonify({"uploaded": True, "menu": {k: v for k, v in menu.items() if k != "items"}})
+
+
+@app.get("/api/account")
+def api_account():
+    return jsonify(account_payload())
+
+
+@app.get("/api/pipeline-config")
+def api_pipeline_config():
+    return jsonify(pipeline_payload())
 
 
 @app.post("/api/upload-menu")

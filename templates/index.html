@@ -3,53 +3,68 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>外卖菜品图生成系统</title>
+  <title>外卖菜品图工作台</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <header class="top">
-    <div>
-      <h1>外卖菜品图生成系统</h1>
-      <p>上传菜单，自动生成统一风格的整店菜品图</p>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">图</span>
+      <div>
+        <h1>外卖菜品图工作台</h1>
+        <p>上传菜单，选择风格，生成整店统一菜品图</p>
+      </div>
     </div>
-    <button id="exportBtn" disabled>导出图片</button>
+    <div class="account-card">
+      <span>积分余额</span>
+      <b id="pointsBalance">-</b>
+      <button id="rechargeBtn">充值积分</button>
+      <button id="loginBtn" class="ghost">登录/注册</button>
+    </div>
   </header>
 
   <main>
-    <section class="hero">
-      <div>
-        <h2>上传菜单后，按风格生成整店图片</h2>
-        <p>先上传 Excel 菜单，确认风格方案后生成图片预览。你可以勾选部分图片导出，也可以一键打包整店图片。</p>
+    <section class="hero-shell">
+      <div class="hero-copy">
+        <span class="eyebrow">整店出图</span>
+        <h2>把一张菜单，变成一套统一风格的菜品图</h2>
+        <p>你只需要走三步：上传菜单、确认风格、预览导出。费用用积分结算，单张保存和整店打包都可以。</p>
       </div>
-      <div class="upload-box">
-        <label class="file-picker">
-          <span>选择菜单文件</span>
-          <input id="menuFile" type="file">
-        </label>
-        <div id="menuStatus" class="menu-status">等待上传菜单</div>
-        <button id="startJobBtn" class="primary" disabled>开始做图</button>
+      <div class="action-rail">
+        <button id="chooseMenuBtn" class="round-step active" type="button">
+          <i>1</i>
+          <b>选择菜单</b>
+          <span>XLS / XLSX</span>
+        </button>
+        <button id="startJobBtn" class="round-step" type="button" disabled>
+          <i>2</i>
+          <b>开始做图</b>
+          <span>识别菜品</span>
+        </button>
+        <button id="exportShortcutBtn" class="round-step" type="button" disabled>
+          <i>3</i>
+          <b>导出图片</b>
+          <span>单张或 ZIP</span>
+        </button>
+        <input id="menuFile" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
       </div>
+      <div id="menuStatus" class="menu-status">等待选择菜单</div>
     </section>
 
     <section class="metrics">
       <div><span>菜单菜品</span><b id="items">-</b></div>
       <div><span>识别品类</span><b id="category">-</b></div>
       <div><span>预计出图</span><b id="imageCount">-</b></div>
-      <div><span>预估费用</span><b id="cash">-</b></div>
+      <div><span>预估积分</span><b id="cash">-</b></div>
     </section>
 
-    <section class="tabs">
-      <button class="tab active" data-view="workflow">生成流程</button>
-      <button class="tab" data-view="styles">风格方案</button>
-      <button class="tab" data-view="preview">图片预览</button>
-      <button class="tab" data-view="exportView">导出设置</button>
-      <button class="tab" data-view="paid">增值服务</button>
-    </section>
-
-    <section id="workflow" class="view active panel">
+    <section class="panel progress-panel">
       <div class="panel-head">
-        <h3>生成进度</h3>
-        <span id="progressText">等待上传菜单</span>
+        <div>
+          <h3>当前进度</h3>
+          <p id="progressText">等待选择菜单</p>
+        </div>
+        <span id="stageBadge" class="stage-badge">第 1 步</span>
       </div>
       <div class="progress">
         <div id="progressBar"></div>
@@ -57,17 +72,30 @@
       <div id="workflowBox" class="workflow"></div>
     </section>
 
-    <section id="styles" class="view panel">
-      <div class="panel-head">
+    <section id="stylesPanel" class="panel section-panel locked">
+      <div class="section-copy">
+        <span class="eyebrow">第 2 步</span>
         <h3>选择整店图片风格</h3>
-        <button id="confirmStyleBtn" class="primary" disabled>确认风格并生成预览</button>
+        <p>选中一套风格后，点击确认，系统会按这套视觉生成整店预览。</p>
       </div>
-      <div id="styleBox" class="style-grid"></div>
+      <div class="section-main">
+        <div id="styleBox" class="style-grid"></div>
+        <div class="style-confirm">
+          <div>
+            <b id="selectedStyleHint">还没有选择风格</b>
+            <p>确认后会进入图片预览。</p>
+          </div>
+          <button id="confirmStyleBtn" class="primary" disabled>确认风格，生成预览</button>
+        </div>
+      </div>
     </section>
 
-    <section id="preview" class="view panel">
+    <section id="previewPanel" class="panel locked">
       <div class="panel-head">
-        <h3>图片预览</h3>
+        <div>
+          <span class="eyebrow">第 3 步</span>
+          <h3>图片预览</h3>
+        </div>
         <div class="actions">
           <button id="selectAllBtn">全选</button>
           <button id="selectSingleBtn">只选单品</button>
@@ -78,8 +106,12 @@
       <div id="resultBox" class="result-grid"></div>
     </section>
 
-    <section id="exportView" class="view panel">
-      <h3>导出设置</h3>
+    <section id="exportView" class="panel locked">
+      <div class="section-copy">
+        <span class="eyebrow">交付</span>
+        <h3>导出设置</h3>
+        <p>可以只存某一张，也可以勾选后统一打包。ZIP 打包适合作为付费权益。</p>
+      </div>
       <div class="export-grid">
         <label>导出范围
           <select id="scopeSelect">
@@ -96,16 +128,30 @@
             <option value="webp">WebP</option>
           </select>
         </label>
-        <button id="exportZipBtn" class="primary">打包导出 ZIP</button>
+        <button id="exportZipBtn" class="primary" disabled>打包导出 ZIP</button>
       </div>
-      <p class="note">单张图片可以在图片预览里单独保存；ZIP 打包导出可作为付费功能。</p>
     </section>
 
-    <section id="paid" class="view panel">
-      <h3>增值服务</h3>
+    <section class="panel paid-panel">
+      <div class="section-copy">
+        <span class="eyebrow">积分与加购</span>
+        <h3>本单费用</h3>
+        <p>所有费用均用积分展示，整店出图和增值服务统一结算。</p>
+      </div>
       <div id="paidBox" class="paid-grid"></div>
     </section>
   </main>
+
+  <div id="rechargeModal" class="modal" aria-hidden="true">
+    <div class="modal-card">
+      <button id="closeRechargeBtn" class="modal-close">×</button>
+      <span class="eyebrow">充值中心</span>
+      <h3>充值积分</h3>
+      <p id="rateText">1 元 = 10 积分</p>
+      <div id="rechargePackages" class="recharge-grid"></div>
+      <p class="small-note">充值后积分可用于整店出图、打包导出和增值服务。</p>
+    </div>
+  </div>
 
   <div id="toast" class="toast"></div>
   <script src="/static/app.js"></script>
