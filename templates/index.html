@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>外卖菜品图生成系统</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>外卖菜品图生成系统</h1>
+      <p>历史图库检索 + 统一风格出图 + 少量 AI 二次加工</p>
+    </div>
+    <button id="exportBtn">导出整店图片包</button>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <h2>上传菜单，10 分钟生成一整套美团外卖菜品图</h2>
+        <p>当前云端原型支持上传 Excel 菜单和图库 zip；未上传时使用内置 demo 数据演示完整流程。</p>
+      </div>
+      <div class="upload-box">
+        <label>上传 Excel 菜单<input id="menuFile" type="file" accept=".xlsx"></label>
+        <button id="uploadMenuBtn">上传菜单</button>
+        <label>上传图库 zip<input id="libraryFile" type="file" accept=".zip"></label>
+        <button id="uploadLibraryBtn">上传图库</button>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <div><span>菜单菜品</span><b id="items">-</b></div>
+      <div><span>识别品类</span><b id="category">-</b></div>
+      <div><span>直接复用</span><b id="reuse">-</b></div>
+      <div><span>套餐报价</span><b id="cash">-</b></div>
+    </section>
+
+    <section class="tabs">
+      <button class="tab active" data-view="workflow">产品流程</button>
+      <button class="tab" data-view="standard">菜品标准化</button>
+      <button class="tab" data-view="styles">风格包</button>
+      <button class="tab" data-view="engine">出图引擎</button>
+      <button class="tab" data-view="paid">收费积分</button>
+    </section>
+
+    <section id="workflow" class="view active panel">
+      <h3>完整工作流</h3>
+      <div id="workflowBox" class="workflow"></div>
+    </section>
+
+    <section id="standard" class="view panel">
+      <h3>菜品标准化</h3>
+      <div id="standardBox" class="cards"></div>
+    </section>
+
+    <section id="styles" class="view panel">
+      <h3>客户选择 5 套风格包</h3>
+      <div id="styleBox" class="style-grid"></div>
+    </section>
+
+    <section id="engine" class="view panel">
+      <div class="panel-head">
+        <h3>出图任务</h3>
+        <select id="scopeSelect">
+          <option value="all">导出全部</option>
+          <option value="single">只导出单品</option>
+          <option value="combo">只导出套餐</option>
+          <option value="direct">只导出直接复用</option>
+          <option value="need_bg">只导出需换背景</option>
+          <option value="missing">只导出缺图</option>
+        </select>
+      </div>
+      <div id="summary" class="summary"></div>
+      <div id="resultBox" class="result-grid"></div>
+    </section>
+
+    <section id="paid" class="view panel">
+      <h3>收费、积分、裂变</h3>
+      <div id="paidBox" class="paid-grid"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

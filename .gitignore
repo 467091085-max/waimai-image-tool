@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.log
+*.pid
+.DS_Store
+.env
+.codex_deps/
+.deploy_keys/
+data/uploads/*
+data/library/uploaded_*
+data/library/demo_store/
+data/library/.demo_ready
+data/exports/*
+!data/uploads/.gitkeep
+!data/library/.gitkeep
+!data/exports/.gitkeep
