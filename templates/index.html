@@ -33,18 +33,27 @@
       <div class="action-rail">
         <button id="chooseMenuBtn" class="round-step active" type="button">
           <i>1</i>
-          <b>选择菜单</b>
-          <span>XLS / XLSX</span>
+          <span class="step-copy">
+            <b>选择菜单</b>
+            <span>XLS / XLSX 上传后自动分析</span>
+          </span>
+          <em>点击上传</em>
         </button>
         <button id="startJobBtn" class="round-step" type="button" disabled>
           <i>2</i>
-          <b>风格预览</b>
-          <span>免费 5 张</span>
+          <span class="step-copy">
+            <b>风格预览</b>
+            <span>自动展示 5 张免费样图</span>
+          </span>
+          <em>菜单后自动开始</em>
         </button>
         <button id="exportShortcutBtn" class="round-step" type="button" disabled>
           <i>3</i>
-          <b>导出图片</b>
-          <span>单张或 ZIP</span>
+          <span class="step-copy">
+            <b>导出图片</b>
+            <span>单张保存或打包 ZIP</span>
+          </span>
+          <em>生成后可用</em>
         </button>
         <input id="menuFile" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
       </div>
@@ -55,7 +64,7 @@
       <div><span>菜单菜品</span><b id="items">-</b></div>
       <div><span>识别品类</span><b id="category">-</b></div>
       <div><span>正式图片张数</span><b id="imageCount">-</b></div>
-      <div><span>正式出图积分</span><b id="cash">-</b></div>
+      <div><span>出图所需消耗积分</span><b id="cash">-</b></div>
     </section>
 
     <section class="panel progress-panel">
@@ -104,7 +113,8 @@
         </div>
       </div>
       <div id="summary" class="summary"></div>
-      <div id="resultBox" class="result-grid"></div>
+      <div id="reworkBanner" class="rework-banner"></div>
+      <div id="resultBox" class="result-sections"></div>
     </section>
 
     <section id="exportView" class="panel locked">

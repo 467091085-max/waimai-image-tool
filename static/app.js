@@ -74,11 +74,20 @@ function publicStatus(row) {
 function setControls() {
   const menuFile = state.menu?.file || "菜单";
   const menuCount = state.menu?.count ?? 0;
+  const startSub = $("#startJobBtn")?.querySelector(".step-copy span");
+  const startEm = $("#startJobBtn")?.querySelector("em");
+  const exportEm = $("#exportShortcutBtn")?.querySelector("em");
   $("#startJobBtn").disabled = !state.uploaded || state.running;
-  $("#startJobBtn").querySelector("span").textContent = state.running ? "生成中" : state.plan ? "重新预览" : "免费 5 张";
+  if (startSub) {
+    startSub.textContent = state.running ? "正在处理，请稍候" : state.plan ? "可重新生成免费样图" : "上传菜单后自动展示";
+  }
+  if (startEm) {
+    startEm.textContent = state.running ? "处理中" : state.plan ? "重新预览" : state.uploaded ? "自动开始" : "等待菜单";
+  }
   $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running;
   $("#confirmStyleBtn").textContent = state.plan ? `扣 ${state.plan.quote.points} 积分，生成正式图` : "确认风格，生成正式图";
   $("#exportShortcutBtn").disabled = !state.confirmed;
+  if (exportEm) exportEm.textContent = state.confirmed ? "去导出" : "生成后可用";
   $("#exportZipBtn").disabled = !state.confirmed;
   $("#menuStatus").textContent = state.uploaded ? `菜单已就绪：${menuFile} · ${menuCount} 个菜` : "等待选择菜单";
   $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
@@ -122,19 +131,20 @@ function renderWaiting() {
   $("#category").textContent = state.uploaded ? "待识别" : "-";
   $("#imageCount").textContent = count ? `${count} 张` : "-";
   $("#cash").textContent = count ? `${estimatedFormalPoints()} 积分` : "-";
-  setProgress(state.uploaded ? 22 : 8, state.uploaded ? "菜单已上传，点击生成风格预览" : "等待选择菜单", state.uploaded ? 2 : 1);
+  setProgress(state.uploaded ? 22 : 8, state.uploaded ? "菜单已上传，正在自动生成风格方案" : "等待选择菜单", state.uploaded ? 2 : 1);
   renderWorkflow([
     { title: "选择菜单", status: state.uploaded ? "已完成" : "等待上传", state: state.uploaded ? "done" : "active" },
-    { title: "风格预览", status: state.uploaded ? "免费 5 张" : "待菜单", state: state.uploaded ? "active" : "" },
+    { title: "风格预览", status: state.uploaded ? "自动生成中" : "待菜单", state: state.uploaded ? "active" : "" },
     { title: "选择风格", status: "待生成方案" },
     { title: "正式生图", status: "待扣积分" },
     { title: "导出图片", status: "待预览" }
   ]);
-  $("#styleBox").innerHTML = `<div class="empty">点击“风格预览”后展示 5 套样图</div>`;
+  $("#styleBox").innerHTML = `<div class="empty">菜单上传后会自动展示可选风格</div>`;
   $("#stylePreviewBox").className = "style-preview-box empty";
   $("#stylePreviewBox").innerHTML = "先选择一个图库风格，这里会展示 5 张免费样图";
   $("#selectedStyleHint").textContent = "还没有选择风格";
   $("#summary").innerHTML = "";
+  $("#reworkBanner").innerHTML = "";
   $("#resultBox").innerHTML = `<div class="empty">扣积分生成后展示正式图片</div>`;
   setControls();
 }
@@ -149,11 +159,11 @@ function renderPlan(showPreview = false) {
   }
   $("#items").textContent = p.menu.count;
   $("#category").textContent = p.category.category;
-  $("#imageCount").textContent = p.summary.total;
+  $("#imageCount").textContent = `${p.summary.total} 张`;
   $("#cash").textContent = `${p.quote.points} 积分`;
   renderWorkflow([
     { title: "选择菜单", status: `${p.menu.count} 个菜品`, state: "done" },
-    { title: "风格预览", status: `免费 ${p.pricing.previewFreeImages} 张`, state: "done" },
+    { title: "风格预览", status: `已展示 ${p.styles.length} 套风格`, state: "done" },
     { title: "选择风格", status: state.confirmed ? styleName(p.selectedStyle) : "请选择一套", state: state.confirmed ? "done" : "active" },
     { title: "正式生图", status: state.confirmed ? `已扣 ${state.chargedPoints || p.quote.points} 积分` : `待扣 ${p.quote.points} 积分`, state: state.confirmed ? "done" : "" },
     { title: "导出图片", status: state.confirmed ? "可以导出" : "待预览", state: state.confirmed ? "active" : "" }
@@ -166,11 +176,28 @@ function renderPlan(showPreview = false) {
     `正式图 ${p.summary.total} 张`,
     `出图 ${p.pricing.baseImagePoints} 积分/张`,
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
-    state.confirmed ? `免费重做剩余 ${state.freeReworkRemaining} 张` : `免费重做 ${p.pricing.freeReworkQuota} 张`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
   ].map(x => `<span class="pill">${esc(x)}</span>`).join("");
+  renderReworkBanner();
   renderRecharge();
   setControls();
+}
+
+function renderReworkBanner() {
+  const box = $("#reworkBanner");
+  if (!box || !state.plan || !state.confirmed) {
+    if (box) box.innerHTML = "";
+    return;
+  }
+  const total = state.plan.pricing.freeReworkQuota;
+  const left = Math.max(0, state.freeReworkRemaining);
+  const used = Math.max(0, total - left);
+  const price = state.plan.pricing.baseImagePoints;
+  box.className = `rework-banner ${left ? "has-free" : "paid-only"}`;
+  box.innerHTML = `
+    <b>${left ? `免费换版剩余 ${left}/${total} 张` : "免费换版已用完"}</b>
+    <span>${left ? `已使用 ${used} 张，用完后每次 ${price} 积分/张` : `继续换一版将扣 ${price} 积分/张`}</span>
+  `;
 }
 
 function styleName(styleId) {
@@ -232,6 +259,8 @@ async function loadStylePreview(styleId) {
   renderStylePreview();
   state.stylePreview = await api(`/api/style-preview?style=${encodeURIComponent(styleId)}`);
   renderStylePreview();
+  setProgress(72, "5 张免费样图已生成，请确认风格", 3);
+  setControls();
 }
 
 function renderPreview() {
@@ -239,7 +268,10 @@ function renderPreview() {
   if (!state.selectedRows.size) {
     p.results.forEach((_, index) => state.selectedRows.add(index + 1));
   }
-  $("#resultBox").innerHTML = p.results.map((row, index) => {
+  const redrawLabel = state.freeReworkRemaining > 0
+    ? `换一版（免费剩 ${state.freeReworkRemaining}）`
+    : `换一版 ${p.pricing.baseImagePoints}积分`;
+  const card = (row, index) => {
     const rowNo = index + 1;
     const candidate = row.candidates[0];
     const checked = state.selectedRows.has(rowNo) ? "checked" : "";
@@ -251,10 +283,34 @@ function renderPreview() {
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
-        ${candidate ? `<div class="result-actions"><a class="save-link" href="${candidate.url}" download="${esc(row.name)}.jpg">单张保存</a><button class="redraw-btn" data-row="${rowNo}" type="button">换一版</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
+        ${candidate ? `<div class="result-actions"><a class="save-link" href="${candidate.url}" download="${esc(row.name)}.jpg">单张保存</a><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
       </div>
     </div>`;
-  }).join("");
+  };
+  const groups = [
+    { title: "单品图片", note: "常规菜品图，适合直接上架。", rows: [] },
+    { title: "套餐图片", note: "按套餐名和拆分菜品组合成图，和单品分开审核、分开导出。", rows: [] },
+    { title: "其他图片", note: "饮品、小食或暂未归类的图片。", rows: [] }
+  ];
+  p.results.forEach((row, index) => {
+    if (row.kind === "单品") groups[0].rows.push({ row, index });
+    else if (row.kind === "套餐/组合") groups[1].rows.push({ row, index });
+    else groups[2].rows.push({ row, index });
+  });
+  $("#resultBox").innerHTML = groups.filter(group => group.rows.length).map(group => `
+    <section class="result-section">
+      <div class="result-section-head">
+        <div>
+          <h4>${esc(group.title)}</h4>
+          <p>${esc(group.note)}</p>
+        </div>
+        <span>${group.rows.length} 张</span>
+      </div>
+      <div class="result-grid">
+        ${group.rows.map(({ row, index }) => card(row, index)).join("")}
+      </div>
+    </section>
+  `).join("");
   $$(".row-check").forEach(input => {
     input.onchange = () => {
       const rowNo = Number(input.dataset.row);
@@ -283,6 +339,7 @@ async function uploadMenu() {
   setProgress(15, "正在上传菜单", 1);
   const fd = new FormData();
   fd.append("file", file);
+  let shouldAutoStart = false;
   try {
     const data = await api("/api/upload-menu", { method: "POST", body: fd });
     state.uploaded = true;
@@ -297,15 +354,19 @@ async function uploadMenu() {
     state.stylePreview = null;
     state.selectedRows.clear();
     renderWaiting();
-    toast("菜单已上传，可以生成风格预览");
+    shouldAutoStart = true;
+    toast("菜单已上传，正在自动生成风格方案");
   } finally {
     state.running = false;
     setControls();
   }
+  if (shouldAutoStart) await startJob({ auto: true });
 }
 
-async function startJob() {
+async function startJob(options = {}) {
   if (!state.uploaded) return toast("请先选择菜单");
+  if (state.running) return;
+  const doScroll = options.doScroll !== false;
   state.running = true;
   state.confirmed = false;
   state.charged = false;
@@ -323,7 +384,8 @@ async function startJob() {
     state.pendingStyle = "";
     setProgress(66, "请选择一套图片风格", 3);
     renderPlan(false);
-    scrollToPanel("#stylesPanel");
+    if (doScroll) scrollToPanel("#stylesPanel");
+    if (options.auto) toast("风格方案已生成，请选择一套风格");
   } finally {
     state.running = false;
     setControls();
@@ -391,7 +453,7 @@ function redrawImage(rowNo) {
   if (state.freeReworkRemaining > 0) {
     state.freeReworkRemaining -= 1;
     renderPlan(true);
-    toast(`${row.name} 已使用 1 次免费重做额度`);
+    toast(`${row.name} 已免费换版，剩余 ${state.freeReworkRemaining}/${state.plan.pricing.freeReworkQuota} 张`);
     return;
   }
   if ((state.account.balance || 0) < price) {
@@ -476,6 +538,9 @@ async function refreshMenuStatus() {
     state.menu = null;
   }
   renderWaiting();
+  if (state.uploaded) {
+    startJob({ auto: true, doScroll: false }).catch(e => toast(e.message));
+  }
 }
 
 function openRecharge() {
