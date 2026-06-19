@@ -19,13 +19,13 @@
     <section class="hero">
       <div>
         <h2>上传菜单，10 分钟生成一整套美团外卖菜品图</h2>
-        <p>当前云端原型支持上传 Excel 菜单和图库 zip；未上传时使用内置 demo 数据演示完整流程。</p>
+        <p>上传 Excel 菜单后，系统会从历史图库里匹配可复用图片，并把缺图任务拆出来。</p>
       </div>
       <div class="upload-box">
         <label>上传 Excel 菜单<input id="menuFile" type="file"></label>
         <button id="uploadMenuBtn">上传菜单</button>
-        <label>上传图库 zip<input id="libraryFile" type="file" accept=".zip"></label>
-        <button id="uploadLibraryBtn">上传图库</button>
+        <div id="menuStatus" class="menu-status">等待上传菜单</div>
+        <button id="startJobBtn" class="primary" disabled>开始做图</button>
       </div>
     </section>
 

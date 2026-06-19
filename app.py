@@ -465,6 +465,15 @@ def api_plan():
     return jsonify(build_plan(request.args.get("style", "")))
 
 
+@app.get("/api/menu-status")
+def api_menu_status():
+    path = current_menu_path()
+    if path is None:
+        return jsonify({"uploaded": False})
+    menu = parse_menu(path)
+    return jsonify({"uploaded": True, "menu": {k: v for k, v in menu.items() if k != "items"}})
+
+
 @app.post("/api/upload-menu")
 def upload_menu():
     file = request.files.get("file")
@@ -474,7 +483,12 @@ def upload_menu():
         return jsonify({"error": "请上传 .xls 或 .xlsx 格式的 Excel 菜单"}), 400
     target = UPLOAD_DIR / f"menu_{int(time.time())}_{safe_filename(file.filename)}"
     file.save(target)
-    return jsonify({"ok": True, "file": target.name, "plan": build_plan()})
+    try:
+        menu = parse_menu(target)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return jsonify({"error": f"菜单读取失败：{exc}"}), 400
+    return jsonify({"ok": True, "file": target.name, "menu": {k: v for k, v in menu.items() if k != "items"}})
 
 
 @app.post("/api/upload-library")
