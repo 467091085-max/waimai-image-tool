@@ -392,7 +392,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "custom": sum(1 for r in results if r["backgroundAction"] == "需要定制/生成"),
         "points": sum(r["points"] for r in results),
     }
-    price = 69 if summary["total"] <= 60 else 99 if summary["total"] <= 80 else 199
+    price = 49 if summary["total"] <= 50 else 69 if summary["total"] <= 100 else 99 if summary["total"] <= 160 else 129
     return {
         "menu": {k: v for k, v in menu.items() if k != "items"},
         "category": category_report(menu),
@@ -402,15 +402,16 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "selectedStyle": selected_style,
         "summary": summary,
         "quote": {
-            "package": "基础整店出图" if price == 69 else "标准品牌套图" if price == 99 else "高级定制套图",
+            "package": "基础整店出图" if price <= 69 else "标准整店套图" if price <= 99 else "大菜单整店套图",
             "cash": price,
             "points": price * 10,
             "rate": "1 元 = 10 积分",
             "addOns": [
-                {"name": "全店品牌水印", "price": 19.9},
-                {"name": "全店换餐具", "price": 29.9},
+                {"name": "全店品牌水印", "price": 9.9},
+                {"name": "ZIP 打包导出", "price": 4.9},
+                {"name": "全店换餐具", "price": 19.9},
                 {"name": "单张定制配菜", "price": "4.9-9.9/张"},
-                {"name": "套餐组合图增强", "price": 19.9},
+                {"name": "套餐组合图增强", "price": 9.9},
             ],
             "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
         },
@@ -418,15 +419,22 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
     }
 
 
-def export_zip(selected_style: str, scope: str = "all") -> dict[str, Any]:
+def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int] | None = None, image_format: str = "jpg") -> dict[str, Any]:
     plan = build_plan(selected_style)
     run_dir = EXPORT_DIR / f"export_{int(time.time())}"
     image_dir = run_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
+    selected = set(selected_rows or [])
+    image_format = image_format.lower()
+    if image_format not in {"jpg", "jpeg", "png", "webp"}:
+        image_format = "jpg"
+    ext = ".jpg" if image_format in {"jpg", "jpeg"} else f".{image_format}"
     rows = []
     images = 0
     for idx, row in enumerate(plan["results"], start=1):
         candidate = row["candidates"][0] if row["candidates"] else None
+        if selected and idx not in selected:
+            continue
         if scope == "direct" and row["backgroundAction"] != "背景一致，直接复用":
             continue
         if scope == "need_bg" and row["backgroundAction"] != "需抠图换背景":
@@ -440,12 +448,23 @@ def export_zip(selected_style: str, scope: str = "all") -> dict[str, Any]:
         copied = ""
         if candidate:
             src = Path(candidate["path"])
-            target = image_dir / f"{idx:03d}_{safe_filename(row['name'])}{src.suffix}"
-            shutil.copy2(src, target)
+            target = image_dir / f"{idx:03d}_{safe_filename(row['name'])}{ext}"
+            if src.suffix.lower() == ext and image_format != "webp":
+                shutil.copy2(src, target)
+            else:
+                with Image.open(src) as img:
+                    if image_format in {"jpg", "jpeg", "webp"}:
+                        img = img.convert("RGB")
+                    if image_format in {"jpg", "jpeg"}:
+                        img.save(target, "JPEG", quality=92)
+                    elif image_format == "webp":
+                        img.save(target, "WEBP", quality=92)
+                    else:
+                        img.save(target, "PNG")
             copied = str(target)
             images += 1
-        rows.append({"菜单菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "匹配状态": row["status"], "背景处理": row["backgroundAction"], "预计积分": row["points"], "匹配图库菜品": candidate["dishName"] if candidate else "", "图库来源": candidate["store"] if candidate else "", "导出路径": copied})
-    report = run_dir / "match_report.xlsx"
+        rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "图片状态": "已生成" if candidate else "待补图", "预计积分": row["points"], "交付文件": Path(copied).name if copied else ""})
+    report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows).to_excel(report, index=False)
     zip_path = run_dir / "result.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -519,7 +538,11 @@ def upload_library():
 @app.post("/api/export")
 def api_export():
     payload = request.get_json(silent=True) or {}
-    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all"))))
+    selected_rows = payload.get("selectedRows") or []
+    if not isinstance(selected_rows, list):
+        selected_rows = []
+    selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
+    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg"))))
 
 
 @app.get("/media/<path:name>")

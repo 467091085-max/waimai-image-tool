@@ -10,20 +10,22 @@
   <header class="top">
     <div>
       <h1>外卖菜品图生成系统</h1>
-      <p>历史图库检索 + 统一风格出图 + 少量 AI 二次加工</p>
+      <p>上传菜单，自动生成统一风格的整店菜品图</p>
     </div>
-    <button id="exportBtn">导出整店图片包</button>
+    <button id="exportBtn" disabled>导出图片</button>
   </header>
 
   <main>
     <section class="hero">
       <div>
-        <h2>上传菜单，10 分钟生成一整套美团外卖菜品图</h2>
-        <p>上传 Excel 菜单后，系统会从历史图库里匹配可复用图片，并把缺图任务拆出来。</p>
+        <h2>上传菜单后，按风格生成整店图片</h2>
+        <p>先上传 Excel 菜单，确认风格方案后生成图片预览。你可以勾选部分图片导出，也可以一键打包整店图片。</p>
       </div>
       <div class="upload-box">
-        <label>上传 Excel 菜单<input id="menuFile" type="file"></label>
-        <button id="uploadMenuBtn">上传菜单</button>
+        <label class="file-picker">
+          <span>选择菜单文件</span>
+          <input id="menuFile" type="file">
+        </label>
         <div id="menuStatus" class="menu-status">等待上传菜单</div>
         <button id="startJobBtn" class="primary" disabled>开始做图</button>
       </div>
@@ -32,51 +34,75 @@
     <section class="metrics">
       <div><span>菜单菜品</span><b id="items">-</b></div>
       <div><span>识别品类</span><b id="category">-</b></div>
-      <div><span>直接复用</span><b id="reuse">-</b></div>
-      <div><span>套餐报价</span><b id="cash">-</b></div>
+      <div><span>预计出图</span><b id="imageCount">-</b></div>
+      <div><span>预估费用</span><b id="cash">-</b></div>
     </section>
 
     <section class="tabs">
-      <button class="tab active" data-view="workflow">产品流程</button>
-      <button class="tab" data-view="standard">菜品标准化</button>
-      <button class="tab" data-view="styles">风格包</button>
-      <button class="tab" data-view="engine">出图引擎</button>
-      <button class="tab" data-view="paid">收费积分</button>
+      <button class="tab active" data-view="workflow">生成流程</button>
+      <button class="tab" data-view="styles">风格方案</button>
+      <button class="tab" data-view="preview">图片预览</button>
+      <button class="tab" data-view="exportView">导出设置</button>
+      <button class="tab" data-view="paid">增值服务</button>
     </section>
 
     <section id="workflow" class="view active panel">
-      <h3>完整工作流</h3>
+      <div class="panel-head">
+        <h3>生成进度</h3>
+        <span id="progressText">等待上传菜单</span>
+      </div>
+      <div class="progress">
+        <div id="progressBar"></div>
+      </div>
       <div id="workflowBox" class="workflow"></div>
     </section>
 
-    <section id="standard" class="view panel">
-      <h3>菜品标准化</h3>
-      <div id="standardBox" class="cards"></div>
-    </section>
-
     <section id="styles" class="view panel">
-      <h3>客户选择 5 套风格包</h3>
+      <div class="panel-head">
+        <h3>选择整店图片风格</h3>
+        <button id="confirmStyleBtn" class="primary" disabled>确认风格并生成预览</button>
+      </div>
       <div id="styleBox" class="style-grid"></div>
     </section>
 
-    <section id="engine" class="view panel">
+    <section id="preview" class="view panel">
       <div class="panel-head">
-        <h3>出图任务</h3>
-        <select id="scopeSelect">
-          <option value="all">导出全部</option>
-          <option value="single">只导出单品</option>
-          <option value="combo">只导出套餐</option>
-          <option value="direct">只导出直接复用</option>
-          <option value="need_bg">只导出需换背景</option>
-          <option value="missing">只导出缺图</option>
-        </select>
+        <h3>图片预览</h3>
+        <div class="actions">
+          <button id="selectAllBtn">全选</button>
+          <button id="selectSingleBtn">只选单品</button>
+          <button id="selectComboBtn">只选套餐</button>
+        </div>
       </div>
       <div id="summary" class="summary"></div>
       <div id="resultBox" class="result-grid"></div>
     </section>
 
+    <section id="exportView" class="view panel">
+      <h3>导出设置</h3>
+      <div class="export-grid">
+        <label>导出范围
+          <select id="scopeSelect">
+            <option value="selected">导出勾选图片</option>
+            <option value="all">导出全部图片</option>
+            <option value="single">只导出单品</option>
+            <option value="combo">只导出套餐</option>
+          </select>
+        </label>
+        <label>图片格式
+          <select id="formatSelect">
+            <option value="jpg">JPG</option>
+            <option value="png">PNG</option>
+            <option value="webp">WebP</option>
+          </select>
+        </label>
+        <button id="exportZipBtn" class="primary">打包导出 ZIP</button>
+      </div>
+      <p class="note">单张图片可以在图片预览里单独保存；ZIP 打包导出可作为付费功能。</p>
+    </section>
+
     <section id="paid" class="view panel">
-      <h3>收费、积分、裂变</h3>
+      <h3>增值服务</h3>
       <div id="paidBox" class="paid-grid"></div>
     </section>
   </main>
