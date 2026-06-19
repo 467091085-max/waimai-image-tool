@@ -29,6 +29,7 @@ for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+MENU_EXTS = {".xls", ".xlsx"}
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
@@ -148,7 +149,7 @@ def ensure_demo_data() -> None:
 
 
 def current_menu_path() -> Path | None:
-    files = sorted(UPLOAD_DIR.glob("*.xlsx"))
+    files = sorted((p for p in UPLOAD_DIR.iterdir() if p.suffix.lower() in MENU_EXTS), key=lambda p: p.stat().st_mtime)
     return files[-1] if files else None
 
 
@@ -469,6 +470,8 @@ def upload_menu():
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "没有收到菜单文件"}), 400
+    if Path(file.filename).suffix.lower() not in MENU_EXTS:
+        return jsonify({"error": "请上传 .xls 或 .xlsx 格式的 Excel 菜单"}), 400
     target = UPLOAD_DIR / f"menu_{int(time.time())}_{safe_filename(file.filename)}"
     file.save(target)
     return jsonify({"ok": True, "file": target.name, "plan": build_plan()})
