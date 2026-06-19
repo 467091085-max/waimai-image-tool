@@ -994,6 +994,39 @@ main {
   font-size: 12px;
   font-style: normal;
 }
+.custom-recharge {
+  border: 1px solid #d9e6e0;
+  border-radius: 16px;
+  padding: 12px;
+  background: #f7fcfa;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 112px;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.custom-recharge b {
+  display: block;
+  font-size: 16px;
+}
+.custom-recharge span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.custom-recharge input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: #fff;
+}
+.custom-recharge button {
+  min-height: 42px;
+  white-space: nowrap;
+}
 .small-note { font-size: 12px; }
 
 @media (max-width: 900px) {
@@ -1028,6 +1061,7 @@ main {
   }
   .section-copy { margin-bottom: 14px; }
   .recharge-grid { grid-template-columns: 1fr; }
+  .custom-recharge { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {

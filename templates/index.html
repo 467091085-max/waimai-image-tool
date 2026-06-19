@@ -243,6 +243,16 @@
       <h3>充值积分</h3>
       <p id="rateText">1 元 = 10 积分</p>
       <div id="rechargePackages" class="recharge-grid"></div>
+      <div class="custom-recharge">
+        <div>
+          <b>自定义充值</b>
+          <span id="customRechargeCash">最低 100 积分起充</span>
+        </div>
+        <label>
+          <input id="customRechargePoints" type="number" min="100" step="10" placeholder="输入积分数">
+        </label>
+        <button id="customRechargeBtn" class="primary" type="button">确认充值</button>
+      </div>
       <p class="small-note">充值后积分可用于正式出图、自定义修改和增值服务。</p>
     </div>
   </div>

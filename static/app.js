@@ -212,7 +212,7 @@ function renderWorkflow(items) {
 function renderRecharge() {
   $("#rateText").textContent = state.account.rate || "1 元 = 10 积分";
   $("#rechargePackages").innerHTML = (state.account.packages || []).map(pkg => (
-    `<button class="recharge-card" data-points="${pkg.points}" type="button">
+    `<button class="recharge-card" data-points="${pkg.points + (pkg.bonus || 0)}" type="button">
       <b>${esc(pkg.name)}</b>
       <span>${pkg.points + (pkg.bonus || 0)} 积分</span>
       <em>¥${pkg.cash}${pkg.bonus ? ` · 赠 ${pkg.bonus}` : ""}</em>
@@ -227,6 +227,34 @@ function renderRecharge() {
       toast(`已模拟充值 ${added} 积分`);
     };
   });
+  updateCustomRechargeHint();
+}
+
+function updateCustomRechargeHint() {
+  const input = $("#customRechargePoints");
+  const hint = $("#customRechargeCash");
+  if (!input || !hint) return;
+  const points = Number(input.value || 0);
+  if (!points) {
+    hint.textContent = "最低 100 积分起充";
+    return;
+  }
+  const cash = (points / 10).toFixed(points % 10 === 0 ? 0 : 1);
+  hint.textContent = points < 100 ? "最低 100 积分起充" : `约 ¥${cash}`;
+}
+
+function submitCustomRecharge() {
+  const input = $("#customRechargePoints");
+  const points = Math.floor(Number(input?.value || 0));
+  if (!Number.isFinite(points) || points < 100) {
+    toast("自定义充值最低 100 积分起充");
+    input?.focus();
+    return;
+  }
+  state.account.balance += points;
+  setControls();
+  closeRecharge();
+  toast(`已模拟充值 ${points} 积分`);
 }
 
 function renderWaiting() {
@@ -781,6 +809,8 @@ $("#exportShortcutBtn").onclick = () => scrollToPanel("#exportView");
 $("#exportZipBtn").onclick = () => exportImages().catch(e => toast(e.message));
 $("#rechargeBtn").onclick = openRecharge;
 $("#closeRechargeBtn").onclick = closeRecharge;
+$("#customRechargePoints").oninput = updateCustomRechargeHint;
+$("#customRechargeBtn").onclick = submitCustomRecharge;
 $("#closeRefineBtn").onclick = closeRefine;
 $("#submitRefineBtn").onclick = submitRefine;
 $("#loginBtn").onclick = () => toast("登录系统接口已预留，下一步接手机号/微信登录");
