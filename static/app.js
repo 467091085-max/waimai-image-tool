@@ -14,7 +14,8 @@ const state = {
   chargedPoints: 0,
   refineRow: null,
   freeReworkRemaining: 0,
-  stylePreview: null
+  stylePreview: null,
+  watermark: defaultWatermark()
 };
 
 const $ = s => document.querySelector(s);
@@ -24,6 +25,17 @@ const esc = v => String(v ?? "")
   .replaceAll("<", "&lt;")
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;");
+
+function defaultWatermark() {
+  return {
+    enabled: false,
+    type: "text",
+    text: "",
+    logoData: "",
+    position: "bottom-right",
+    pattern: "corner"
+  };
+}
 
 function toast(text) {
   const el = $("#toast");
@@ -41,6 +53,26 @@ async function api(url, opt = {}) {
 
 function scrollToPanel(id) {
   $(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function watermarkCharge() {
+  if (!state.plan || !state.watermark.enabled) return 0;
+  return state.plan.pricing.watermarkPoints || 0;
+}
+
+function totalCharge() {
+  return (state.plan?.quote.points || estimatedFormalPoints()) + watermarkCharge();
+}
+
+function watermarkPayload() {
+  return {
+    enabled: Boolean(state.watermark.enabled),
+    type: state.watermark.type,
+    text: state.watermark.text || state.menu?.store || "品牌水印",
+    logoData: state.watermark.logoData || "",
+    position: state.watermark.position,
+    pattern: state.watermark.pattern
+  };
 }
 
 function setProgress(percent, text, stage = state.stage) {
@@ -85,14 +117,28 @@ function setControls() {
     startEm.textContent = state.running ? "处理中" : state.plan ? "重新预览" : state.uploaded ? "自动开始" : "等待菜单";
   }
   $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running;
-  $("#confirmStyleBtn").textContent = state.plan ? `扣 ${state.plan.quote.points} 积分，生成正式图` : "确认风格，生成正式图";
+  $("#confirmStyleBtn").textContent = state.plan ? `扣 ${totalCharge()} 积分，生成正式图` : "确认风格，生成正式图";
   $("#exportShortcutBtn").disabled = !state.confirmed;
   if (exportEm) exportEm.textContent = state.confirmed ? "去导出" : "生成后可用";
   $("#exportZipBtn").disabled = !state.confirmed;
   $("#menuStatus").textContent = state.uploaded ? `菜单已就绪：${menuFile} · ${menuCount} 个菜` : "等待选择菜单";
   $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
   $("#pointsBalance").textContent = `${state.account.balance || 0}`;
+  updateChargeText();
   unlockPanels();
+}
+
+function updateChargeText() {
+  if (!state.plan) return;
+  const base = state.plan.quote.points;
+  const extra = watermarkCharge();
+  $("#cash").textContent = `${base + extra} 积分`;
+  const hint = $("#confirmChargeHint");
+  if (hint) {
+    hint.textContent = extra
+      ? `正式出图 ${base} 积分 + 品牌水印 ${extra} 积分，确认后一次性扣除。`
+      : `确认后会扣除 ${base} 积分，并生成全部正式图。`;
+  }
 }
 
 function renderWorkflow(items) {
@@ -160,7 +206,7 @@ function renderPlan(showPreview = false) {
   $("#items").textContent = p.menu.count;
   $("#category").textContent = p.category.category;
   $("#imageCount").textContent = `${p.summary.total} 张`;
-  $("#cash").textContent = `${p.quote.points} 积分`;
+  $("#cash").textContent = `${totalCharge()} 积分`;
   renderWorkflow([
     { title: "选择菜单", status: `${p.menu.count} 个菜品`, state: "done" },
     { title: "风格预览", status: `已展示 ${p.styles.length} 套风格`, state: "done" },
@@ -170,17 +216,59 @@ function renderPlan(showPreview = false) {
   ]);
   renderStyles();
   renderStylePreview();
+  renderWatermarkControls();
   if (showPreview) renderPreview();
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
     `出图 ${p.pricing.baseImagePoints} 积分/张`,
+    state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
   ].map(x => `<span class="pill">${esc(x)}</span>`).join("");
   renderReworkBanner();
   renderRecharge();
   setControls();
+}
+
+function renderWatermarkControls() {
+  const enabled = $("#watermarkEnabled");
+  if (!enabled) return;
+  const locked = state.confirmed;
+  enabled.checked = state.watermark.enabled;
+  enabled.disabled = locked;
+  $("#watermarkType").value = state.watermark.type;
+  $("#watermarkText").value = state.watermark.text;
+  $("#watermarkPosition").value = state.watermark.position;
+  $("#watermarkPattern").value = state.watermark.pattern;
+  $("#watermarkOptions").classList.toggle("disabled", !state.watermark.enabled || locked);
+  $("#watermarkTextWrap").style.display = state.watermark.type === "logo" ? "none" : "grid";
+  $("#watermarkLogoWrap").style.display = state.watermark.type === "logo" ? "grid" : "none";
+  ["#watermarkType", "#watermarkText", "#watermarkLogo", "#watermarkPosition", "#watermarkPattern"].forEach(selector => {
+    const field = $(selector);
+    if (field) field.disabled = locked;
+  });
+  const demo = $("#watermarkDemo");
+  const text = state.watermark.text || state.menu?.store || "品牌名";
+  demo.className = `watermark-demo ${state.watermark.enabled ? "enabled" : ""} ${state.watermark.pattern} ${state.watermark.position}`;
+  demo.innerHTML = `
+    <span>${locked ? "水印已锁定" : "水印预览"}</span>
+    <div class="watermark-preview-canvas">
+      ${watermarkOverlay(text)}
+    </div>
+  `;
+  updateChargeText();
+}
+
+function watermarkOverlay(fallbackText = "品牌名") {
+  if (!state.watermark.enabled) return "";
+  const label = state.watermark.type === "logo" && state.watermark.logoData
+    ? `<img src="${state.watermark.logoData}" alt="品牌 Logo">`
+    : `<b>${esc(state.watermark.text || fallbackText)}</b>`;
+  if (state.watermark.pattern === "tile") {
+    return `<div class="wm-overlay tile">${Array.from({ length: 9 }, () => `<span>${label}</span>`).join("")}</div>`;
+  }
+  return `<div class="wm-overlay corner ${state.watermark.position}">${label}</div>`;
 }
 
 function renderReworkBanner() {
@@ -261,6 +349,7 @@ async function loadStylePreview(styleId) {
   renderStylePreview();
   setProgress(72, "5 张免费样图已生成，请确认风格", 3);
   setControls();
+  scrollToPanel("#stylePreviewBox");
 }
 
 function renderPreview() {
@@ -279,11 +368,11 @@ function renderPreview() {
     return `<div class="result">
       <label class="select-line"><input type="checkbox" class="row-check" data-row="${rowNo}" ${checked}> 选择</label>
       <div class="result-title">${esc(row.name)}</div>
-      ${candidate ? `<img src="${candidate.url}" alt="${esc(row.name)}">` : `<div class="empty image-empty">待补图</div>`}
+      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}">${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">待补图</div>`}
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
-        ${candidate ? `<div class="result-actions"><a class="save-link" href="${candidate.url}" download="${esc(row.name)}.jpg">单张保存</a><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
+        ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
       </div>
     </div>`;
   };
@@ -324,6 +413,9 @@ function renderPreview() {
   $$(".redraw-btn").forEach(button => {
     button.onclick = () => redrawImage(Number(button.dataset.row));
   });
+  $$(".single-save-btn").forEach(button => {
+    button.onclick = () => exportSingle(Number(button.dataset.row)).catch(e => toast(e.message));
+  });
 }
 
 async function uploadMenu() {
@@ -352,6 +444,7 @@ async function uploadMenu() {
     state.chargedPoints = 0;
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
+    state.watermark = defaultWatermark();
     state.selectedRows.clear();
     renderWaiting();
     shouldAutoStart = true;
@@ -394,7 +487,7 @@ async function startJob(options = {}) {
 
 async function confirmStyle() {
   if (!state.plan || !state.pendingStyle) return toast("请先选择风格");
-  const charge = state.plan.quote.points;
+  const charge = totalCharge();
   if (!state.charged) {
     if ((state.account.balance || 0) < charge) {
       toast(`积分不足，本单需要 ${charge} 积分`);
@@ -474,9 +567,20 @@ async function exportImages() {
   const data = await api("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value })
+    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload() })
   });
-  toast(`已打包 ${data.images} 张图片`);
+  toast(`已打包 ${data.images} 张图片${data.watermark ? "，已添加品牌水印" : ""}`);
+  location.href = data.download;
+}
+
+async function exportSingle(rowNo) {
+  if (!state.confirmed) return toast("请先生成正式图片");
+  const data = await api("/api/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload() })
+  });
+  toast(`已准备单张图片${data.watermark ? "，已添加品牌水印" : ""}`);
   location.href = data.download;
 }
 
@@ -567,6 +671,44 @@ $("#closeRechargeBtn").onclick = closeRecharge;
 $("#closeRefineBtn").onclick = closeRefine;
 $("#submitRefineBtn").onclick = submitRefine;
 $("#loginBtn").onclick = () => toast("登录系统接口已预留，下一步接手机号/微信登录");
+$("#watermarkEnabled").onchange = event => {
+  state.watermark.enabled = event.target.checked;
+  renderWatermarkControls();
+  renderPlan(state.confirmed);
+};
+$("#watermarkType").onchange = event => {
+  state.watermark.type = event.target.value;
+  renderWatermarkControls();
+  if (state.confirmed) renderPreview();
+};
+$("#watermarkText").oninput = event => {
+  state.watermark.text = event.target.value;
+  renderWatermarkControls();
+  if (state.confirmed) renderPreview();
+};
+$("#watermarkPosition").onchange = event => {
+  state.watermark.position = event.target.value;
+  renderWatermarkControls();
+  if (state.confirmed) renderPreview();
+};
+$("#watermarkPattern").onchange = event => {
+  state.watermark.pattern = event.target.value;
+  renderWatermarkControls();
+  if (state.confirmed) renderPreview();
+};
+$("#watermarkLogo").onchange = event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) return toast("请上传图片格式 Logo");
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.watermark.logoData = String(reader.result || "");
+    state.watermark.type = "logo";
+    renderWatermarkControls();
+    if (state.confirmed) renderPreview();
+  };
+  reader.readAsDataURL(file);
+};
 $("#rechargeModal").onclick = event => {
   if (event.target.id === "rechargeModal") closeRecharge();
 };

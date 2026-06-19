@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import hashlib
 import io
 import json
@@ -33,6 +34,7 @@ MENU_EXTS = {".xls", ".xlsx"}
 POINT_RATE = 10
 BASE_IMAGE_POINTS = 10
 CUSTOM_EDIT_POINTS = 10
+WATERMARK_POINTS = 50
 PREVIEW_SAMPLE_COUNT = 5
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
@@ -409,6 +411,8 @@ def pricing_payload(total: int = 0) -> dict[str, Any]:
         "baseImageCash": round(BASE_IMAGE_POINTS / POINT_RATE, 2),
         "customEditPoints": CUSTOM_EDIT_POINTS,
         "customEditCash": round(CUSTOM_EDIT_POINTS / POINT_RATE, 2),
+        "watermarkPoints": WATERMARK_POINTS,
+        "watermarkCash": round(WATERMARK_POINTS / POINT_RATE, 2),
         "freeReworkQuota": free_rework_quota(total),
         "manualRetouch": {
             "name": "复杂人工精修",
@@ -530,6 +534,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
                 {"name": "风格预览", "price": f"免费 {PREVIEW_SAMPLE_COUNT} 张样图"},
                 {"name": "正式出图", "price": f"{BASE_IMAGE_POINTS} 积分/张"},
                 {"name": "自定义修改", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
+                {"name": "品牌水印", "price": f"{WATERMARK_POINTS} 积分/单"},
                 {"name": "免费重做额度", "price": f"{pricing['freeReworkQuota']} 张/单"},
                 {"name": "复杂人工精修", "price": "人工报价"},
             ],
@@ -539,7 +544,93 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
     }
 
 
-def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int] | None = None, image_format: str = "jpg") -> dict[str, Any]:
+def font(size: int):
+    for path in ["/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Light.ttc"]:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def text_size(draw: ImageDraw.ImageDraw, text: str, mark_font: ImageFont.ImageFont) -> tuple[int, int]:
+    bbox = draw.textbbox((0, 0), text, font=mark_font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def watermark_position(base_size: tuple[int, int], mark_size: tuple[int, int], position: str, margin: int) -> tuple[int, int]:
+    bw, bh = base_size
+    mw, mh = mark_size
+    positions = {
+        "top-left": (margin, margin),
+        "top-right": (bw - mw - margin, margin),
+        "bottom-left": (margin, bh - mh - margin),
+        "bottom-right": (bw - mw - margin, bh - mh - margin),
+        "center": ((bw - mw) // 2, (bh - mh) // 2),
+    }
+    return positions.get(position, positions["bottom-right"])
+
+
+def make_text_watermark(text: str, width: int) -> Image.Image:
+    mark_font = font(max(24, width // 28))
+    probe = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    tw, th = text_size(draw, text, mark_font)
+    pad_x = max(18, width // 70)
+    pad_y = max(10, width // 110)
+    mark = Image.new("RGBA", (tw + pad_x * 2, th + pad_y * 2), (0, 0, 0, 0))
+    mark_draw = ImageDraw.Draw(mark)
+    mark_draw.rounded_rectangle(mark.getbbox() or (0, 0, mark.width, mark.height), radius=18, fill=(255, 255, 255, 130))
+    mark_draw.text((pad_x, pad_y), text, fill=(24, 32, 42, 185), font=mark_font)
+    return mark
+
+
+def make_logo_watermark(data_url: str, width: int) -> Image.Image | None:
+    if "," in data_url:
+        data_url = data_url.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(data_url)
+        logo = Image.open(io.BytesIO(raw)).convert("RGBA")
+    except Exception:
+        return None
+    max_w = max(90, width // 5)
+    max_h = max(60, width // 8)
+    logo.thumbnail((max_w, max_h))
+    return logo
+
+
+def paste_tiled(overlay: Image.Image, mark: Image.Image) -> None:
+    gap_x = max(40, mark.width // 2)
+    gap_y = max(38, mark.height)
+    for y in range(-mark.height, overlay.height + mark.height, mark.height + gap_y):
+        offset = 0 if (y // max(1, mark.height + gap_y)) % 2 == 0 else (mark.width + gap_x) // 2
+        for x in range(-mark.width + offset, overlay.width + mark.width, mark.width + gap_x):
+            overlay.alpha_composite(mark, (x, y))
+
+
+def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.Image:
+    if not isinstance(settings, dict) or not settings.get("enabled"):
+        return img
+    base = img.convert("RGBA")
+    text = str(settings.get("text") or "品牌水印").strip()[:24] or "品牌水印"
+    mark_type = str(settings.get("type") or "text")
+    mark = make_logo_watermark(str(settings.get("logoData") or ""), base.width) if mark_type == "logo" else None
+    if mark is None:
+        mark = make_text_watermark(text, base.width)
+    if mark.width <= 0 or mark.height <= 0:
+        return base
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    if str(settings.get("pattern") or "corner") == "tile":
+        if mark_type == "text":
+            mark = mark.rotate(-22, expand=True)
+        paste_tiled(overlay, mark)
+    else:
+        margin = max(24, base.width // 34)
+        overlay.alpha_composite(mark, watermark_position(base.size, mark.size, str(settings.get("position") or "bottom-right"), margin))
+    return Image.alpha_composite(base, overlay)
+
+
+def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int] | None = None, image_format: str = "jpg", watermark: dict[str, Any] | None = None) -> dict[str, Any]:
     plan = build_plan(selected_style)
     run_dir = EXPORT_DIR / f"export_{int(time.time())}"
     image_dir = run_dir / "images"
@@ -549,6 +640,7 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
     if image_format not in {"jpg", "jpeg", "png", "webp"}:
         image_format = "jpg"
     ext = ".jpg" if image_format in {"jpg", "jpeg"} else f".{image_format}"
+    watermark_enabled = isinstance(watermark, dict) and bool(watermark.get("enabled"))
     rows = []
     images = 0
     for idx, row in enumerate(plan["results"], start=1):
@@ -569,10 +661,11 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
         if candidate:
             src = Path(candidate["path"])
             target = image_dir / f"{idx:03d}_{safe_filename(row['name'])}{ext}"
-            if src.suffix.lower() == ext and image_format != "webp":
+            if src.suffix.lower() == ext and image_format != "webp" and not watermark_enabled:
                 shutil.copy2(src, target)
             else:
                 with Image.open(src) as img:
+                    img = apply_watermark(img, watermark)
                     if image_format in {"jpg", "jpeg", "webp"}:
                         img = img.convert("RGB")
                     if image_format in {"jpg", "jpeg"}:
@@ -583,7 +676,7 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
                         img.save(target, "PNG")
             copied = str(target)
             images += 1
-        rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "图片状态": "已生成" if candidate else "待补图", "预计积分": row["points"], "交付文件": Path(copied).name if copied else ""})
+        rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "图片状态": "已生成" if candidate else "待补图", "预计积分": row["points"], "品牌水印": "已添加" if watermark_enabled and candidate else "未添加", "交付文件": Path(copied).name if copied else ""})
     report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows).to_excel(report, index=False)
     zip_path = run_dir / "result.zip"
@@ -591,7 +684,7 @@ def export_zip(selected_style: str, scope: str = "all", selected_rows: list[int]
         zf.write(report, report.name)
         for file in image_dir.glob("*"):
             zf.write(file, f"images/{file.name}")
-    return {"rows": len(rows), "images": images, "download": f"/download/{zip_path.relative_to(EXPORT_DIR).as_posix()}"}
+    return {"rows": len(rows), "images": images, "watermark": watermark_enabled, "download": f"/download/{zip_path.relative_to(EXPORT_DIR).as_posix()}"}
 
 
 @app.get("/")
@@ -680,7 +773,8 @@ def api_export():
     if not isinstance(selected_rows, list):
         selected_rows = []
     selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
-    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg"))))
+    watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
+    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark))
 
 
 @app.get("/media/<path:name>")

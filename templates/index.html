@@ -90,10 +90,49 @@
       <div class="section-main">
         <div id="styleBox" class="style-grid"></div>
         <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 5 张免费样图</div>
+        <div class="watermark-card">
+          <div class="watermark-head">
+            <label><input id="watermarkEnabled" type="checkbox"> 添加品牌水印</label>
+            <b>+50 积分/单</b>
+          </div>
+          <div id="watermarkOptions" class="watermark-options">
+            <label>水印方式
+              <select id="watermarkType">
+                <option value="text">文字水印</option>
+                <option value="logo">上传 Logo</option>
+              </select>
+            </label>
+            <label id="watermarkTextWrap">水印文字
+              <input id="watermarkText" type="text" maxlength="24" placeholder="请输入品牌名">
+            </label>
+            <label id="watermarkLogoWrap">上传 Logo
+              <input id="watermarkLogo" type="file" accept="image/*">
+            </label>
+            <label>位置
+              <select id="watermarkPosition">
+                <option value="bottom-right">右下角</option>
+                <option value="bottom-left">左下角</option>
+                <option value="top-right">右上角</option>
+                <option value="top-left">左上角</option>
+                <option value="center">居中</option>
+              </select>
+            </label>
+            <label>样式
+              <select id="watermarkPattern">
+                <option value="corner">单个角标</option>
+                <option value="tile">全图平铺</option>
+              </select>
+            </label>
+          </div>
+          <div id="watermarkDemo" class="watermark-demo">
+            <span>水印预览</span>
+            <b>品牌名</b>
+          </div>
+        </div>
         <div class="style-confirm">
           <div>
             <b id="selectedStyleHint">还没有选择风格</b>
-            <p>确认后会扣除本单积分，并生成全部正式图。</p>
+            <p id="confirmChargeHint">确认后会扣除本单积分，并生成全部正式图。</p>
           </div>
           <button id="confirmStyleBtn" class="primary" disabled>确认风格，生成正式图</button>
         </div>
