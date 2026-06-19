@@ -40,9 +40,9 @@ function defaultWatermark() {
 }
 
 const platformMeta = {
-  meituan: { name: "美团外卖", size: "800×600" },
-  taobao: { name: "淘宝", size: "800×800" },
-  jd: { name: "京东", size: "800×800" }
+  meituan: { name: "美团外卖", size: "800×600", width: 800, height: 600, maxKB: 500 },
+  taobao: { name: "淘宝", size: "800×800", width: 800, height: 800, maxKB: 500 },
+  jd: { name: "京东", size: "800×800", width: 800, height: 800, maxKB: 500 }
 };
 
 const qualityMeta = {
@@ -56,6 +56,15 @@ function currentQuality() {
 
 function imagePoints() {
   return currentQuality().points;
+}
+
+function primaryPlatform() {
+  return [...state.deliveryPlatforms].reverse().find(id => platformMeta[id]) || "meituan";
+}
+
+function setPreviewAspect() {
+  const meta = platformMeta[primaryPlatform()] || platformMeta.meituan;
+  document.documentElement.style.setProperty("--preview-aspect", `${meta.width} / ${meta.height}`);
 }
 
 function baseImageCharge() {
@@ -330,12 +339,16 @@ function renderPlan(showPreview = false) {
 }
 
 function renderPlatformControls() {
+  setPreviewAspect();
   const locked = state.confirmed;
   $$(".platform-check").forEach(input => {
     input.checked = state.deliveryPlatforms.includes(input.value);
     input.disabled = locked;
   });
-  const names = state.deliveryPlatforms.map(id => `${platformMeta[id]?.name || id} ${platformMeta[id]?.size || ""}`);
+  const names = state.deliveryPlatforms.map(id => {
+    const meta = platformMeta[id];
+    return `${meta?.name || id} ${meta?.size || ""} · ≤${meta?.maxKB || 500}KB`;
+  });
   const charge = platformCharge();
   $("#platformChargeHint").textContent = charge ? `${names.join(" / ")} · +${charge}积分` : names.join(" / ");
   const select = $("#platformSelect");

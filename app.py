@@ -43,9 +43,9 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
 PLATFORMS = {
-    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "default": True},
-    "taobao": {"name": "淘宝", "width": 800, "height": 800, "default": False},
-    "jd": {"name": "京东", "width": 800, "height": 800, "default": False},
+    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 500, "default": True},
+    "taobao": {"name": "淘宝", "width": 800, "height": 800, "maxKB": 500, "default": False},
+    "jd": {"name": "京东", "width": 800, "height": 800, "maxKB": 500, "default": False},
 }
 
 QUALITY_OPTIONS = {
@@ -728,6 +728,30 @@ def fit_to_platform(img: Image.Image, platform_id: str) -> Image.Image:
     return canvas
 
 
+def save_platform_image(img: Image.Image, target: Path, image_format: str, max_kb: int) -> int:
+    max_bytes = max(64, int(max_kb)) * 1024
+    if image_format in {"jpg", "jpeg"}:
+        rgb = img.convert("RGB")
+        for quality in range(92, 61, -5):
+            rgb.save(target, "JPEG", quality=quality, optimize=True, progressive=True)
+            if target.stat().st_size <= max_bytes:
+                return target.stat().st_size
+        rgb.save(target, "JPEG", quality=60, optimize=True, progressive=True)
+        return target.stat().st_size
+    if image_format == "webp":
+        rgb = img.convert("RGB")
+        for quality in range(92, 61, -5):
+            rgb.save(target, "WEBP", quality=quality, method=6)
+            if target.stat().st_size <= max_bytes:
+                return target.stat().st_size
+        rgb.save(target, "WEBP", quality=60, method=6)
+        return target.stat().st_size
+    img.save(target, "PNG", optimize=True)
+    if target.stat().st_size > max_bytes:
+        img.convert("RGB").quantize(colors=256).save(target, "PNG", optimize=True)
+    return target.stat().st_size
+
+
 def export_zip(
     selected_style: str,
     scope: str = "all",
@@ -775,19 +799,12 @@ def export_zip(
                     target = platform_dir / f"{idx:03d}_{safe_filename(row['name'])}{ext}"
                     img = fit_to_platform(raw_img, platform_id)
                     img = apply_watermark(img, watermark)
-                    if image_format in {"jpg", "jpeg", "webp"}:
-                        img = img.convert("RGB")
-                    if image_format in {"jpg", "jpeg"}:
-                        img.save(target, "JPEG", quality=92)
-                    elif image_format == "webp":
-                        img.save(target, "WEBP", quality=92)
-                    else:
-                        img.save(target, "PNG")
+                    file_size = save_platform_image(img, target, image_format, int(spec.get("maxKB", 500)))
                     copied = str(target)
                     images += 1
-                    rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": spec["name"], "尺寸": f"{spec['width']}x{spec['height']}", "图片状态": "已生成", "预计积分": row["points"], "品牌水印": "已添加" if watermark_enabled else "未添加", "交付文件": f"{platform_dir.name}/{target.name}"})
+                    rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": spec["name"], "尺寸": f"{spec['width']}x{spec['height']}", "文件大小KB": round(file_size / 1024, 1), "平台上限KB": spec.get("maxKB", 500), "图片状态": "已生成", "预计积分": row["points"], "品牌水印": "已添加" if watermark_enabled else "未添加", "交付文件": f"{platform_dir.name}/{target.name}"})
         else:
-            rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": "", "尺寸": "", "图片状态": "待补图", "预计积分": row["points"], "品牌水印": "未添加", "交付文件": ""})
+            rows.append({"菜品名": row["name"], "分类": row["category"], "类型": row["kind"], "平台": "", "尺寸": "", "文件大小KB": "", "平台上限KB": "", "图片状态": "待补图", "预计积分": row["points"], "品牌水印": "未添加", "交付文件": ""})
     report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows).to_excel(report, index=False)
     zip_path = run_dir / "result.zip"
