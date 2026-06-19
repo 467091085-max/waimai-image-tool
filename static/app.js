@@ -12,7 +12,8 @@ const state = {
   stage: 1,
   charged: false,
   chargedPoints: 0,
-  refineRow: null
+  refineRow: null,
+  freeReworkRemaining: 0
 };
 
 const $ = s => document.querySelector(s);
@@ -157,7 +158,7 @@ function renderPlan(showPreview = false) {
     `正式图 ${p.summary.total} 张`,
     `出图 ${p.pricing.baseImagePoints} 积分/张`,
     `自定义精修 ${p.pricing.customEditPoints} 积分/次`,
-    `免费重做 ${p.pricing.freeReworkQuota} 张`,
+    state.confirmed ? `免费重做剩余 ${state.freeReworkRemaining} 张` : `免费重做 ${p.pricing.freeReworkQuota} 张`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
   ].map(x => `<span class="pill">${esc(x)}</span>`).join("");
   renderPaid();
@@ -211,7 +212,7 @@ function renderPreview() {
         <b>${esc(row.name)}</b>
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
-        ${candidate ? `<div class="result-actions"><a class="save-link" href="${candidate.url}" download="${esc(row.name)}.jpg">单张保存</a><button class="refine-btn" data-row="${rowNo}" type="button">自定义精修</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义精修</button>`}
+        ${candidate ? `<div class="result-actions"><a class="save-link" href="${candidate.url}" download="${esc(row.name)}.jpg">单张保存</a><button class="redraw-btn" data-row="${rowNo}" type="button">换一版</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义精修</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义精修</button>`}
       </div>
     </div>`;
   }).join("");
@@ -224,6 +225,9 @@ function renderPreview() {
   });
   $$(".refine-btn").forEach(button => {
     button.onclick = () => openRefine(Number(button.dataset.row));
+  });
+  $$(".redraw-btn").forEach(button => {
+    button.onclick = () => redrawImage(Number(button.dataset.row));
   });
 }
 
@@ -261,6 +265,7 @@ async function uploadMenu() {
     state.confirmed = false;
     state.charged = false;
     state.chargedPoints = 0;
+    state.freeReworkRemaining = 0;
     state.selectedRows.clear();
     renderWaiting();
     toast("菜单已上传，可以开始做图");
@@ -276,6 +281,7 @@ async function startJob() {
   state.confirmed = false;
   state.charged = false;
   state.chargedPoints = 0;
+  state.freeReworkRemaining = 0;
   state.selectedRows.clear();
   setControls();
   setProgress(38, "正在识别菜品和品类", 2);
@@ -316,6 +322,7 @@ async function confirmStyle() {
     state.style = state.plan.selectedStyle;
     state.pendingStyle = state.plan.selectedStyle;
     state.confirmed = true;
+    state.freeReworkRemaining = state.plan.pricing.freeReworkQuota;
     state.selectedRows.clear();
     setProgress(100, "正式图片已生成，可以选择导出或精修", 5);
     renderPlan(true);
@@ -326,6 +333,7 @@ async function confirmStyle() {
       state.account.balance += charge;
       state.charged = false;
       state.chargedPoints = 0;
+      state.freeReworkRemaining = 0;
     }
     throw error;
   } finally {
@@ -343,6 +351,27 @@ function chooseRows(mode) {
     }
   });
   renderPreview();
+}
+
+function redrawImage(rowNo) {
+  if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
+  const row = state.plan.results[rowNo - 1];
+  if (!row) return;
+  const price = state.plan.pricing.baseImagePoints;
+  if (state.freeReworkRemaining > 0) {
+    state.freeReworkRemaining -= 1;
+    renderPlan(true);
+    toast(`${row.name} 已使用 1 次免费重做额度`);
+    return;
+  }
+  if ((state.account.balance || 0) < price) {
+    toast(`免费额度已用完，换一版需要 ${price} 积分`);
+    openRecharge();
+    return;
+  }
+  state.account.balance -= price;
+  renderPlan(true);
+  toast(`已扣 ${price} 积分，${row.name} 已重新生成一版`);
 }
 
 async function exportImages() {

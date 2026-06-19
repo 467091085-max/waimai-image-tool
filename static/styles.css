@@ -414,13 +414,19 @@ main {
   gap: 8px;
   flex-wrap: wrap;
 }
-.refine-btn {
+.refine-btn,
+.redraw-btn {
   min-height: 34px;
   padding: 0 10px;
   border-color: #f0c88c;
   background: #fff6e6;
   color: #7a4a0b;
   font-weight: 800;
+}
+.redraw-btn {
+  border-color: #b9dcd3;
+  background: var(--teal-soft);
+  color: var(--teal);
 }
 
 .export-grid {
