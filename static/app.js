@@ -16,7 +16,8 @@ const state = {
   freeReworkRemaining: 0,
   stylePreview: null,
   watermark: defaultWatermark(),
-  deliveryPlatforms: ["meituan"]
+  deliveryPlatforms: ["meituan"],
+  quality: "standard"
 };
 
 const $ = s => document.querySelector(s);
@@ -43,6 +44,24 @@ const platformMeta = {
   taobao: { name: "淘宝", size: "800×800" },
   jd: { name: "京东", size: "800×800" }
 };
+
+const qualityMeta = {
+  standard: { name: "普通出图", provider: "混元", points: 10, cash: 1 },
+  premium: { name: "精修出图", provider: "Gemini", points: 20, cash: 2 }
+};
+
+function currentQuality() {
+  return qualityMeta[state.quality] || qualityMeta.standard;
+}
+
+function imagePoints() {
+  return currentQuality().points;
+}
+
+function baseImageCharge() {
+  const total = state.plan?.summary?.total ?? state.menu?.count ?? 0;
+  return total * imagePoints();
+}
 
 function toast(text) {
   const el = $("#toast");
@@ -73,7 +92,7 @@ function watermarkCharge() {
 }
 
 function totalCharge() {
-  return (state.plan?.quote.points || estimatedFormalPoints()) + watermarkCharge() + platformCharge();
+  return baseImageCharge() + watermarkCharge() + platformCharge();
 }
 
 function platformCharge() {
@@ -131,7 +150,7 @@ function unlockPanels() {
 }
 
 function estimatedFormalPoints() {
-  return (state.menu?.count || 0) * 10;
+  return (state.menu?.count || 0) * imagePoints();
 }
 
 function publicStatus(row) {
@@ -167,7 +186,7 @@ function setControls() {
 
 function updateChargeText() {
   if (!state.plan) return;
-  const base = state.plan.quote.points;
+  const base = baseImageCharge();
   const wm = watermarkCharge();
   const platform = platformCharge();
   $("#cash").textContent = `${base + wm + platform} 积分`;
@@ -229,11 +248,12 @@ function renderWaiting() {
   ]);
   $("#styleBox").innerHTML = `<div class="empty">菜单上传后会自动展示可选风格</div>`;
   $("#stylePreviewBox").className = "style-preview-box empty";
-  $("#stylePreviewBox").innerHTML = "先选择一个图库风格，这里会展示 5 张免费样图";
+  $("#stylePreviewBox").innerHTML = "先选择一个图库风格，这里会展示 6 张免费单品样图";
   $("#selectedStyleHint").textContent = "还没有选择风格";
   $("#summary").innerHTML = "";
   $("#reworkBanner").innerHTML = "";
   $("#resultBox").innerHTML = `<div class="empty">扣积分生成后展示正式图片</div>`;
+  renderQualityControls();
   setControls();
 }
 
@@ -242,6 +262,8 @@ function renderPlan(showPreview = false) {
   const ready = p.results.filter(r => r.candidates?.length).length;
   const needsWork = p.summary.total - ready;
   const counts = menuCounts();
+  const basePoints = baseImageCharge();
+  const quality = currentQuality();
   if (p.account && !state.accountLoaded) {
     state.account = p.account;
     state.accountLoaded = true;
@@ -256,18 +278,19 @@ function renderPlan(showPreview = false) {
     { title: "选择菜单", status: `${p.menu.count} 个菜品`, state: "done" },
     { title: "风格预览", status: `已展示 ${p.styles.length} 套风格`, state: "done" },
     { title: "选择风格", status: state.confirmed ? styleName(p.selectedStyle) : "请选择一套", state: state.confirmed ? "done" : "active" },
-    { title: "正式生图", status: state.confirmed ? `已扣 ${state.chargedPoints || p.quote.points} 积分` : `待扣 ${p.quote.points} 积分`, state: state.confirmed ? "done" : "" },
+    { title: "正式生图", status: state.confirmed ? `已扣 ${state.chargedPoints || basePoints} 积分` : `待扣 ${basePoints} 积分`, state: state.confirmed ? "done" : "" },
     { title: "导出图片", status: state.confirmed ? "可以导出" : "待预览", state: state.confirmed ? "active" : "" }
   ]);
   renderStyles();
   renderStylePreview();
+  renderQualityControls();
   renderPlatformControls();
   renderWatermarkControls();
   if (showPreview) renderPreview();
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
-    `出图 ${p.pricing.baseImagePoints} 积分/张`,
+    `${quality.name} ${quality.provider} · ${quality.points} 积分/张`,
     `交付平台 ${state.deliveryPlatforms.length} 个`,
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
@@ -289,12 +312,24 @@ function renderPlatformControls() {
   $("#platformChargeHint").textContent = charge ? `${names.join(" / ")} · +${charge}积分` : names.join(" / ");
   const select = $("#platformSelect");
   if (select) {
-    Array.from(select.options).forEach(option => {
-      option.disabled = option.value !== "purchased" && !state.deliveryPlatforms.includes(option.value);
-    });
     if (select.value !== "purchased" && !state.deliveryPlatforms.includes(select.value)) {
       select.value = "purchased";
     }
+    Array.from(select.options).forEach(option => {
+      option.disabled = false;
+    });
+  }
+}
+
+function renderQualityControls() {
+  const quality = currentQuality();
+  $$(".quality-radio").forEach(input => {
+    input.checked = input.value === state.quality;
+    input.disabled = state.confirmed || state.running;
+  });
+  const hint = $("#qualityChargeHint");
+  if (hint) {
+    hint.textContent = `${quality.name} · ${quality.provider} · ${quality.points}积分/张`;
   }
 }
 
@@ -347,7 +382,7 @@ function renderReworkBanner() {
   const total = state.plan.pricing.freeReworkQuota;
   const left = Math.max(0, state.freeReworkRemaining);
   const used = Math.max(0, total - left);
-  const price = state.plan.pricing.baseImagePoints;
+  const price = imagePoints();
   box.className = `rework-banner ${left ? "has-free" : "paid-only"}`;
   box.innerHTML = `
     <b>${left ? `免费换版剩余 ${left}/${total} 张` : "免费换版已用完"}</b>
@@ -380,7 +415,7 @@ function renderStyles() {
       renderStyles();
       setControls();
       loadStylePreview(state.pendingStyle).catch(e => toast(e.message));
-      toast("风格已选中，正在生成 5 张免费样图");
+      toast("风格已选中，正在生成 6 张免费单品样图");
     };
   });
 }
@@ -390,15 +425,20 @@ function renderStylePreview() {
   if (!box) return;
   if (!state.pendingStyle) {
     box.className = "style-preview-box empty";
-    box.innerHTML = "先选择一个图库风格，这里会展示 5 张免费样图";
+    box.innerHTML = "先选择一个图库风格，这里会展示 6 张免费单品样图";
     return;
   }
   if (!state.stylePreview || state.stylePreview.style !== state.pendingStyle) {
     box.className = "style-preview-box empty";
-    box.innerHTML = "正在生成 5 张免费样图...";
+    box.innerHTML = "正在生成 6 张免费单品样图...";
     return;
   }
   box.className = "style-preview-box";
+  if (!state.stylePreview.samples.length) {
+    box.className = "style-preview-box empty";
+    box.innerHTML = "当前菜单没有可预览的单品，套餐会在正式生成后展示";
+    return;
+  }
   box.innerHTML = state.stylePreview.samples.map(sample => {
     const image = sample.candidate;
     return `<div class="preview-sample">
@@ -414,7 +454,7 @@ async function loadStylePreview(styleId) {
   renderStylePreview();
   state.stylePreview = await api(`/api/style-preview?style=${encodeURIComponent(styleId)}`);
   renderStylePreview();
-  setProgress(72, "5 张免费样图已生成，请确认风格", 3);
+  setProgress(72, "6 张免费单品样图已生成，请确认风格", 3);
   setControls();
   scrollToPanel("#stylePreviewBox");
 }
@@ -426,7 +466,7 @@ function renderPreview() {
   }
   const redrawLabel = state.freeReworkRemaining > 0
     ? `换一版（免费剩 ${state.freeReworkRemaining}）`
-    : `换一版 ${p.pricing.baseImagePoints}积分`;
+    : `换一版 ${imagePoints()}积分`;
   const card = (row, index) => {
     const rowNo = index + 1;
     const candidate = row.candidates[0];
@@ -539,8 +579,8 @@ async function startJob(options = {}) {
   setProgress(38, "正在识别菜品和品类", 2);
   try {
     await new Promise(resolve => setTimeout(resolve, 260));
-    setProgress(56, "正在生成 5 张免费风格预览", 2);
-    state.plan = await api("/api/plan");
+    setProgress(56, "正在生成 6 张免费单品风格预览", 2);
+    state.plan = await api(`/api/plan?quality=${encodeURIComponent(state.quality)}`);
     state.style = state.plan.selectedStyle;
     state.pendingStyle = "";
     setProgress(66, "请选择一套图片风格", 3);
@@ -571,7 +611,8 @@ async function confirmStyle() {
   setProgress(82, "已扣积分，正在生成全部正式图片", 4);
   try {
     await new Promise(resolve => setTimeout(resolve, 320));
-    state.plan = await api(`/api/plan?style=${encodeURIComponent(state.pendingStyle)}`);
+    state.plan = await api(`/api/plan?style=${encodeURIComponent(state.pendingStyle)}&quality=${encodeURIComponent(state.quality)}`);
+    state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
     state.pendingStyle = state.plan.selectedStyle;
     state.confirmed = true;
@@ -610,7 +651,7 @@ function redrawImage(rowNo) {
   if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
   const row = state.plan.results[rowNo - 1];
   if (!row) return;
-  const price = state.plan.pricing.baseImagePoints;
+  const price = row.points || imagePoints();
   if (state.freeReworkRemaining > 0) {
     state.freeReworkRemaining -= 1;
     renderPlan(true);
@@ -637,7 +678,7 @@ async function exportImages() {
   const data = await api("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms })
+    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
   });
   toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
   location.href = data.download;
@@ -650,7 +691,7 @@ async function exportSingle(rowNo) {
   const data = await api("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms })
+    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
   });
   toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
   location.href = data.download;
@@ -755,6 +796,16 @@ $$(".platform-check").forEach(input => {
     }
     renderPlatformControls();
     renderPlan(state.confirmed);
+  };
+});
+$$(".quality-radio").forEach(input => {
+  input.onchange = event => {
+    if (state.confirmed) return;
+    state.quality = event.target.value;
+    renderQualityControls();
+    if (state.plan) renderPlan(false);
+    else renderWaiting();
+    toast(`${currentQuality().name}：${imagePoints()} 积分/张`);
   };
 });
 $("#watermarkEnabled").onchange = event => {

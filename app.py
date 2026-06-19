@@ -33,10 +33,11 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MENU_EXTS = {".xls", ".xlsx"}
 POINT_RATE = 10
 BASE_IMAGE_POINTS = 10
+PREMIUM_IMAGE_POINTS = 20
 CUSTOM_EDIT_POINTS = 10
 WATERMARK_POINTS = 50
 EXTRA_PLATFORM_POINTS = 100
-PREVIEW_SAMPLE_COUNT = 5
+PREVIEW_SAMPLE_COUNT = 6
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
@@ -45,6 +46,25 @@ PLATFORMS = {
     "meituan": {"name": "美团外卖", "width": 800, "height": 600, "default": True},
     "taobao": {"name": "淘宝", "width": 800, "height": 800, "default": False},
     "jd": {"name": "京东", "width": 800, "height": 800, "default": False},
+}
+
+QUALITY_OPTIONS = {
+    "standard": {
+        "id": "standard",
+        "name": "普通出图",
+        "provider": "混元",
+        "points": BASE_IMAGE_POINTS,
+        "cash": round(BASE_IMAGE_POINTS / POINT_RATE, 2),
+        "description": "适合常规上架图，成本更低。",
+    },
+    "premium": {
+        "id": "premium",
+        "name": "精修出图",
+        "provider": "Gemini",
+        "points": PREMIUM_IMAGE_POINTS,
+        "cash": round(PREMIUM_IMAGE_POINTS / POINT_RATE, 2),
+        "description": "适合更高质感和更复杂的统一风格。",
+    },
 }
 
 
@@ -407,8 +427,17 @@ def status_for(candidates: list[dict[str, Any]]) -> str:
     return "弱匹配"
 
 
-def points_for(status: str, action: str, kind: str) -> int:
-    return BASE_IMAGE_POINTS
+def quality_config(value: str | None) -> dict[str, Any]:
+    key = str(value or "standard")
+    return QUALITY_OPTIONS.get(key, QUALITY_OPTIONS["standard"])
+
+
+def quality_options_payload() -> list[dict[str, Any]]:
+    return [dict(option) for option in QUALITY_OPTIONS.values()]
+
+
+def points_for(status: str, action: str, kind: str, quality: str | None = "standard") -> int:
+    return int(quality_config(quality)["points"])
 
 
 def free_rework_quota(total: int) -> int:
@@ -423,6 +452,10 @@ def pricing_payload(total: int = 0) -> dict[str, Any]:
         "previewFreeImages": PREVIEW_SAMPLE_COUNT,
         "baseImagePoints": BASE_IMAGE_POINTS,
         "baseImageCash": round(BASE_IMAGE_POINTS / POINT_RATE, 2),
+        "premiumImagePoints": PREMIUM_IMAGE_POINTS,
+        "premiumImageCash": round(PREMIUM_IMAGE_POINTS / POINT_RATE, 2),
+        "qualityDefault": "standard",
+        "qualityOptions": quality_options_payload(),
         "customEditPoints": CUSTOM_EDIT_POINTS,
         "customEditCash": round(CUSTOM_EDIT_POINTS / POINT_RATE, 2),
         "watermarkPoints": WATERMARK_POINTS,
@@ -468,7 +501,17 @@ def preview_samples(selected_style: str) -> dict[str, Any]:
     menu = parse_menu()
     library = library_images()
     samples = []
-    for item in menu["items"][:PREVIEW_SAMPLE_COUNT]:
+    single_items = [item for item in menu["items"] if item.get("kind") == "单品"]
+    seen_norms = {item.get("norm") for item in single_items}
+    if len(single_items) < PREVIEW_SAMPLE_COUNT:
+        for item in demo_menu_items():
+            if item.get("kind") != "单品" or item.get("norm") in seen_norms:
+                continue
+            single_items.append({**item, "category": "风格样图"})
+            seen_norms.add(item.get("norm"))
+            if len(single_items) >= PREVIEW_SAMPLE_COUNT:
+                break
+    for item in single_items[:PREVIEW_SAMPLE_COUNT]:
         candidates = top_candidates(item, library)
         same = next((c for c in candidates if c["styleId"] == selected_style), None)
         candidate = same or generated_preview_candidate(item, selected_style)
@@ -481,10 +524,11 @@ def preview_samples(selected_style: str) -> dict[str, Any]:
     }
 
 
-def build_plan(selected_style: str = "") -> dict[str, Any]:
+def build_plan(selected_style: str = "", quality: str | None = "standard") -> dict[str, Any]:
     menu = parse_menu()
     library = library_images()
     requested_style = selected_style
+    quality_info = quality_config(quality)
     results = []
     for item in menu["items"]:
         candidates = top_candidates(item, library)
@@ -517,7 +561,8 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
             action = "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
         row["publicStatus"] = "已生成" if chosen else "待补图"
-        row["points"] = points_for(row["status"], action, row["kind"])
+        row["points"] = points_for(row["status"], action, row["kind"], quality_info["id"])
+    total_points = sum(int(row.get("points") or 0) for row in results)
     summary = {
         "total": len(results),
         "direct": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
@@ -526,7 +571,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "reuse": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
         "bgReplace": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
         "custom": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
-        "points": len(results) * BASE_IMAGE_POINTS,
+        "points": total_points,
     }
     menu_count = sum(1 for p in UPLOAD_DIR.iterdir() if p.suffix.lower() in MENU_EXTS) or 1
     pricing = pricing_payload(summary["total"])
@@ -541,14 +586,15 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "account": account_payload(),
         "pipeline": pipeline_payload(),
         "pricing": pricing,
+        "quality": quality_info,
         "quote": {
-            "package": "按张正式出图",
+            "package": f"{quality_info['name']} · 按张正式出图",
             "cash": round(summary["points"] / POINT_RATE, 2),
             "points": summary["points"],
             "rate": f"1 元 = {POINT_RATE} 积分",
             "addOns": [
                 {"name": "风格预览", "price": f"免费 {PREVIEW_SAMPLE_COUNT} 张样图"},
-                {"name": "正式出图", "price": f"{BASE_IMAGE_POINTS} 积分/张"},
+                {"name": "正式出图", "price": f"{quality_info['points']} 积分/张 · {quality_info['provider']}"},
                 {"name": "自定义修改", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
                 {"name": "品牌水印", "price": f"{WATERMARK_POINTS} 积分/单"},
                 {"name": "增加平台尺寸", "price": f"{EXTRA_PLATFORM_POINTS} 积分/平台"},
@@ -689,8 +735,9 @@ def export_zip(
     image_format: str = "jpg",
     watermark: dict[str, Any] | None = None,
     platforms: list[str] | str | None = None,
+    quality: str | None = "standard",
 ) -> dict[str, Any]:
-    plan = build_plan(selected_style)
+    plan = build_plan(selected_style, quality)
     run_dir = EXPORT_DIR / f"export_{int(time.time())}"
     image_dir = run_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -759,7 +806,7 @@ def index():
 
 @app.get("/api/plan")
 def api_plan():
-    return jsonify(build_plan(request.args.get("style", "")))
+    return jsonify(build_plan(request.args.get("style", ""), request.args.get("quality", "standard")))
 
 
 @app.get("/api/style-preview")
@@ -840,7 +887,7 @@ def api_export():
     selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
     platforms = payload.get("platforms") or ["meituan"]
-    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark, platforms))
+    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark, platforms, str(payload.get("quality", "standard"))))
 
 
 @app.get("/media/<path:name>")

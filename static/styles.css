@@ -425,7 +425,8 @@ main {
   flex-wrap: wrap;
 }
 .style-confirm p { font-size: 13px; margin-top: 3px; }
-.platform-card {
+.platform-card,
+.quality-card {
   margin-top: 14px;
   border: 1px solid #e3d5c1;
   border-radius: 18px;
@@ -434,21 +435,29 @@ main {
   display: grid;
   gap: 12px;
 }
-.platform-head {
+.quality-card {
+  border-color: #d9e6e0;
+  background: linear-gradient(135deg, #f7fcfa, #fffaf2);
+}
+.platform-head,
+.quality-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
 }
-.platform-head b {
+.platform-head b,
+.quality-head b {
   font-size: 17px;
 }
-.platform-head p {
+.platform-head p,
+.quality-head p {
   margin-top: 4px;
   font-size: 13px;
 }
-.platform-head span {
+.platform-head span,
+.quality-head span {
   min-height: 32px;
   display: inline-flex;
   align-items: center;
@@ -459,12 +468,14 @@ main {
   font-size: 12px;
   font-weight: 900;
 }
-.platform-options {
+.platform-options,
+.quality-options {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px;
 }
-.platform-option {
+.platform-option,
+.quality-option {
   min-height: 74px;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -474,22 +485,39 @@ main {
   align-items: center;
   gap: 10px;
 }
+.quality-option {
+  cursor: pointer;
+}
+.quality-option:has(input:checked) {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 4px rgba(8, 117, 111, .12);
+  background: #f5fbf8;
+}
+.quality-option.premium:has(input:checked) {
+  border-color: #c68622;
+  box-shadow: 0 0 0 4px rgba(198, 134, 34, .14);
+  background: #fff8eb;
+}
 .platform-option.required {
   border-color: #b9dcd3;
   background: #f5fbf8;
 }
-.platform-option input {
+.platform-option input,
+.quality-option input {
   width: 18px;
   height: 18px;
 }
-.platform-option span {
+.platform-option span,
+.quality-option span {
   display: grid;
   gap: 4px;
 }
-.platform-option b {
+.platform-option b,
+.quality-option b {
   line-height: 1.1;
 }
-.platform-option em {
+.platform-option em,
+.quality-option em {
   color: var(--muted);
   font-size: 12px;
   font-style: normal;

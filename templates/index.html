@@ -28,7 +28,7 @@
       <div class="hero-copy">
         <span class="eyebrow">整店出图</span>
         <h2>把一张菜单，变成一套统一风格的菜品图</h2>
-        <p>你只需要走三步：上传菜单、免费预览 5 张风格样图、扣积分生成正式图。费用按图片张数结算。</p>
+        <p>你只需要走三步：上传菜单、免费预览 6 张风格样图、扣积分生成正式图。费用按图片张数结算。</p>
       </div>
       <div class="action-rail">
         <button id="chooseMenuBtn" class="round-step active" type="button">
@@ -43,7 +43,7 @@
           <i>2</i>
           <span class="step-copy">
             <b>风格预览</b>
-            <span>自动展示 5 张免费样图</span>
+            <span>自动展示 6 张免费样图</span>
           </span>
           <em>菜单后自动开始</em>
         </button>
@@ -87,11 +87,30 @@
       <div class="section-copy">
         <span class="eyebrow">第 2 步</span>
         <h3>选择整店图片风格</h3>
-        <p>这里先展示 5 张免费风格样图。确认正式生成时，才按总图片张数扣积分。</p>
+        <p>这里先展示 6 张免费单品风格样图。确认正式生成时，才按总图片张数扣积分。</p>
       </div>
       <div class="section-main">
         <div id="styleBox" class="style-grid"></div>
-        <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 5 张免费样图</div>
+        <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 6 张免费单品样图</div>
+        <div class="quality-card">
+          <div class="quality-head">
+            <div>
+              <b>出图质量</b>
+              <p>普通图适合快速上架；精修图适合对质感要求更高的客户。</p>
+            </div>
+            <span id="qualityChargeHint">普通出图 · 10积分/张</span>
+          </div>
+          <div class="quality-options">
+            <label class="quality-option">
+              <input class="quality-radio" type="radio" name="quality" value="standard" checked>
+              <span><b>普通出图</b><em>混元 · 10积分/张 · 约 ¥1</em></span>
+            </label>
+            <label class="quality-option premium">
+              <input class="quality-radio" type="radio" name="quality" value="premium">
+              <span><b>精修出图</b><em>Gemini · 20积分/张 · 约 ¥2</em></span>
+            </label>
+          </div>
+        </div>
         <div class="platform-card">
           <div class="platform-head">
             <div>
