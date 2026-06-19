@@ -28,7 +28,7 @@
       <div class="hero-copy">
         <span class="eyebrow">整店出图</span>
         <h2>把一张菜单，变成一套统一风格的菜品图</h2>
-        <p>你只需要走三步：上传菜单、确认风格、预览导出。费用用积分结算，单张保存和整店打包都可以。</p>
+        <p>你只需要走三步：上传菜单、免费预览 5 张风格样图、扣积分生成正式图。费用按图片张数结算。</p>
       </div>
       <div class="action-rail">
         <button id="chooseMenuBtn" class="round-step active" type="button">
@@ -38,8 +38,8 @@
         </button>
         <button id="startJobBtn" class="round-step" type="button" disabled>
           <i>2</i>
-          <b>开始做图</b>
-          <span>识别菜品</span>
+          <b>风格预览</b>
+          <span>免费 5 张</span>
         </button>
         <button id="exportShortcutBtn" class="round-step" type="button" disabled>
           <i>3</i>
@@ -55,7 +55,7 @@
       <div><span>菜单菜品</span><b id="items">-</b></div>
       <div><span>识别品类</span><b id="category">-</b></div>
       <div><span>预计出图</span><b id="imageCount">-</b></div>
-      <div><span>预估积分</span><b id="cash">-</b></div>
+      <div><span>正式出图积分</span><b id="cash">-</b></div>
     </section>
 
     <section class="panel progress-panel">
@@ -76,16 +76,16 @@
       <div class="section-copy">
         <span class="eyebrow">第 2 步</span>
         <h3>选择整店图片风格</h3>
-        <p>选中一套风格后，点击确认，系统会按这套视觉生成整店预览。</p>
+        <p>这里先展示 5 张免费风格样图。确认正式生成时，才按总图片张数扣积分。</p>
       </div>
       <div class="section-main">
         <div id="styleBox" class="style-grid"></div>
         <div class="style-confirm">
           <div>
             <b id="selectedStyleHint">还没有选择风格</b>
-            <p>确认后会进入图片预览。</p>
+            <p>确认后会扣除本单积分，并生成全部正式图。</p>
           </div>
-          <button id="confirmStyleBtn" class="primary" disabled>确认风格，生成预览</button>
+          <button id="confirmStyleBtn" class="primary" disabled>确认风格，生成正式图</button>
         </div>
       </div>
     </section>
@@ -94,7 +94,7 @@
       <div class="panel-head">
         <div>
           <span class="eyebrow">第 3 步</span>
-          <h3>图片预览</h3>
+          <h3>正式图片</h3>
         </div>
         <div class="actions">
           <button id="selectAllBtn">全选</button>
@@ -110,7 +110,7 @@
       <div class="section-copy">
         <span class="eyebrow">交付</span>
         <h3>导出设置</h3>
-        <p>可以只存某一张，也可以勾选后统一打包。ZIP 打包适合作为付费权益。</p>
+        <p>正式图可单张保存，也可以勾选后统一打包导出。</p>
       </div>
       <div class="export-grid">
         <label>导出范围
@@ -149,7 +149,22 @@
       <h3>充值积分</h3>
       <p id="rateText">1 元 = 10 积分</p>
       <div id="rechargePackages" class="recharge-grid"></div>
-      <p class="small-note">充值后积分可用于整店出图、打包导出和增值服务。</p>
+      <p class="small-note">充值后积分可用于正式出图、自定义精修和增值服务。</p>
+    </div>
+  </div>
+
+  <div id="refineModal" class="modal" aria-hidden="true">
+    <div class="modal-card">
+      <button id="closeRefineBtn" class="modal-close">×</button>
+      <span class="eyebrow">自定义精修</span>
+      <h3 id="refineTitle">单张图片精修</h3>
+      <p>填写你想要修改的要求，例如“加小米辣”“去掉葱花”“换成白色餐具”。</p>
+      <textarea id="refinePrompt" class="prompt-input" rows="5" placeholder="请输入精修要求"></textarea>
+      <div class="modal-actions">
+        <span id="refinePrice">定制修改：15 积分/张</span>
+        <button id="submitRefineBtn" class="primary">确认精修</button>
+      </div>
+      <p class="small-note">自定义精修由高质量图片编辑模型处理；复杂到需要人工判断的图片会进入人工精修工单。</p>
     </div>
   </div>
 

@@ -31,6 +31,9 @@ for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR):
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MENU_EXTS = {".xls", ".xlsx"}
 POINT_RATE = 10
+BASE_IMAGE_POINTS = 10
+CUSTOM_EDIT_POINTS = 15
+PREVIEW_SAMPLE_COUNT = 5
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
@@ -389,16 +392,31 @@ def status_for(candidates: list[dict[str, Any]]) -> str:
 
 
 def points_for(status: str, action: str, kind: str) -> int:
-    if action == "智能补图":
-        return 49
-    points = 10
-    if kind == "套餐/组合":
-        points += 8
-    if action in {"需抠图换背景", "智能统一风格"}:
-        points += 8
-    if status != "直接可用" and action != "背景一致，直接复用":
-        points += 2
-    return points
+    return BASE_IMAGE_POINTS
+
+
+def free_rework_quota(total: int) -> int:
+    if total <= 0:
+        return 0
+    return min(10, max(3, (total + 19) // 20))
+
+
+def pricing_payload(total: int = 0) -> dict[str, Any]:
+    return {
+        "rate": f"1 元 = {POINT_RATE} 积分",
+        "previewFreeImages": PREVIEW_SAMPLE_COUNT,
+        "baseImagePoints": BASE_IMAGE_POINTS,
+        "baseImageCash": round(BASE_IMAGE_POINTS / POINT_RATE, 2),
+        "customEditPoints": CUSTOM_EDIT_POINTS,
+        "customEditCash": round(CUSTOM_EDIT_POINTS / POINT_RATE, 2),
+        "freeReworkQuota": free_rework_quota(total),
+        "manualRetouch": {
+            "name": "复杂人工精修",
+            "rule": "主体严重错误、需要人工审美判断或多轮局部合成时进入人工工单",
+            "delivery": "人工处理后回传成图",
+            "price": "按难度报价",
+        },
+    }
 
 
 def account_payload() -> dict[str, Any]:
@@ -411,6 +429,7 @@ def account_payload() -> dict[str, Any]:
             {"name": "小团队包", "cash": 299, "points": 2990, "bonus": 360},
         ],
         "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
+        "pricing": pricing_payload(),
     }
 
 
@@ -469,10 +488,10 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "reuse": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
         "bgReplace": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
         "custom": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
-        "points": sum(r["points"] for r in results),
+        "points": len(results) * BASE_IMAGE_POINTS,
     }
-    price = 49 if summary["total"] <= 50 else 69 if summary["total"] <= 100 else 99 if summary["total"] <= 160 else 129
     menu_count = sum(1 for p in UPLOAD_DIR.iterdir() if p.suffix.lower() in MENU_EXTS) or 1
+    pricing = pricing_payload(summary["total"])
     return {
         "menu": {k: v for k, v in menu.items() if k != "items"},
         "category": category_report(menu),
@@ -483,17 +502,18 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
         "summary": summary,
         "account": account_payload(),
         "pipeline": pipeline_payload(),
+        "pricing": pricing,
         "quote": {
-            "package": "基础整店出图" if price <= 69 else "标准整店套图" if price <= 99 else "大菜单整店套图",
-            "cash": price,
-            "points": price * POINT_RATE,
+            "package": "按张正式出图",
+            "cash": round(summary["points"] / POINT_RATE, 2),
+            "points": summary["points"],
             "rate": f"1 元 = {POINT_RATE} 积分",
             "addOns": [
-                {"name": "全店品牌水印", "price": 9.9},
-                {"name": "ZIP 打包导出", "price": 4.9},
-                {"name": "全店换餐具", "price": 19.9},
-                {"name": "单张定制配菜", "price": "4.9-9.9/张"},
-                {"name": "套餐组合图增强", "price": 9.9},
+                {"name": "风格预览", "price": f"免费 {PREVIEW_SAMPLE_COUNT} 张样图"},
+                {"name": "正式出图", "price": f"{BASE_IMAGE_POINTS} 积分/张"},
+                {"name": "自定义精修", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
+                {"name": "免费重做额度", "price": f"{pricing['freeReworkQuota']} 张/单"},
+                {"name": "复杂人工精修", "price": "人工报价"},
             ],
             "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
         },
