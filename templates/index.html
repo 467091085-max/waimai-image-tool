@@ -122,15 +122,15 @@
           <div id="platformOptions" class="platform-options">
             <label class="platform-option required">
               <input type="checkbox" value="meituan" checked disabled>
-              <span><b>美团外卖</b><em>800×600 · ≤500KB · 默认</em></span>
+              <span><b>美团外卖</b><em>800×600 · ≤5MB · 默认</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="taobao">
-              <span><b>淘宝</b><em>800×800 · ≤500KB · +100积分</em></span>
+              <span><b>淘宝外卖/饿了么</b><em>800×800 · ≤20MB · +100积分</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="jd">
-              <span><b>京东</b><em>800×800 · ≤500KB · +100积分</em></span>
+              <span><b>京东外卖/京东秒送</b><em>800×800 · ≤5MB · +100积分</em></span>
             </label>
           </div>
         </div>
@@ -211,8 +211,8 @@
           <select id="platformSelect">
             <option value="purchased">导出已选平台</option>
             <option value="meituan">只导出美团</option>
-            <option value="taobao">只导出淘宝</option>
-            <option value="jd">只导出京东</option>
+            <option value="taobao">只导出淘宝外卖/饿了么</option>
+            <option value="jd">只导出京东外卖/京东秒送</option>
           </select>
         </label>
         <label>导出范围
@@ -227,7 +227,6 @@
           <select id="formatSelect">
             <option value="jpg">JPG</option>
             <option value="png">PNG</option>
-            <option value="webp">WebP</option>
           </select>
         </label>
         <button id="exportZipBtn" class="primary" disabled>打包导出 ZIP</button>

@@ -43,9 +43,9 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
 PLATFORMS = {
-    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 500, "default": True},
-    "taobao": {"name": "淘宝", "width": 800, "height": 800, "maxKB": 500, "default": False},
-    "jd": {"name": "京东", "width": 800, "height": 800, "maxKB": 500, "default": False},
+    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 5120, "default": True},
+    "taobao": {"name": "淘宝外卖/饿了么", "width": 800, "height": 800, "maxKB": 20480, "default": False},
+    "jd": {"name": "京东外卖/京东秒送", "width": 800, "height": 800, "maxKB": 5120, "default": False},
 }
 
 QUALITY_OPTIONS = {
@@ -738,17 +738,10 @@ def save_platform_image(img: Image.Image, target: Path, image_format: str, max_k
                 return target.stat().st_size
         rgb.save(target, "JPEG", quality=60, optimize=True, progressive=True)
         return target.stat().st_size
-    if image_format == "webp":
-        rgb = img.convert("RGB")
-        for quality in range(92, 61, -5):
-            rgb.save(target, "WEBP", quality=quality, method=6)
-            if target.stat().st_size <= max_bytes:
-                return target.stat().st_size
-        rgb.save(target, "WEBP", quality=60, method=6)
-        return target.stat().st_size
-    img.save(target, "PNG", optimize=True)
+    rgb = img.convert("RGB")
+    rgb.save(target, "PNG", optimize=True)
     if target.stat().st_size > max_bytes:
-        img.convert("RGB").quantize(colors=256).save(target, "PNG", optimize=True)
+        rgb.quantize(colors=256).convert("RGB").save(target, "PNG", optimize=True)
     return target.stat().st_size
 
 
@@ -768,7 +761,7 @@ def export_zip(
     selected = set(selected_rows or [])
     selected_platforms = parse_platforms(platforms)
     image_format = image_format.lower()
-    if image_format not in {"jpg", "jpeg", "png", "webp"}:
+    if image_format not in {"jpg", "jpeg", "png"}:
         image_format = "jpg"
     ext = ".jpg" if image_format in {"jpg", "jpeg"} else f".{image_format}"
     watermark_enabled = isinstance(watermark, dict) and bool(watermark.get("enabled"))
