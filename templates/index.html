@@ -54,7 +54,7 @@
     <section class="metrics">
       <div><span>菜单菜品</span><b id="items">-</b></div>
       <div><span>识别品类</span><b id="category">-</b></div>
-      <div><span>预计出图</span><b id="imageCount">-</b></div>
+      <div><span>正式图片张数</span><b id="imageCount">-</b></div>
       <div><span>正式出图积分</span><b id="cash">-</b></div>
     </section>
 
@@ -80,6 +80,7 @@
       </div>
       <div class="section-main">
         <div id="styleBox" class="style-grid"></div>
+        <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 5 张免费样图</div>
         <div class="style-confirm">
           <div>
             <b id="selectedStyleHint">还没有选择风格</b>
@@ -132,14 +133,6 @@
       </div>
     </section>
 
-    <section class="panel paid-panel">
-      <div class="section-copy">
-        <span class="eyebrow">积分与加购</span>
-        <h3>本单费用</h3>
-        <p>所有费用均用积分展示，整店出图和增值服务统一结算。</p>
-      </div>
-      <div id="paidBox" class="paid-grid"></div>
-    </section>
   </main>
 
   <div id="rechargeModal" class="modal" aria-hidden="true">
@@ -149,22 +142,22 @@
       <h3>充值积分</h3>
       <p id="rateText">1 元 = 10 积分</p>
       <div id="rechargePackages" class="recharge-grid"></div>
-      <p class="small-note">充值后积分可用于正式出图、自定义精修和增值服务。</p>
+      <p class="small-note">充值后积分可用于正式出图、自定义修改和增值服务。</p>
     </div>
   </div>
 
   <div id="refineModal" class="modal" aria-hidden="true">
     <div class="modal-card">
       <button id="closeRefineBtn" class="modal-close">×</button>
-      <span class="eyebrow">自定义精修</span>
-      <h3 id="refineTitle">单张图片精修</h3>
+      <span class="eyebrow">自定义修改</span>
+      <h3 id="refineTitle">单张图片修改</h3>
       <p>填写你想要修改的要求，例如“加小米辣”“去掉葱花”“换成白色餐具”。</p>
       <textarea id="refinePrompt" class="prompt-input" rows="5" placeholder="请输入精修要求"></textarea>
       <div class="modal-actions">
-        <span id="refinePrice">定制修改：15 积分/张</span>
-        <button id="submitRefineBtn" class="primary">确认精修</button>
+        <span id="refinePrice">自定义修改：10 积分/张</span>
+        <button id="submitRefineBtn" class="primary">确认修改</button>
       </div>
-      <p class="small-note">自定义精修由高质量图片编辑模型处理；复杂到需要人工判断的图片会进入人工精修工单。</p>
+      <p class="small-note">适合加小米辣、去葱花、换餐具、背景更亮等一句话能说清的修改。</p>
     </div>
   </div>
 

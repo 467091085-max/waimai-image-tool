@@ -330,6 +330,40 @@ main {
 .result-body b {
   line-height: 1.25;
 }
+.style-preview-box {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.preview-sample {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+.preview-sample b,
+.result-title {
+  display: block;
+  padding: 10px 12px;
+  line-height: 1.25;
+  font-size: 14px;
+  background: #fffaf2;
+  border-bottom: 1px solid var(--line);
+}
+.preview-sample img {
+  width: 100%;
+  height: 128px;
+  object-fit: contain;
+  display: block;
+  background: #f0ede8;
+}
+.preview-sample p {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--teal);
+  font-weight: 800;
+}
 .style-body span,
 .style-body em {
   color: var(--muted);
@@ -369,6 +403,11 @@ main {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: #fff;
+}
+.result-title {
+  background: #fff;
+  font-size: 15px;
+  font-weight: 900;
 }
 .select-line {
   min-height: 40px;

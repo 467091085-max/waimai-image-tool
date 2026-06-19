@@ -32,7 +32,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MENU_EXTS = {".xls", ".xlsx"}
 POINT_RATE = 10
 BASE_IMAGE_POINTS = 10
-CUSTOM_EDIT_POINTS = 15
+CUSTOM_EDIT_POINTS = 10
 PREVIEW_SAMPLE_COUNT = 5
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 app = Flask(__name__)
@@ -444,9 +444,27 @@ def pipeline_payload() -> dict[str, Any]:
     }
 
 
+def preview_samples(selected_style: str) -> dict[str, Any]:
+    menu = parse_menu()
+    library = library_images()
+    samples = []
+    for item in menu["items"][:PREVIEW_SAMPLE_COUNT]:
+        candidates = top_candidates(item, library)
+        same = next((c for c in candidates if c["styleId"] == selected_style), None)
+        candidate = same or generated_preview_candidate(item, selected_style)
+        samples.append({**item, "candidate": candidate, "points": 0, "publicStatus": "免费样图"})
+    return {
+        "style": selected_style,
+        "styleName": STYLE_COLORS.get(selected_style, ("上传风格", None, None))[0],
+        "samples": samples,
+        "previewFreeImages": PREVIEW_SAMPLE_COUNT,
+    }
+
+
 def build_plan(selected_style: str = "") -> dict[str, Any]:
     menu = parse_menu()
     library = library_images()
+    requested_style = selected_style
     results = []
     for item in menu["items"]:
         candidates = top_candidates(item, library)
@@ -456,7 +474,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
     selected_style = selected_style or (styles[0]["id"] if styles else "")
     for row in results:
         candidates = row["candidates"]
-        if selected_style:
+        if requested_style:
             same = next((c for c in candidates if c["styleId"] == selected_style), None)
             if same:
                 candidates.insert(0, candidates.pop(candidates.index(same)))
@@ -511,7 +529,7 @@ def build_plan(selected_style: str = "") -> dict[str, Any]:
             "addOns": [
                 {"name": "风格预览", "price": f"免费 {PREVIEW_SAMPLE_COUNT} 张样图"},
                 {"name": "正式出图", "price": f"{BASE_IMAGE_POINTS} 积分/张"},
-                {"name": "自定义精修", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
+                {"name": "自定义修改", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
                 {"name": "免费重做额度", "price": f"{pricing['freeReworkQuota']} 张/单"},
                 {"name": "复杂人工精修", "price": "人工报价"},
             ],
@@ -584,6 +602,14 @@ def index():
 @app.get("/api/plan")
 def api_plan():
     return jsonify(build_plan(request.args.get("style", "")))
+
+
+@app.get("/api/style-preview")
+def api_style_preview():
+    style = request.args.get("style", "")
+    if not style:
+        return jsonify({"error": "请先选择风格"}), 400
+    return jsonify(preview_samples(style))
 
 
 @app.get("/api/menu-status")
