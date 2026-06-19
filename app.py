@@ -478,8 +478,8 @@ def account_payload() -> dict[str, Any]:
         "rate": f"1 元 = {POINT_RATE} 积分",
         "packages": [
             {"name": "体验充值", "cash": 49, "points": 490, "bonus": 10},
-            {"name": "整店常用", "cash": 99, "points": 990, "bonus": 80},
-            {"name": "小团队包", "cash": 299, "points": 2990, "bonus": 360},
+            {"name": "整店常用", "cash": 99, "points": 990, "bonus": 50},
+            {"name": "小团队包", "cash": 299, "points": 2990, "bonus": 200},
         ],
         "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
         "pricing": pricing_payload(),
