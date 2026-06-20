@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import billing
+import generation_jobs
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -66,6 +67,7 @@ TENCENT_HUNYUAN_SERVICE = "hunyuan"
 TENCENT_HUNYUAN_VERSION = "2023-09-01"
 TENCENT_REQUEST_TIMEOUT = int(os.environ.get("TENCENT_REQUEST_TIMEOUT", "55"))
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
+GENERATION_JOB_SYNC_BATCH_SIZE = int(os.environ.get("GENERATION_JOB_SYNC_BATCH_SIZE", str(max(1, TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT > 0 else 6))))
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
 DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
 app = Flask(__name__)
@@ -1619,6 +1621,90 @@ def billing_json_error(exc: billing.BillingError):
     return jsonify(body), status
 
 
+def generation_job_json_error(exc: generation_jobs.GenerationJobError):
+    return jsonify(exc.to_dict()), exc.status_code
+
+
+def job_poll_response(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "job": job,
+        "poll": {"url": f"/api/jobs/{job['id']}", "intervalMs": 1500},
+    }
+
+
+def job_plan_snapshot(plan: dict[str, Any]) -> dict[str, Any]:
+    keys = ("menu", "category", "standardization", "summary", "selectedStyle", "quality", "quote", "pricing", "pipeline")
+    return {key: plan[key] for key in keys if key in plan}
+
+
+def selected_job_rows(plan: dict[str, Any], selected_rows: Any = None) -> list[dict[str, Any]]:
+    rows = list(plan.get("results") or [])
+    if not isinstance(selected_rows, list) or not selected_rows:
+        return rows
+    selected: set[int] = set()
+    for value in selected_rows:
+        try:
+            selected.add(int(value))
+        except Exception:
+            continue
+    if not selected:
+        return rows
+    return [row for index, row in enumerate(rows, start=1) if index in selected or int(row.get("row") or 0) in selected]
+
+
+def job_points_for_rows(rows: list[dict[str, Any]], fallback: Any = 0) -> int:
+    try:
+        explicit = int(fallback)
+    except Exception:
+        explicit = 0
+    if explicit > 0:
+        return explicit
+    return sum(int(row.get("points") or 0) for row in rows)
+
+
+def job_run_limit(value: Any = None) -> int:
+    if value in (None, ""):
+        return max(1, GENERATION_JOB_SYNC_BATCH_SIZE)
+    try:
+        return max(1, min(100, int(value)))
+    except Exception:
+        return max(1, GENERATION_JOB_SYNC_BATCH_SIZE)
+
+
+def generation_job_item_runner(style: str, quality: str):
+    def run_item(item: dict[str, Any]) -> dict[str, Any]:
+        row = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if not row:
+            raise generation_jobs.InvalidJobInput("Job item payload is empty", itemIndex=item.get("index"))
+        plan = {"results": [row]}
+        generation = materialize_final_images(plan, style, quality)
+        updated_row = plan["results"][0]
+        generation_items = generation.get("items") if isinstance(generation.get("items"), list) else []
+        item_result = generation_items[0] if generation_items else updated_row.get("generation") or {}
+        result_status = str(item_result.get("status") or "")
+        if result_status in {"failed"}:
+            item_status = generation_jobs.ITEM_FAILED
+        elif result_status in {"pending", "limited"}:
+            item_status = generation_jobs.ITEM_QUEUED
+        else:
+            item_status = generation_jobs.ITEM_COMPLETED
+        generation_summary = {key: value for key, value in generation.items() if key != "items"}
+        return {
+            "itemStatus": item_status,
+            "status": result_status,
+            "provider": item_result.get("provider") or generation.get("provider"),
+            "action": item_result.get("action") or generation.get("action"),
+            "reason": item_result.get("reason"),
+            "error": item_result.get("error"),
+            "generation": item_result,
+            "generationSummary": generation_summary,
+            "payload": updated_row,
+        }
+
+    return run_item
+
+
 def pipeline_payload() -> dict[str, Any]:
     tencent = tencent_status_payload()
     return {
@@ -2159,6 +2245,89 @@ def api_library_status():
 @app.get("/api/tencent-status")
 def api_tencent_status():
     return jsonify(tencent_status_payload())
+
+
+@app.post("/api/jobs")
+def api_create_generation_job():
+    payload = request.get_json(silent=True) or {}
+    style = str(payload.get("style") or "")
+    quality = str(payload.get("quality") or "standard")
+    if not style:
+        return jsonify({"error": "请先选择风格"}), 400
+    try:
+        plan = build_plan(style, quality)
+        quality = str(plan.get("quality", {}).get("id") or quality)
+        rows = selected_job_rows(plan, payload.get("selectedRows"))
+        if not rows:
+            return jsonify({"error": "没有可生成的菜品"}), 400
+        order_id = str(payload.get("orderId") or "").strip() or None
+        job = generation_jobs.create_job(
+            user_id=str(payload.get("userId") or current_user_id()),
+            style=style,
+            quality=quality,
+            items=rows,
+            request_payload={
+                "style": style,
+                "quality": quality,
+                "selectedRows": payload.get("selectedRows") if isinstance(payload.get("selectedRows"), list) else None,
+                "watermark": payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None,
+                "platforms": payload.get("platforms") if isinstance(payload.get("platforms"), list) else None,
+            },
+            plan_snapshot=job_plan_snapshot(plan),
+            points=job_points_for_rows(rows, payload.get("points")),
+            order_id=order_id,
+            mark_paid=bool(payload.get("paid") or order_id),
+        )
+        return jsonify(job_poll_response(job)), 201
+    except generation_jobs.GenerationJobError as exc:
+        return generation_job_json_error(exc)
+
+
+@app.get("/api/jobs/<job_id>")
+def api_get_generation_job(job_id: str):
+    try:
+        job = generation_jobs.get_job(job_id)
+        return jsonify(job_poll_response(job))
+    except generation_jobs.GenerationJobError as exc:
+        return generation_job_json_error(exc)
+
+
+@app.post("/api/jobs/<job_id>/run")
+def api_run_generation_job(job_id: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        job = generation_jobs.get_job(job_id)
+        order_id = str(payload.get("orderId") or "").strip()
+        if payload.get("paid") or order_id:
+            job = generation_jobs.mark_paid(job_id, order_id=order_id or None)
+        limit = job_run_limit(payload.get("limit"))
+        job = generation_jobs.run_job(
+            job_id,
+            generation_job_item_runner(str(job["style"]), str(job["quality"])),
+            limit=limit,
+        )
+        return jsonify(job_poll_response(job))
+    except generation_jobs.GenerationJobError as exc:
+        return generation_job_json_error(exc)
+
+
+@app.post("/api/jobs/<job_id>/retry")
+def api_retry_generation_job(job_id: str):
+    payload = request.get_json(silent=True) or {}
+    raw_indexes = payload.get("itemIndexes") or payload.get("items")
+    item_indexes = raw_indexes if isinstance(raw_indexes, list) else None
+    try:
+        job = generation_jobs.retry_failed_items(job_id, item_indexes=item_indexes)
+        if payload.get("run", True):
+            limit = job_run_limit(payload.get("limit"))
+            job = generation_jobs.run_job(
+                job_id,
+                generation_job_item_runner(str(job["style"]), str(job["quality"])),
+                limit=limit,
+            )
+        return jsonify(job_poll_response(job))
+    except generation_jobs.GenerationJobError as exc:
+        return generation_job_json_error(exc)
 
 
 @app.post("/api/generate-final")
