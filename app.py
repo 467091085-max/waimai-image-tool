@@ -512,17 +512,20 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     product_url = model_input_public_url(source_candidate)
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
-    response = tencent_api_request(
-        "ReplaceBackground",
-        {
-            "ProductUrl": product_url,
-            "Prompt": prompt_for_style_background(style_id),
-            "Product": "招牌菜品",
-            "Resolution": default_delivery_resolution(),
-            "RspImgType": "url",
-            "LogoAdd": 0,
-        },
-    )
+    try:
+        response = tencent_api_request(
+            "ReplaceBackground",
+            {
+                "ProductUrl": product_url,
+                "Prompt": prompt_for_style_background(style_id),
+                "Product": "招牌菜品",
+                "Resolution": default_delivery_resolution(),
+                "RspImgType": "url",
+                "LogoAdd": 0,
+            },
+        )
+    except Exception as exc:
+        raise RuntimeError(f"ProductUrl={product_url}；{exc}") from exc
     save_result_image(str(response.get("ResultImage") or ""), target)
     return {
         "provider": "tencent-hunyuan",
@@ -539,17 +542,20 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "replace_background"
-    response = tencent_api_request(
-        "ReplaceBackground",
-        {
-            "ProductUrl": product_url,
-            "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
-            "Product": str(row.get("name") or "")[:50],
-            "Resolution": output_resolution_for_style(style_id),
-            "RspImgType": "url",
-            "LogoAdd": 0,
-        },
-    )
+    try:
+        response = tencent_api_request(
+            "ReplaceBackground",
+            {
+                "ProductUrl": product_url,
+                "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
+                "Product": str(row.get("name") or "")[:50],
+                "Resolution": output_resolution_for_style(style_id),
+                "RspImgType": "url",
+                "LogoAdd": 0,
+            },
+        )
+    except Exception as exc:
+        raise RuntimeError(f"ProductUrl={product_url}；{exc}") from exc
     save_result_image(str(response.get("ResultImage") or ""), target)
     return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId"), "endpoint": response.get("_Endpoint")}
 
