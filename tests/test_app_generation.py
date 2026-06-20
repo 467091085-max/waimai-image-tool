@@ -171,6 +171,56 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][1]["NegativePrompt"], app_module.NEGATIVE_IMAGE_PROMPT)
             self.assertEqual(payloads[1][1]["ProductUrl"], source["url"])
 
+    def test_preview_sample_materializes_with_tencent_instead_of_local_demo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            save_image(source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
+            calls: list[str] = []
+
+            def fake_replace(row_arg: dict[str, object], source_candidate: dict[str, object], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, object]:
+                calls.append("ReplaceBackground")
+                save_image(target, (80, 130, 180))
+                return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": "replace_background", "requestId": "preview-rb"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background", side_effect=fake_replace),
+                mock.patch.object(app_module, "draw_demo_image") as draw_demo,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            self.assertIsNotNone(preview_candidate)
+            self.assertEqual(generation["status"], "succeeded")
+            self.assertEqual(calls, ["ReplaceBackground"])
+            self.assertEqual(preview_candidate["aiProvider"], "tencent-hunyuan")
+            draw_demo.assert_not_called()
+
+    def test_style_background_sample_uses_tencent_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls: list[str] = []
+
+            def fake_style_background(style_id: str, target: Path) -> dict[str, object]:
+                calls.append(style_id)
+                save_image(target, (120, 150, 190))
+                return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "style_background", "requestId": "style-bg"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_style_background", side_effect=fake_style_background),
+                mock.patch.object(app_module, "draw_demo_image") as draw_demo,
+            ):
+                style_candidate = app_module.style_sample_candidate("style-6")
+
+            self.assertEqual(calls, ["style-6"])
+            self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
+            self.assertEqual(style_candidate["generationAction"], "TextToImageLite")
+            draw_demo.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

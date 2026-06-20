@@ -128,7 +128,7 @@ STYLE_COLORS = {
     "style-3": ("三号背景", (229, 232, 235), (90, 116, 132)),
     "style-4": ("四号背景", (181, 44, 39), (255, 221, 148)),
     "style-5": ("五号背景", (210, 184, 122), (84, 136, 84)),
-    "style-6": ("六号背景", (231, 216, 190), (96, 118, 98)),
+    "style-6": ("六号背景", (192, 216, 226), (42, 100, 132)),
 }
 
 STYLE_PROMPTS = {
@@ -137,10 +137,32 @@ STYLE_PROMPTS = {
     "style-3": "浅灰极简背景，干净明亮，留白舒服，真实餐饮摄影",
     "style-4": "红色节日促销背景，热卖氛围，画面明亮但不出现文字",
     "style-5": "竹编自然背景，中式餐饮质感，清爽自然光，真实菜品摄影",
-    "style-6": "米白餐盘背景，清爽柔和光线，真实餐饮摄影，适合外卖菜品统一主图",
+    "style-6": "冷灰蓝陶瓷砖背景，清爽现代感，柔和自然光，真实餐饮摄影，适合外卖菜品统一主图",
 }
 
 NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景"
+STRICT_MATCH_MIN_SCORE = 0.45
+BEVERAGE_WORDS = (
+    "可乐",
+    "雪碧",
+    "芬达",
+    "冰红茶",
+    "绿茶",
+    "王老吉",
+    "矿泉水",
+    "纯净水",
+    "柠檬水",
+    "金桔",
+    "奶茶",
+    "咖啡",
+    "果汁",
+    "酸梅汤",
+    "豆浆",
+    "饮料",
+    "饮品",
+)
+SOUP_WORDS = ("汤", "羹", "粥")
+GENERIC_MATCH_WORDS = {"米饭", "白饭", "米", "饭", "套餐", "组合", "主食", "餐具", "饮料"}
 
 
 def configured_library_dirs() -> list[Path]:
@@ -351,6 +373,10 @@ def output_resolution_for_style(style_id: str) -> str:
     return "1024:768" if style_id != "style-3" else "1024:1024"
 
 
+def default_delivery_resolution() -> str:
+    return "1024:768"
+
+
 def style_prompt_for(style_id: str) -> str:
     if style_id in STYLE_PROMPTS:
         return STYLE_PROMPTS[style_id]
@@ -411,6 +437,30 @@ def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | Non
     return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": prompt_type, "requestId": response.get("RequestId"), "seed": response.get("Seed")}
 
 
+def prompt_for_style_background(style_id: str) -> str:
+    return (
+        f"外卖菜品主图背景风格样图，展示{style_prompt_for(style_id)}。"
+        "画面中可以有一份普通中式菜品作为占位主体，但重点是让背景、桌面、光影和整体色调清楚可见。"
+        "主体完整居中，商业餐饮摄影质感，背景风格必须鲜明且和其他背景方案明显不同。"
+        "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
+    )[:1000]
+
+
+def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
+    response = tencent_api_request(
+        "TextToImageLite",
+        {
+            "Prompt": prompt_for_style_background(style_id),
+            "NegativePrompt": NEGATIVE_IMAGE_PROMPT,
+            "Resolution": default_delivery_resolution(),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        },
+    )
+    save_result_image(str(response.get("ResultImage") or ""), target)
+    return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "style_background", "requestId": response.get("RequestId"), "seed": response.get("Seed")}
+
+
 def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
     product_url = candidate_public_url(source_candidate)
     if not product_url:
@@ -441,6 +491,54 @@ def grams(text: str) -> set[str]:
 
 def similarity(menu_name: str, image_name: str, menu_norm: str, image_norm: str, menu_grams: set[str], image_grams: set[str]) -> float:
     return engine_similarity(menu_name, image_name, menu_norm, image_norm, menu_grams, image_grams)
+
+
+def has_any_word(text: str, words: tuple[str, ...]) -> bool:
+    return any(word in text for word in words)
+
+
+def semantic_family(name: str, norm: str) -> str:
+    text = f"{name}{norm}"
+    if has_any_word(text, BEVERAGE_WORDS):
+        return "beverage"
+    if has_any_word(text, SOUP_WORDS):
+        return "soup"
+    return "food"
+
+
+def significant_bigrams(norm: str) -> set[str]:
+    clean = str(norm or "")
+    if not clean:
+        return set()
+    chunks = {clean[i : i + 2] for i in range(max(0, len(clean) - 1))}
+    return {chunk for chunk in chunks if chunk and chunk not in GENERIC_MATCH_WORDS}
+
+
+def is_generic_match_name(name: str, norm: str) -> bool:
+    compact = re.sub(r"\s+", "", str(name or ""))
+    return compact in GENERIC_MATCH_WORDS or norm in GENERIC_MATCH_WORDS or len(norm) <= 1
+
+
+def strict_match_allowed(menu_name: str, image_name: str, menu_norm: str, image_norm: str, score: float) -> bool:
+    if score < STRICT_MATCH_MIN_SCORE:
+        return False
+    if not menu_norm or not image_norm:
+        return False
+    if is_generic_match_name(image_name, image_norm):
+        return False
+    menu_family = semantic_family(menu_name, menu_norm)
+    image_family = semantic_family(image_name, image_norm)
+    if menu_family != image_family:
+        return False
+    if menu_norm == image_norm or menu_norm in image_norm or image_norm in menu_norm:
+        return True
+    menu_bigrams = significant_bigrams(menu_norm)
+    image_bigrams = significant_bigrams(image_norm)
+    if menu_bigrams & image_bigrams:
+        return True
+    common_chars = set(menu_norm) & set(image_norm)
+    char_overlap = len(common_chars) / max(1, min(len(set(menu_norm)), len(set(image_norm))))
+    return bool(score >= 0.72 and char_overlap >= 0.5)
 
 
 def safe_filename(name: str) -> str:
@@ -613,12 +711,12 @@ def standardization_report(menu: dict[str, Any]) -> dict[str, Any]:
     return {"rawItems": len(menu["items"]), "canonicalItems": len(groups), "aliasMerged": sum(max(0, len(v) - 1) for v in groups.values()), "samples": samples}
 
 
-def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int = 6) -> list[dict[str, Any]]:
+def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int = 6, min_score: float = STRICT_MATCH_MIN_SCORE) -> list[dict[str, Any]]:
     item_grams = grams(item["norm"])
     scored = []
     for image in library:
         score = similarity(item["name"], image.dish, item["norm"], image.norm, item_grams, image.grams)
-        if score >= 0.15:
+        if score >= min_score and strict_match_allowed(item["name"], image.dish, item["norm"], image.norm, score):
             scored.append((score, image))
     reusable = sorted((x for x in scored if x[1].reusable), key=lambda x: (x[0], x[1].source == "clean"), reverse=True)
     reference_only = sorted((x for x in scored if not x[1].reusable), key=lambda x: x[0], reverse=True)
@@ -676,16 +774,43 @@ def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score
     }
 
 
+def style_background_target(style_id: str) -> Path:
+    return LIBRARY_DIR / "_style_backgrounds" / style_id / "背景风格样图.jpg"
+
+
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
-    library_sample = next((image for image in library_images() if image.style_id == style_id), None)
-    if library_sample is not None:
-        return candidate_from_path(library_sample.path, library_sample.dish, library_sample.style_id, library_sample.source, 90.0)
-    sample = next((p for p in sorted((LIBRARY_DIR / "demo_store" / style_id).glob("*.jpg"))), None)
-    if sample is None:
-        sample = LIBRARY_DIR / "_style_samples" / style_id / "整店风格预览.jpg"
-        if not sample.exists():
-            draw_demo_image(sample, "整店风格预览", style_id)
-    return candidate_from_path(sample, "整店风格预览", style_id, "generated-sample")
+    target = style_background_target(style_id)
+    metadata = load_ai_output_metadata(target) if target.exists() else None
+    if target.exists() and (successful_model_metadata(metadata) or not tencent_ready()):
+        candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
+        if metadata:
+            candidate_generation_metadata(candidate, metadata)
+        return candidate
+    if tencent_ready():
+        try:
+            detail = tencent_style_background(style_id, target)
+            metadata = {
+                "status": "succeeded",
+                "provider": "tencent-hunyuan",
+                "action": detail["action"],
+                "promptType": detail.get("promptType"),
+                "styleId": style_id,
+                "tencent": detail,
+            }
+            write_ai_output_metadata(target, metadata)
+            candidate = candidate_from_path(target, "背景风格样图", style_id, "tencent-style-sample", 100.0)
+            candidate_generation_metadata(candidate, metadata)
+            return candidate
+        except Exception as exc:
+            if not target.exists():
+                draw_demo_image(target, "背景风格样图", style_id)
+            candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 80.0)
+            candidate["generationStatus"] = "failed"
+            candidate["error"] = str(exc)[:220]
+            return candidate
+    if not target.exists():
+        draw_demo_image(target, "背景风格样图", style_id)
+    return candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
 
 
 def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str, Any] | None:
@@ -693,8 +818,68 @@ def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str
         return None
     target = LIBRARY_DIR / "_generated_previews" / style_id / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
     if not target.exists():
-        draw_demo_image(target, item["name"], style_id)
-    return candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
+        return None
+    metadata = load_ai_output_metadata(target)
+    if tencent_ready() and not successful_model_metadata(metadata):
+        return None
+    candidate = candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
+    if metadata:
+        candidate_generation_metadata(candidate, metadata)
+    return candidate
+
+
+def materialize_preview_candidate(item: dict[str, Any], selected_style: str, quality: str | None = "standard") -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    target = LIBRARY_DIR / "_generated_previews" / selected_style / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
+    cached = generated_preview_candidate(item, selected_style)
+    if cached:
+        return cached, {"status": "cached", "provider": cached.get("aiProvider") or "tencent-hunyuan", "action": cached.get("generationAction") or "Cached"}
+    source_candidate = source_candidate_for_generation(item)
+    result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
+    if tencent_ready():
+        try:
+            if source_candidate:
+                try:
+                    detail = tencent_replace_background(item, source_candidate, selected_style, target, quality)
+                except Exception as replace_error:
+                    detail = tencent_text_to_image(item, selected_style, quality, target)
+                    result["fallbackFrom"] = "ReplaceBackground"
+                    result["fallbackMessage"] = str(replace_error)[:220]
+            else:
+                detail = tencent_text_to_image(item, selected_style, quality, target)
+            metadata = {
+                "status": "succeeded",
+                "provider": "tencent-hunyuan",
+                "action": detail["action"],
+                "promptType": detail.get("promptType"),
+                "reason": "free_style_preview",
+                "row": item.get("row"),
+                "dish": item.get("name"),
+                "sourceCandidate": {
+                    "imageId": source_candidate.get("imageId"),
+                    "dishName": source_candidate.get("dishName"),
+                    "styleId": source_candidate.get("styleId"),
+                    "source": source_candidate.get("source"),
+                }
+                if source_candidate
+                else None,
+                "tencent": detail,
+            }
+            write_ai_output_metadata(target, metadata)
+            candidate = candidate_from_path(target, item["name"], selected_style, f"tencent-preview-{detail['action']}", 100.0)
+            candidate_generation_metadata(candidate, metadata)
+            return candidate, {"status": "succeeded", "provider": "tencent-hunyuan", "action": detail["action"]}
+        except Exception as exc:
+            result.update({"status": "failed", "action": "Failed", "error": str(exc)[:220]})
+            return None, result
+    if env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+        draw_demo_image(target, item["name"], selected_style)
+        metadata = {"status": "fallback", "provider": "local-demo", "action": "LocalFallback", "reason": "free_style_preview"}
+        write_ai_output_metadata(target, metadata)
+        candidate = candidate_from_path(target, item["name"], selected_style, "generated-preview", 80.0)
+        candidate_generation_metadata(candidate, metadata)
+        return candidate, {"status": "fallback", "provider": "local-demo", "action": "LocalFallback"}
+    result.update({"status": "pending", "action": "WaitingForModelConfig"})
+    return None, result
 
 
 def ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None, source: str) -> tuple[dict[str, Any], Path]:
@@ -1030,7 +1215,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidate_style_ids = {c["styleId"] for r in results for c in r["candidates"] if c["styleId"]}
     library_style_ids = {image.style_id for image in library_images() if image.style_id}
-    style_ids = [style_id for style_id in STYLE_COLORS if style_id in candidate_style_ids or style_id in library_style_ids or style_id == "style-6"]
+    style_ids = list(STYLE_COLORS)
     for style_id in sorted(candidate_style_ids | library_style_ids):
         if style_id not in style_ids:
             style_ids.append(style_id)
@@ -1057,7 +1242,10 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 review += 1
             else:
                 bg_replace += 1
-        sample = sample or style_sample_candidate(style_id)
+        if style_id in STYLE_COLORS:
+            sample = style_sample_candidate(style_id)
+        else:
+            sample = sample or style_sample_candidate(style_id)
         style_name = style_name_for(style_id)
         display_name = BACKGROUND_LABELS[idx - 1] if idx <= len(BACKGROUND_LABELS) else f"{idx}号背景"
         color = style_color_for(style_id)
@@ -1192,9 +1380,14 @@ def preview_samples(selected_style: str) -> dict[str, Any]:
                 break
     for item in single_items[:PREVIEW_SAMPLE_COUNT]:
         candidates = top_candidates(item, library)
-        same = next((c for c in candidates if c["styleId"] == selected_style), None)
-        candidate = same or generated_preview_candidate(item, selected_style)
-        samples.append({**item, "candidate": candidate, "points": 0, "publicStatus": "免费样图"})
+        preview_item = {**item, "candidates": candidates}
+        candidate, generation = materialize_preview_candidate(preview_item, selected_style, "standard")
+        public_status = "免费样图"
+        if generation.get("status") == "failed":
+            public_status = "样图生成失败"
+        elif generation.get("status") == "pending":
+            public_status = "等待模型配置"
+        samples.append({**item, "candidate": candidate, "sourceCandidates": candidates[:3], "generation": generation, "points": 0, "publicStatus": public_status})
     return {
         "style": selected_style,
         "styleName": STYLE_COLORS.get(selected_style, ("上传风格", None, None))[0],
@@ -1225,14 +1418,6 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
                 candidates.insert(0, final_image)
             elif same:
                 candidates.insert(0, candidates.pop(candidates.index(same)))
-            elif candidates:
-                generated = generated_preview_candidate(row, selected_style)
-                if generated:
-                    candidates.insert(0, generated)
-            else:
-                generated = generated_preview_candidate(row, selected_style)
-                if generated:
-                    candidates.append(generated)
         chosen = candidates[0] if candidates else None
         if not chosen:
             action = "需要定制/生成"
@@ -1251,10 +1436,14 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
             public_status = "待补图"
         elif not chosen.get("reusable", True):
             public_status = "待处理"
-        elif chosen.get("generated") and chosen.get("generationStatus") not in {"succeeded", "cached"}:
+        elif action == "背景一致，直接复用":
+            public_status = "已生成"
+        elif chosen.get("generated") and chosen.get("generationStatus") in {"succeeded", "cached"}:
+            public_status = "已生成"
+        elif action in {"智能统一风格", "需抠图换背景", "智能补图", "需要定制/生成", "套餐组合生成"}:
             public_status = "待正式生成"
         else:
-            public_status = "已生成"
+            public_status = "待正式生成"
         row["publicStatus"] = public_status
         row["points"] = points_for(row["status"], action, row["kind"], quality_info["id"])
     total_points = sum(int(row.get("points") or 0) for row in results)

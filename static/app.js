@@ -15,6 +15,7 @@ const state = {
   refineRow: null,
   freeReworkRemaining: 0,
   stylePreview: null,
+  stylePreviewError: null,
   watermark: defaultWatermark(),
   deliveryPlatforms: [],
   quality: "standard",
@@ -36,6 +37,7 @@ function defaultWatermark() {
     type: "text",
     text: "",
     logoData: "",
+    color: "black",
     position: "bottom-right",
     pattern: "corner"
   };
@@ -324,6 +326,7 @@ function watermarkPayload() {
     type: state.watermark.type,
     text: state.watermark.text || state.menu?.store || "品牌水印",
     logoData: state.watermark.logoData || "",
+    color: state.watermark.color === "white" ? "white" : "black",
     position: state.watermark.position,
     pattern: state.watermark.pattern
   };
@@ -532,6 +535,7 @@ function renderWaiting() {
   ]);
   $("#styleBox").innerHTML = `<div class="empty">菜单上传后会展示 6 张背景风格图</div>`;
   $("#stylePreviewTitle").textContent = "先选择背景，这里会展示 6 张免费单品样图";
+  setStylePreviewStatus("", "先选择菜单并生成背景。选中背景后会生成 6 张免费单品样图，不扣积分。");
   $("#stylePreviewBox").className = "style-preview-box";
   $("#stylePreviewBox").innerHTML = previewPlaceholders("等待菜单");
   $("#selectedStyleHint").textContent = "还没有选择风格";
@@ -648,14 +652,17 @@ function renderWatermarkControls() {
   const locked = state.confirmed || Boolean(state.busy);
   enabled.checked = state.watermark.enabled;
   enabled.disabled = locked;
+  state.watermark.color = state.watermark.color === "white" ? "white" : "black";
   $("#watermarkType").value = state.watermark.type;
   $("#watermarkText").value = state.watermark.text;
+  $("#watermarkColor").value = state.watermark.color;
   $("#watermarkPosition").value = state.watermark.position;
   $("#watermarkPattern").value = state.watermark.pattern;
   $("#watermarkOptions").classList.toggle("disabled", !state.watermark.enabled || locked);
   $("#watermarkTextWrap").style.display = state.watermark.type === "logo" ? "none" : "grid";
+  $("#watermarkColorWrap").style.display = state.watermark.type === "logo" ? "none" : "grid";
   $("#watermarkLogoWrap").style.display = state.watermark.type === "logo" ? "grid" : "none";
-  ["#watermarkType", "#watermarkText", "#watermarkLogo", "#watermarkPosition", "#watermarkPattern"].forEach(selector => {
+  ["#watermarkType", "#watermarkText", "#watermarkColor", "#watermarkLogo", "#watermarkPosition", "#watermarkPattern"].forEach(selector => {
     const field = $(selector);
     if (field) field.disabled = locked;
   });
@@ -674,13 +681,14 @@ function renderWatermarkControls() {
 
 function watermarkOverlay(fallbackText = "品牌名") {
   if (!state.watermark.enabled) return "";
+  const colorClass = state.watermark.color === "white" ? "wm-white" : "wm-black";
   const label = state.watermark.type === "logo" && state.watermark.logoData
     ? `<img src="${state.watermark.logoData}" alt="品牌 Logo">`
     : `<b>${esc(state.watermark.text || fallbackText)}</b>`;
   if (state.watermark.pattern === "tile") {
-    return `<div class="wm-overlay tile">${Array.from({ length: 9 }, () => `<span>${label}</span>`).join("")}</div>`;
+    return `<div class="wm-overlay tile ${colorClass}">${Array.from({ length: 9 }, () => `<span>${label}</span>`).join("")}</div>`;
   }
-  return `<div class="wm-overlay corner ${state.watermark.position}">${label}</div>`;
+  return `<div class="wm-overlay corner ${state.watermark.position} ${colorClass}">${label}</div>`;
 }
 
 function renderReworkBanner() {
@@ -704,6 +712,14 @@ function styleName(styleId) {
   return styleChoices().find(s => s.id === styleId)?.uiName || "已选背景";
 }
 
+function setStylePreviewStatus(kind = "", text = "") {
+  const status = $("#stylePreviewStatus");
+  if (!status) return;
+  status.hidden = !text;
+  status.className = `sample-preview-status ${kind}`;
+  status.textContent = text;
+}
+
 function previewPlaceholders(text = "免费样图") {
   return Array.from({ length: 6 }, (_, index) => `
     <div class="preview-sample placeholder">
@@ -712,6 +728,23 @@ function previewPlaceholders(text = "免费样图") {
       <p>${esc(text)}</p>
     </div>
   `).join("");
+}
+
+function previewSampleCard(sample, index) {
+  const name = sample?.name || `样图 ${index + 1}`;
+  const image = sample?.candidate;
+  if (!image) {
+    return `<div class="preview-sample placeholder missing">
+      <b>${esc(name)}</b>
+      <div class="sample-frame"></div>
+      <p>待补图</p>
+    </div>`;
+  }
+  return `<div class="preview-sample">
+    <b>${esc(name)}</b>
+    <img src="${image.url}" alt="${esc(name)}" ${imageFallbackAttr(0)}>
+    <p>免费样图</p>
+  </div>`;
 }
 
 function renderStyles() {
@@ -749,35 +782,50 @@ function renderStylePreview() {
   if (!box) return;
   if (!state.pendingStyle) {
     if (title) title.textContent = "先选择背景，这里会展示 6 张免费单品样图";
+    setStylePreviewStatus("", "先选择上方任意背景。选择后会生成 6 张免费单品样图，不扣积分。");
     box.className = "style-preview-box";
     box.innerHTML = previewPlaceholders("选择背景后生成");
     return;
   }
+  const previewError = state.stylePreviewError?.style === state.pendingStyle
+    ? state.stylePreviewError.message
+    : "";
+  if (previewError) {
+    if (title) title.textContent = `${styleName(state.pendingStyle)} · 免费样图生成失败`;
+    setStylePreviewStatus("error", `免费样图生成失败：${previewError}。可重新点击该背景再试，或选择其他背景。`);
+    box.className = "style-preview-box";
+    box.innerHTML = previewPlaceholders("生成失败");
+    return;
+  }
   if (!state.stylePreview || state.stylePreview.style !== state.pendingStyle) {
     if (title) title.textContent = `${styleName(state.pendingStyle)} · 免费样图生成中`;
-    box.className = "style-preview-box";
+    setStylePreviewStatus("loading", "正在生成 6 张免费单品样图，请稍候。生成完成后会自动显示在下方。");
+    box.className = "style-preview-box loading";
     box.innerHTML = previewPlaceholders("正在生成");
     return;
   }
-  if (title) title.textContent = `${styleName(state.pendingStyle)} · 6 张免费单品样图`;
+  const samples = (state.stylePreview.samples || []).slice(0, 6);
+  const sampleCount = samples.filter(sample => sample?.candidate).length;
+  if (title) title.textContent = `${styleName(state.pendingStyle)} · ${sampleCount}/6 张免费单品样图`;
   box.className = "style-preview-box";
-  if (!state.stylePreview.samples.length) {
+  if (!samples.length) {
+    setStylePreviewStatus("error", "当前菜单没有可预览的单品，套餐和组合图会在正式生成后展示。");
     box.className = "style-preview-box empty";
     box.innerHTML = "当前菜单没有可预览的单品，套餐会在正式生成后展示";
     return;
   }
-  box.innerHTML = state.stylePreview.samples.map(sample => {
-    const image = sample.candidate;
-    return `<div class="preview-sample">
-      <b>${esc(sample.name)}</b>
-      ${image ? `<img src="${image.url}" alt="${esc(sample.name)}" ${imageFallbackAttr(0)}>` : `<div class="empty image-empty">待补图</div>`}
-      <p>免费样图</p>
-    </div>`;
-  }).join("");
+  setStylePreviewStatus(
+    sampleCount === 6 ? "done" : "warning",
+    sampleCount === 6
+      ? "6 张免费样图已生成。确认风格后才会扣积分生成正式图片。"
+      : `已生成 ${sampleCount} 张免费样图，未返回的位置已标为待补图。确认风格后才会扣积分。`
+  );
+  box.innerHTML = Array.from({ length: 6 }, (_, index) => previewSampleCard(samples[index], index)).join("");
 }
 
 async function loadStylePreview(styleId) {
   state.stylePreview = null;
+  state.stylePreviewError = null;
   state.previewLoadingStyle = styleId;
   renderStyles();
   renderStylePreview();
@@ -788,6 +836,10 @@ async function loadStylePreview(styleId) {
     renderWatermarkControls();
     setProgress(72, "6 张免费单品样图已生成，请确认风格", 3);
     scrollToPanel("#stylePreviewBox");
+  } catch (e) {
+    state.stylePreviewError = { style: styleId, message: e.message || "请求失败" };
+    renderStylePreview();
+    throw e;
   } finally {
     if (state.previewLoadingStyle === styleId) state.previewLoadingStyle = "";
     renderStyles();
@@ -890,6 +942,7 @@ async function uploadMenu() {
     state.chargedPoints = 0;
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
+    state.stylePreviewError = null;
     state.watermark = defaultWatermark();
     state.deliveryPlatforms = [];
     state.selectedRows.clear();
@@ -915,6 +968,7 @@ async function startJob(options = {}) {
   state.chargedPoints = 0;
   state.freeReworkRemaining = 0;
   state.stylePreview = null;
+  state.stylePreviewError = null;
   state.selectedRows.clear();
   setControls();
   setProgress(38, "正在识别菜品和品类", 2);
@@ -973,7 +1027,7 @@ async function confirmStyle() {
     state.plan = await api("/api/generate-final", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ style: state.pendingStyle, quality: state.quality })
+      body: JSON.stringify({ style: state.pendingStyle, quality: state.quality, watermark: watermarkPayload() })
     });
     state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
@@ -1230,6 +1284,11 @@ $("#watermarkType").onchange = event => {
 };
 $("#watermarkText").oninput = event => {
   state.watermark.text = event.target.value;
+  renderWatermarkControls();
+  if (state.confirmed) renderPreview();
+};
+$("#watermarkColor").onchange = event => {
+  state.watermark.color = event.target.value === "white" ? "white" : "black";
   renderWatermarkControls();
   if (state.confirmed) renderPreview();
 };

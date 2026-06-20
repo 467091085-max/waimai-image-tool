@@ -66,7 +66,11 @@ def watermark_position(base_size: tuple[int, int], mark_size: tuple[int, int], p
     return positions.get(position, positions["bottom-right"])
 
 
-def make_text_watermark(text: str, width: int) -> Image.Image:
+def watermark_text_fill(color: str) -> tuple[int, int, int, int]:
+    return (255, 255, 255, 190) if str(color or "").lower() == "white" else (24, 32, 42, 175)
+
+
+def make_text_watermark(text: str, width: int, color: str = "black") -> Image.Image:
     label = str(text or "品牌水印").strip()[:24] or "品牌水印"
     mark_font = font(max(24, width // 28))
     probe = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
@@ -76,7 +80,7 @@ def make_text_watermark(text: str, width: int) -> Image.Image:
     pad_y = max(3, width // 220)
     mark = Image.new("RGBA", (tw + pad_x * 2, th + pad_y * 2), (0, 0, 0, 0))
     mark_draw = ImageDraw.Draw(mark)
-    mark_draw.text((pad_x, pad_y), label, fill=(24, 32, 42, 175), font=mark_font)
+    mark_draw.text((pad_x, pad_y), label, fill=watermark_text_fill(color), font=mark_font)
     return mark
 
 
@@ -111,7 +115,7 @@ def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.
     mark_type = str(settings.get("type") or "text")
     mark = make_logo_watermark(str(settings.get("logoData") or ""), base.width) if mark_type == "logo" else None
     if mark is None:
-        mark = make_text_watermark(str(settings.get("text") or "品牌水印"), base.width)
+        mark = make_text_watermark(str(settings.get("text") or "品牌水印"), base.width, str(settings.get("color") or "black"))
     if mark.width <= 0 or mark.height <= 0:
         return base
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))

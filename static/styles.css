@@ -44,6 +44,7 @@ button.is-loading:not(.round-step):not(.style) {
 }
 button.is-loading:not(.round-step):not(.style)::before,
 .busy-spinner,
+.sample-preview-status.loading::before,
 .round-step.is-loading > em::before,
 .style.is-loading .style-body em::before {
   content: "";
@@ -468,6 +469,39 @@ main {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
+.sample-preview-status {
+  min-height: 38px;
+  margin: -2px 0 12px;
+  padding: 9px 11px;
+  border: 1px solid #c4d7f5;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #315178;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+.sample-preview-status[hidden] {
+  display: none;
+}
+.sample-preview-status.done {
+  border-color: #c6e7d1;
+  background: #f8fffb;
+  color: #146c2e;
+}
+.sample-preview-status.warning {
+  border-color: #f6d18d;
+  background: #fff8e1;
+  color: #8a5a00;
+}
+.sample-preview-status.error {
+  border-color: #f4b3ab;
+  background: #fff4f2;
+  color: #b3261e;
+}
 .style-grid > .empty,
 .style-preview-box.empty {
   grid-column: 1 / -1;
@@ -480,6 +514,7 @@ main {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
+  min-width: 0;
 }
 .preview-sample b,
 .result-title {
@@ -516,6 +551,11 @@ main {
   transform: translate(-50%, -50%);
   background: rgba(255, 255, 255, .9);
   box-shadow: inset 0 0 0 1px rgba(218, 220, 224, .9);
+}
+.preview-sample.placeholder.missing .sample-frame {
+  background:
+    linear-gradient(135deg, rgba(234, 67, 53, .08), rgba(251, 188, 4, .1)),
+    #f1f3f4;
 }
 .preview-sample p {
   padding: 8px 10px;
@@ -887,6 +927,14 @@ main {
   white-space: nowrap;
   text-shadow: 0 1px 2px rgba(255, 255, 255, .45);
 }
+.wm-overlay.wm-black b {
+  color: rgba(24, 32, 42, .68);
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .5);
+}
+.wm-overlay.wm-white b {
+  color: rgba(255, 255, 255, .94);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .58);
+}
 .wm-overlay img {
   width: auto;
   max-width: 96px;
@@ -1231,8 +1279,7 @@ main {
 }
 
 @media (max-width: 700px) {
-  .style-grid,
-  .style-preview-box {
+  .style-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1246,7 +1293,6 @@ main {
   .metrics,
   .workflow,
   .style-grid,
-  .style-preview-box,
   .result-grid,
   .paid-grid {
     grid-template-columns: 1fr;
