@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -10,6 +11,8 @@ import re
 import shutil
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 import zipfile
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -39,6 +42,10 @@ WATERMARK_POINTS = 50
 EXTRA_PLATFORM_POINTS = 100
 PREVIEW_SAMPLE_COUNT = 6
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
+TENCENT_AIART_HOST = "aiart.tencentcloudapi.com"
+TENCENT_AIART_SERVICE = "aiart"
+TENCENT_AIART_VERSION = "2022-12-29"
+TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
@@ -110,6 +117,203 @@ STYLE_COLORS = {
     "style-4": ("红色促销背景", (181, 44, 39), (255, 221, 148)),
     "style-5": ("竹编自然背景", (210, 184, 122), (84, 136, 84)),
 }
+
+STYLE_PROMPTS = {
+    "style-1": "温暖原木桌面，柔和自然光，真实餐饮摄影，干净外卖主图",
+    "style-2": "深色石板背景，高级餐厅质感，柔和侧光，真实餐饮摄影",
+    "style-3": "浅灰极简背景，干净明亮，留白舒服，真实餐饮摄影",
+    "style-4": "红色节日促销背景，热卖氛围，画面明亮但不出现文字",
+    "style-5": "竹编自然背景，中式餐饮质感，清爽自然光，真实菜品摄影",
+}
+
+
+def env_truthy(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def tencent_config() -> dict[str, Any]:
+    secret_id = os.environ.get("TENCENTCLOUD_SECRET_ID") or os.environ.get("TENCENT_SECRET_ID") or ""
+    secret_key = os.environ.get("TENCENTCLOUD_SECRET_KEY") or os.environ.get("TENCENT_SECRET_KEY") or ""
+    region = os.environ.get("TENCENTCLOUD_REGION") or os.environ.get("TENCENT_REGION") or "ap-guangzhou"
+    enabled = env_truthy("TENCENT_HUNYUAN_ENABLED") or env_truthy("TENCENT_AIART_ENABLED")
+    mode = os.environ.get("TENCENT_HUNYUAN_MODE", "auto").strip().lower() or "auto"
+    return {"secret_id": secret_id, "secret_key": secret_key, "region": region, "enabled": enabled, "mode": mode}
+
+
+def tencent_ready() -> bool:
+    cfg = tencent_config()
+    return bool(cfg["enabled"] and cfg["secret_id"] and cfg["secret_key"])
+
+
+def tencent_status_payload() -> dict[str, Any]:
+    cfg = tencent_config()
+    missing = []
+    if not cfg["enabled"]:
+        missing.append("TENCENT_HUNYUAN_ENABLED=true")
+    if not cfg["secret_id"]:
+        missing.append("TENCENTCLOUD_SECRET_ID")
+    if not cfg["secret_key"]:
+        missing.append("TENCENTCLOUD_SECRET_KEY")
+    return {
+        "provider": "tencent-hunyuan" if tencent_ready() else "local-demo",
+        "configured": tencent_ready(),
+        "enabled": cfg["enabled"],
+        "region": cfg["region"],
+        "mode": cfg["mode"],
+        "syncLimit": TENCENT_SYNC_LIMIT,
+        "missing": missing,
+    }
+
+
+def hmac_sha256(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70) -> dict[str, Any]:
+    cfg = tencent_config()
+    if not tencent_ready():
+        raise RuntimeError("腾讯云生图环境变量未配置完整")
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    timestamp = int(time.time())
+    date = time.strftime("%Y-%m-%d", time.gmtime(timestamp))
+    canonical_headers = f"content-type:application/json; charset=utf-8\nhost:{TENCENT_AIART_HOST}\nx-tc-action:{action.lower()}\n"
+    signed_headers = "content-type;host;x-tc-action"
+    canonical_request = "\n".join(["POST", "/", "", canonical_headers, signed_headers, sha256_hex(body)])
+    credential_scope = f"{date}/{TENCENT_AIART_SERVICE}/tc3_request"
+    string_to_sign = "\n".join(["TC3-HMAC-SHA256", str(timestamp), credential_scope, sha256_hex(canonical_request)])
+    secret_date = hmac_sha256(("TC3" + cfg["secret_key"]).encode("utf-8"), date)
+    secret_service = hmac_sha256(secret_date, TENCENT_AIART_SERVICE)
+    secret_signing = hmac_sha256(secret_service, "tc3_request")
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = (
+        "TC3-HMAC-SHA256 "
+        f"Credential={cfg['secret_id']}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    headers = {
+        "Authorization": authorization,
+        "Content-Type": "application/json; charset=utf-8",
+        "Host": TENCENT_AIART_HOST,
+        "X-TC-Action": action,
+        "X-TC-Timestamp": str(timestamp),
+        "X-TC-Version": TENCENT_AIART_VERSION,
+        "X-TC-Region": cfg["region"],
+    }
+    req = urllib.request.Request(f"https://{TENCENT_AIART_HOST}", data=body.encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"腾讯云接口 HTTP {exc.code}: {raw[:500]}") from exc
+    data = json.loads(raw)
+    response = data.get("Response", {})
+    if "Error" in response:
+        error = response["Error"]
+        raise RuntimeError(f"{error.get('Code', 'TencentError')}: {error.get('Message', '调用失败')}")
+    return response
+
+
+def read_remote_image(url: str, timeout: int = 60) -> Image.Image:
+    req = urllib.request.Request(url, headers={"User-Agent": "waimai-image-tool/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    return Image.open(io.BytesIO(raw)).convert("RGB")
+
+
+def save_result_image(result_image: str, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if result_image.startswith("http://") or result_image.startswith("https://"):
+        img = read_remote_image(result_image)
+    else:
+        payload = result_image.split(",", 1)[-1]
+        img = Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
+    img.save(target, "JPEG", quality=92, optimize=True)
+
+
+def public_base_url() -> str:
+    configured = os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
+    if configured:
+        return configured.rstrip("/")
+    try:
+        return request.host_url.rstrip("/")
+    except RuntimeError:
+        return ""
+
+
+def is_public_http_url(url: str) -> bool:
+    if not url.startswith(("http://", "https://")):
+        return False
+    return "127.0.0.1" not in url and "localhost" not in url
+
+
+def candidate_public_url(candidate: dict[str, Any]) -> str:
+    url = str(candidate.get("url") or "")
+    if is_public_http_url(url):
+        return url
+    base = public_base_url()
+    if not base or "127.0.0.1" in base or "localhost" in base:
+        return ""
+    if url.startswith("/"):
+        return f"{base}{url}"
+    return ""
+
+
+def output_resolution_for_style(style_id: str) -> str:
+    return "1024:768" if style_id != "style-3" else "1024:1024"
+
+
+def prompt_for_dish(row: dict[str, Any], style_id: str, quality: str | None = "standard") -> str:
+    style = STYLE_PROMPTS.get(style_id, STYLE_PROMPTS["style-1"])
+    detail = "高清、真实、菜品细节清楚、外卖平台主图、主体完整居中"
+    if quality_config(quality)["id"] == "premium":
+        detail += "、更精致的摆盘、专业商业摄影光影"
+    kind = row.get("kind") or "菜品"
+    return (
+        f"{row.get('name', '外卖菜品')}，{kind}，{style}，{detail}。"
+        "不要出现任何文字、价格、logo、水印、人物、包装袋，不要裁切菜品主体。"
+    )[:1000]
+
+
+def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
+    response = tencent_api_request(
+        "TextToImageLite",
+        {
+            "Prompt": prompt_for_dish(row, style_id, quality),
+            "NegativePrompt": "文字，水印，logo，品牌名，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景",
+            "Resolution": output_resolution_for_style(style_id),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        },
+    )
+    save_result_image(str(response.get("ResultImage") or ""), target)
+    return {"action": "TextToImageLite", "requestId": response.get("RequestId"), "seed": response.get("Seed")}
+
+
+def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path) -> dict[str, Any]:
+    product_url = candidate_public_url(source_candidate)
+    if not product_url:
+        raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
+    response = tencent_api_request(
+        "ReplaceBackground",
+        {
+            "ProductUrl": product_url,
+            "Prompt": STYLE_PROMPTS.get(style_id, STYLE_PROMPTS["style-1"]),
+            "Product": str(row.get("name") or "")[:50],
+            "Resolution": output_resolution_for_style(style_id),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        },
+    )
+    save_result_image(str(response.get("ResultImage") or ""), target)
+    return {"action": "ReplaceBackground", "requestId": response.get("RequestId")}
 
 
 def normalize(text: str) -> str:
@@ -371,6 +575,81 @@ def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str
     return candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
 
 
+def ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None, source: str) -> tuple[dict[str, Any], Path]:
+    quality_id = quality_config(quality)["id"]
+    target = LIBRARY_DIR / "_ai_outputs" / style_id / quality_id / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
+    candidate = candidate_from_path(target, item["name"], style_id, source, 100.0)
+    candidate["aiProvider"] = "tencent-hunyuan" if source.startswith("tencent") else "local-demo"
+    return candidate, target
+
+
+def existing_ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None) -> dict[str, Any] | None:
+    candidate, target = ai_output_candidate(item, style_id, quality, "generated-final")
+    return candidate if target.exists() else None
+
+
+def should_materialize(row: dict[str, Any]) -> bool:
+    candidate = row["candidates"][0] if row.get("candidates") else None
+    return bool(not candidate or candidate.get("generated") or row.get("backgroundAction") in {"智能补图", "智能统一风格", "需抠图换背景", "需要定制/生成"})
+
+
+def materialize_final_images(plan: dict[str, Any], selected_style: str, quality: str | None = "standard") -> dict[str, Any]:
+    status = tencent_status_payload()
+    generation = {
+        "provider": status["provider"],
+        "configured": status["configured"],
+        "attempted": 0,
+        "succeeded": 0,
+        "fallback": 0,
+        "skipped": 0,
+        "limit": TENCENT_SYNC_LIMIT,
+        "errors": [],
+    }
+    if not selected_style:
+        return generation
+    live_budget = TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT >= 0 else 0
+    for row in plan["results"]:
+        candidate = row["candidates"][0] if row.get("candidates") else None
+        if not should_materialize(row):
+            generation["skipped"] += 1
+            continue
+        ai_candidate, target = ai_output_candidate(row, selected_style, quality, "generated-local")
+        if target.exists():
+            row["candidates"].insert(0, ai_candidate)
+            row["publicStatus"] = "已生成"
+            generation["skipped"] += 1
+            continue
+        used_tencent = False
+        source_candidate = next((c for c in row.get("candidates", [])[1:] if not c.get("generated")), None)
+        if status["configured"] and generation["attempted"] < live_budget:
+            generation["attempted"] += 1
+            try:
+                mode = tencent_config()["mode"]
+                if mode in {"auto", "replace", "replace_background"} and source_candidate:
+                    try:
+                        detail = tencent_replace_background(row, source_candidate, selected_style, target)
+                    except Exception:
+                        if mode != "auto":
+                            raise
+                        detail = tencent_text_to_image(row, selected_style, quality, target)
+                else:
+                    detail = tencent_text_to_image(row, selected_style, quality, target)
+                ai_candidate, _ = ai_output_candidate(row, selected_style, quality, f"tencent-{detail['action']}")
+                ai_candidate["tencent"] = detail
+                used_tencent = True
+                generation["succeeded"] += 1
+            except Exception as exc:
+                generation["errors"].append({"dish": row.get("name"), "message": str(exc)[:220]})
+        if not used_tencent:
+            draw_demo_image(target, row["name"], selected_style)
+            ai_candidate, _ = ai_output_candidate(row, selected_style, quality, "generated-local")
+            generation["fallback"] += 1
+        row["candidates"].insert(0, ai_candidate)
+        row["backgroundAction"] = "正式生成"
+        row["publicStatus"] = "已生成"
+    return generation
+
+
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = sorted({c["styleId"] for r in results for c in r["candidates"] if c["styleId"]})
     if not style_ids:
@@ -486,12 +765,13 @@ def account_payload() -> dict[str, Any]:
 
 
 def pipeline_payload() -> dict[str, Any]:
-    provider = os.environ.get("IMAGE_EDIT_PROVIDER", "mock")
+    tencent = tencent_status_payload()
     return {
-        "provider": provider,
-        "imageEditApiReady": bool(os.environ.get("IMAGE_EDIT_API_KEY")),
+        "provider": tencent["provider"],
+        "imageEditApiReady": tencent["configured"],
         "objectStorageReady": bool(os.environ.get("OBJECT_STORAGE_BUCKET")),
-        "expectedEnv": ["IMAGE_EDIT_PROVIDER", "IMAGE_EDIT_API_KEY", "OBJECT_STORAGE_BUCKET"],
+        "expectedEnv": ["TENCENT_HUNYUAN_ENABLED", "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "TENCENTCLOUD_REGION", "PUBLIC_BASE_URL"],
+        "tencent": tencent,
         "stages": ["菜单解析", "风格确认", "图库匹配", "统一背景", "预览导出"],
     }
 
@@ -539,7 +819,10 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         candidates = row["candidates"]
         if requested_style:
             same = next((c for c in candidates if c["styleId"] == selected_style), None)
-            if same:
+            final_image = existing_ai_output_candidate(row, selected_style, quality_info["id"])
+            if final_image:
+                candidates.insert(0, final_image)
+            elif same:
                 candidates.insert(0, candidates.pop(candidates.index(same)))
             elif candidates:
                 generated = generated_preview_candidate(row, selected_style)
@@ -857,6 +1140,23 @@ def api_account():
 @app.get("/api/pipeline-config")
 def api_pipeline_config():
     return jsonify(pipeline_payload())
+
+
+@app.get("/api/tencent-status")
+def api_tencent_status():
+    return jsonify(tencent_status_payload())
+
+
+@app.post("/api/generate-final")
+def api_generate_final():
+    payload = request.get_json(silent=True) or {}
+    style = str(payload.get("style") or "")
+    quality = str(payload.get("quality") or "standard")
+    if not style:
+        return jsonify({"error": "请先选择风格"}), 400
+    plan = build_plan(style, quality)
+    plan["generation"] = materialize_final_images(plan, style, quality)
+    return jsonify(plan)
 
 
 @app.post("/api/upload-menu")

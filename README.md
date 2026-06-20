@@ -135,3 +135,37 @@ data/exports/   导出图片包
 - AI 接口：普通出图和精修出图需要分别接入对应的图片生成/编辑服务。
 - 异步任务队列：正式批量出图应由 Worker 后台处理，前端轮询进度。
 - 平台尺寸复核：上线前用美团/淘宝/京东商家后台最新规则再确认一次。
+
+## 腾讯云生图配置
+
+当前版本已经预留并接入腾讯云混元生图 API 3.0：
+
+- `TextToImageLite`：用于没有可复用图库图时的普通文生图。
+- `ReplaceBackground`：用于已有菜品图可公网访问时，按所选风格替换背景。
+
+Render 环境变量：
+
+```text
+TENCENT_HUNYUAN_ENABLED=true
+TENCENTCLOUD_SECRET_ID=你的 SecretId
+TENCENTCLOUD_SECRET_KEY=你的 SecretKey
+TENCENTCLOUD_REGION=ap-guangzhou
+PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
+TENCENT_HUNYUAN_MODE=auto
+TENCENT_HUNYUAN_SYNC_LIMIT=6
+```
+
+说明：
+
+- `PUBLIC_BASE_URL` 用于把图库图片地址拼成腾讯云可下载的公网 URL。
+- `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走文生图。
+- `TENCENT_HUNYUAN_SYNC_LIMIT` 是同步请求内最多真实调用腾讯云的图片数，默认 6。正式商用时不要在 Web 请求里一次生成 100 多张，应改成后台任务队列。
+- 本地未配置腾讯云密钥时，系统会自动使用本地演示图兜底，保证上传、预览、导出流程不断。
+
+检查环境变量是否生效：
+
+```bash
+curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+```
+
+返回里的 `configured` 为 `true` 才代表 Render 已读取到密钥。

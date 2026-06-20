@@ -342,10 +342,11 @@ function renderPlan(showPreview = false) {
     `正式图 ${p.summary.total} 张`,
     `${quality.name} · ${quality.points} 积分/张`,
     `交付平台 ${state.deliveryPlatforms.length} 个`,
+    p.generation?.configured ? `腾讯云已接入 · 本次 ${p.generation.succeeded || 0} 张` : "",
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
-  ].map(x => `<span class="pill">${esc(x)}</span>`).join("");
+  ].filter(Boolean).map(x => `<span class="pill">${esc(x)}</span>`).join("");
   renderReworkBanner();
   renderRecharge();
   setControls();
@@ -689,7 +690,11 @@ async function confirmStyle() {
   setProgress(82, "已扣积分，正在生成全部正式图片", 4);
   try {
     await new Promise(resolve => setTimeout(resolve, 320));
-    state.plan = await api(`/api/plan?style=${encodeURIComponent(state.pendingStyle)}&quality=${encodeURIComponent(state.quality)}`);
+    state.plan = await api("/api/generate-final", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: state.pendingStyle, quality: state.quality })
+    });
     state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
     state.pendingStyle = state.plan.selectedStyle;
@@ -699,7 +704,9 @@ async function confirmStyle() {
     setProgress(100, "正式图片已生成，可以选择导出或精修", 5);
     renderPlan(true);
     scrollToPanel("#previewPanel");
-    toast(`已扣 ${charge} 积分，正式图片已生成`);
+    const gen = state.plan.generation;
+    const suffix = gen?.configured ? `，腾讯云生成 ${gen.succeeded || 0} 张` : "";
+    toast(`已扣 ${charge} 积分，正式图片已生成${suffix}`);
   } catch (error) {
     if (state.charged) {
       state.account.balance += charge;
