@@ -230,7 +230,7 @@ TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
-TENCENT_COS_BUCKET=你的bucket名-APPID
+TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
 TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
 ```
@@ -238,6 +238,7 @@ TENCENT_COS_PREFIX=waimai-model-inputs
 说明：
 
 - 商品背景生成要求腾讯云能下载 `ProductUrl`。Render 域名在腾讯云侧可能下载失败，所以正式联调建议配置腾讯 COS。
+- 当前腾讯 COS 临时图桶是 `waimai-image-tool-inputs-1311836560`，地域是 `ap-guangzhou`。
 - `TENCENT_COS_BUCKET` 需要使用完整 bucket 名，例如 `waimai-image-tool-125xxxxxxx`。
 - 如果 COS bucket 是私有读，程序会上传临时 JPG 后生成 1 小时有效的签名 URL 给商品背景接口使用。
 
@@ -290,7 +291,7 @@ TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
-TENCENT_COS_BUCKET=你的bucket名-APPID
+TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
 TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
 ALLOW_LOCAL_IMAGE_FALLBACK=false

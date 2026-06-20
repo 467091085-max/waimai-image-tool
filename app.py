@@ -66,6 +66,8 @@ TENCENT_HUNYUAN_SERVICE = "hunyuan"
 TENCENT_HUNYUAN_VERSION = "2023-09-01"
 TENCENT_REQUEST_TIMEOUT = int(os.environ.get("TENCENT_REQUEST_TIMEOUT", "55"))
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
+DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
+DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 
@@ -266,8 +268,8 @@ def tencent_status_payload() -> dict[str, Any]:
 
 def tencent_cos_config() -> dict[str, Any]:
     cfg = tencent_config()
-    bucket = os.environ.get("TENCENT_COS_BUCKET", "").strip()
-    region = os.environ.get("TENCENT_COS_REGION", cfg["region"] or "ap-guangzhou").strip() or "ap-guangzhou"
+    bucket = os.environ.get("TENCENT_COS_BUCKET", DEFAULT_TENCENT_COS_BUCKET).strip()
+    region = os.environ.get("TENCENT_COS_REGION", cfg["region"] or DEFAULT_TENCENT_COS_REGION).strip() or DEFAULT_TENCENT_COS_REGION
     prefix = os.environ.get("TENCENT_COS_PREFIX", "waimai-model-inputs").strip().strip("/") or "waimai-model-inputs"
     return {
         "bucket": bucket,

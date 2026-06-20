@@ -5,3 +5,10 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180
+    envVars:
+      - key: TENCENT_COS_BUCKET
+        value: waimai-image-tool-inputs-1311836560
+      - key: TENCENT_COS_REGION
+        value: ap-guangzhou
+      - key: TENCENT_COS_PREFIX
+        value: waimai-model-inputs
