@@ -242,6 +242,10 @@ def tencent_ready() -> bool:
     return bool(cfg["enabled"] and cfg["secret_id"] and cfg["secret_key"])
 
 
+def tencent_style_backgrounds_enabled() -> bool:
+    return env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=False)
+
+
 def tencent_status_payload() -> dict[str, Any]:
     cfg = tencent_config()
     cos = tencent_cos_config()
@@ -259,6 +263,7 @@ def tencent_status_payload() -> dict[str, Any]:
         "region": cfg["region"],
         "mode": cfg["mode"],
         "syncLimit": TENCENT_SYNC_LIMIT,
+        "styleBackgroundsLive": tencent_style_backgrounds_enabled(),
         "cosReady": cos["ready"],
         "cosBucket": cos["bucket"] if cos["ready"] else "",
         "cosRegion": cos["region"],
@@ -916,12 +921,19 @@ def style_background_target(style_id: str) -> Path:
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
     target = style_background_target(style_id)
     metadata = load_ai_output_metadata(target) if target.exists() else None
+    if target.exists() and not tencent_style_backgrounds_enabled():
+        candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
+        if metadata:
+            candidate_generation_metadata(candidate, metadata)
+        return candidate
     if target.exists() and (successful_model_metadata(metadata) or not tencent_ready()):
         candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
         if metadata:
             candidate_generation_metadata(candidate, metadata)
         return candidate
-    if tencent_ready():
+    if not target.exists():
+        draw_demo_image(target, "背景风格样图", style_id)
+    if tencent_ready() and tencent_style_backgrounds_enabled():
         try:
             detail = tencent_style_background(style_id, target)
             metadata = {
@@ -937,14 +949,10 @@ def style_sample_candidate(style_id: str) -> dict[str, Any]:
             candidate_generation_metadata(candidate, metadata)
             return candidate
         except Exception as exc:
-            if not target.exists():
-                draw_demo_image(target, "背景风格样图", style_id)
             candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 80.0)
             candidate["generationStatus"] = "failed"
             candidate["error"] = str(exc)[:220]
             return candidate
-    if not target.exists():
-        draw_demo_image(target, "背景风格样图", style_id)
     return candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
 
 
@@ -1011,6 +1019,26 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
             return candidate, {"status": "succeeded", "provider": "tencent-hunyuan", "action": detail["action"]}
         except Exception as exc:
             result.update({"status": "failed", "action": "Failed", "error": str(exc)[:220]})
+            if env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+                draw_demo_image(target, item["name"], selected_style)
+                metadata = {
+                    "status": "fallback",
+                    "provider": "local-demo",
+                    "action": "LocalFallback",
+                    "reason": "free_style_preview",
+                    "error": str(exc)[:220],
+                    "modelFailed": True,
+                }
+                write_ai_output_metadata(target, metadata)
+                candidate = candidate_from_path(target, item["name"], selected_style, "generated-preview", 70.0)
+                candidate_generation_metadata(candidate, metadata)
+                return candidate, {
+                    "status": "fallback",
+                    "provider": "local-demo",
+                    "action": "LocalFallback",
+                    "error": str(exc)[:220],
+                    "fallbackFrom": "tencent-hunyuan",
+                }
             return None, result
     if env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
         draw_demo_image(target, item["name"], selected_style)
@@ -1309,7 +1337,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                 generation["errors"].append({"dish": row.get("name"), "message": str(exc)[:220]})
                 item_result["error"] = str(exc)[:220]
         if not used_tencent:
-            if status["configured"]:
+            if status["configured"] and not env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
                 generation["failed"] += 1
                 generation["pending"] += 1
                 item_result.update({"provider": "tencent-hunyuan", "action": "Failed", "status": "failed"})
