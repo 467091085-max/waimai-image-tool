@@ -65,7 +65,7 @@ Render 使用本仓库里的 `render.yaml` / `Procfile` 部署。
 推荐配置：
 
 - Build Command: `pip install -r requirements.txt`
-- Start Command: `gunicorn app:app`
+- Start Command: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180`
 - Python: Render 自动识别 Python 3
 
 部署流程：
