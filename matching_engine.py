@@ -13,6 +13,31 @@ DIRECT_SCORE = 70.0
 REVIEW_SCORE = 45.0
 DEFAULT_MIN_SCORE = 0.15
 
+BLOCKED_IMAGE_WORDS = (
+    "背景",
+    "提示",
+    "温馨提示",
+    "勿点",
+    "请勿",
+    "勿拍",
+    "不要点",
+    "不要拍",
+    "不用点",
+    "误点",
+    "勿下单",
+    "占位",
+    "示意图",
+    "样图",
+    "风格图",
+    "二维码",
+    "菜单图",
+    "收藏",
+    "宠粉",
+    "起点",
+    "水印",
+    "logo",
+)
+
 MARKETING_WORDS = (
     "招牌",
     "爆款",
@@ -43,6 +68,28 @@ FORMAT_WORDS = (
     "米饭",
     "白饭",
 )
+
+ALIAS_CANONICALS = {
+    "辣椒炒肉": {
+        "辣椒炒肉",
+        "辣椒小炒肉",
+        "小炒肉",
+        "农家小炒肉",
+        "农家炒肉",
+    },
+    "小炒黄牛肉": {
+        "小炒黄牛肉",
+        "爆炒黄牛肉",
+    },
+    "番茄炒蛋": {
+        "番茄炒蛋",
+        "番茄炒鸡蛋",
+        "西红柿炒蛋",
+        "西红柿炒鸡蛋",
+    },
+}
+
+ALIAS_SUFFIXES = ("", "饭", "米饭")
 
 COMPONENT_DROP_WORDS = (
     "套餐",
@@ -77,6 +124,9 @@ DRINK_SNACK_WORDS = (
     "豆浆",
     "果汁",
     "奶茶",
+    "咖啡",
+    "柠檬水",
+    "金桔",
     "酸梅汤",
     "饮品",
     "饮料",
@@ -84,6 +134,51 @@ DRINK_SNACK_WORDS = (
     "小吃",
     "汤",
 )
+
+BEVERAGE_WORDS = (
+    "可乐",
+    "雪碧",
+    "芬达",
+    "矿泉水",
+    "纯净水",
+    "王老吉",
+    "冰红茶",
+    "绿茶",
+    "豆浆",
+    "果汁",
+    "奶茶",
+    "咖啡",
+    "柠檬水",
+    "金桔",
+    "酸梅汤",
+    "饮品",
+    "饮料",
+)
+
+SOUP_WORDS = ("汤", "羹", "粥")
+
+PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "米", "饭", "主食")
+PLAIN_RICE_PREFIXES = ("", "一碗", "一份", "半份", "小份", "大份", "加", "配", "赠", "送", "另加", "单点")
+RICE_DISH_WORDS = ("炒饭", "盖饭", "盖码饭", "盖浇饭", "拌饭", "汤饭", "煲仔饭", "木桶饭")
+GENERIC_BIGRAMS = {
+    "招牌",
+    "爆款",
+    "热销",
+    "人气",
+    "农家",
+    "北京",
+    "长沙",
+    "小炒",
+    "爆炒",
+    "现炒",
+    "盖码",
+    "盖饭",
+    "米饭",
+    "套餐",
+    "组合",
+    "单人",
+    "双人",
+}
 
 MAIN_FOOD_WORDS = (
     "盖饭",
@@ -117,19 +212,45 @@ COMBO_WORDS = (
 SPLIT_RE = re.compile(r"[+＋#&/／、,，|丨;；]+|\s+(?:配|加|和|含)\s+")
 
 
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")).lower())
+
+
+def _looks_like_blocked_image(text: str) -> bool:
+    compact = _compact_text(text)
+    return bool(compact and any(word in compact for word in BLOCKED_IMAGE_WORDS))
+
+
+def _canonical_alias(norm: str) -> str:
+    if not norm:
+        return ""
+    for canonical, aliases in ALIAS_CANONICALS.items():
+        for alias in aliases:
+            if any(norm == f"{alias}{suffix}" for suffix in ALIAS_SUFFIXES):
+                return canonical
+    return norm
+
+
 def normalize_dish(text: str) -> str:
     """Return a stable key for dish-name comparison."""
+    if _looks_like_blocked_image(text):
+        return ""
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
     text = re.sub(r"[【\[].*?[】\]]", "", text)
     text = re.sub(r"[（(][^）)]{0,40}[）)]", "", text)
     text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|盒|两)", "", text)
     text = re.sub(r"(买一送一|第二份半价|限时|折扣|满减|赠|送)", "", text)
-    text = text.replace("小炒肉", "炒肉")
-    text = text.replace("农家一碗香", "一碗香")
+    text = text.replace("西红柿", "番茄")
     text = text.replace("紫菜鸡蛋汤", "紫菜蛋花汤")
+    text = text.replace("番茄炒鸡蛋", "番茄炒蛋")
+    text = text.replace("爆炒黄牛肉", "小炒黄牛肉")
+    text = text.replace("辣椒小炒肉", "辣椒炒肉")
+    text = text.replace("农家小炒肉", "辣椒炒肉")
+    text = text.replace("农家一碗香", "一碗香")
     for word in MARKETING_WORDS + FORMAT_WORDS:
         text = text.replace(word, "")
-    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
+    norm = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
+    return _canonical_alias(norm)
 
 
 def grams(text: str) -> set[str]:
@@ -186,6 +307,90 @@ def classify_kind(name: str, attrs: str = "", category: str = "") -> str:
     if any(word in text for word in DRINK_SNACK_WORDS):
         return "饮品/小食"
     return "单品"
+
+
+def _has_combo_signal(text: str) -> bool:
+    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋#&/／、,，|丨;；]", text))
+
+
+def _is_plain_rice_name(name: str, norm: str = "") -> bool:
+    compact = _compact_text(name)
+    if not compact:
+        return False
+    if any(word in compact for word in RICE_DISH_WORDS):
+        return False
+    if norm in PLAIN_RICE_WORDS:
+        return True
+    if compact in PLAIN_RICE_WORDS:
+        return True
+    for word in ("米饭", "白米饭", "白饭"):
+        if word in compact:
+            prefix = compact.replace(word, "")
+            if prefix in PLAIN_RICE_PREFIXES:
+                return True
+    return False
+
+
+def semantic_family(name: str, norm: str | None = None, attrs: str = "", category: str = "") -> str:
+    """Return a coarse family used to reject severe cross-category matches."""
+    raw = unicodedata.normalize("NFKC", f"{category or ''} {name or ''} {attrs or ''}")
+    normalized = normalize_dish(name) if norm is None else str(norm or "")
+    text = f"{raw}{normalized}"
+    if _looks_like_blocked_image(text):
+        return "blocked"
+    if _has_combo_signal(text):
+        return "combo"
+    if _is_plain_rice_name(raw, normalized):
+        return "plain_rice"
+    if any(word in text for word in BEVERAGE_WORDS):
+        return "beverage"
+    if any(word in text for word in SOUP_WORDS):
+        return "soup"
+    return "food"
+
+
+def significant_bigrams(norm: str) -> set[str]:
+    clean = str(norm or "")
+    if len(clean) < 2:
+        return set()
+    return {clean[i : i + 2] for i in range(len(clean) - 1)} - GENERIC_BIGRAMS
+
+
+def strict_match_allowed(
+    menu_name: str,
+    image_name: str,
+    menu_norm: str | None = None,
+    image_norm: str | None = None,
+    score: float | None = None,
+) -> bool:
+    """Reject high-risk candidates before they reach ranking."""
+    left = normalize_dish(menu_name) if menu_norm is None else str(menu_norm or "")
+    right = normalize_dish(image_name) if image_norm is None else str(image_norm or "")
+    if not left or not right:
+        return False
+
+    menu_family = semantic_family(menu_name, left)
+    image_family = semantic_family(image_name, right)
+    if "blocked" in {menu_family, image_family}:
+        return False
+    if menu_family != image_family:
+        return False
+
+    if score is None:
+        score = similarity(menu_name, image_name, left, right, grams(left), grams(right))
+
+    if left == right or left in right or right in left:
+        return True
+    if menu_family == "plain_rice":
+        return False
+
+    overlap = significant_bigrams(left) & significant_bigrams(right)
+    if overlap and score >= 0.45:
+        return True
+
+    common_chars = set(left) & set(right)
+    char_overlap = len(common_chars) / max(1, min(len(set(left)), len(set(right))))
+    return bool(score >= 0.72 and char_overlap >= 0.5)
 
 
 def similarity(
@@ -297,9 +502,13 @@ def _prepared_records(records: Sequence[Any]) -> list[dict[str, Any]]:
     for record in records:
         name = _record_name(record)
         norm = _record_norm(record)
-        if not norm:
+        filter_text = f"{name} {_path_stem(record)}"
+        if not norm or _looks_like_blocked_image(filter_text):
             continue
-        prepared.append({"record": record, "name": name, "norm": norm, "grams": grams(norm)})
+        family = semantic_family(name, norm)
+        if family == "blocked":
+            continue
+        prepared.append({"record": record, "name": name, "norm": norm, "grams": grams(norm), "family": family})
     return prepared
 
 
@@ -314,10 +523,12 @@ def _score_candidates(
 ) -> list[dict[str, Any]]:
     query_norm = normalize_dish(query_name)
     query_grams = grams(query_norm)
+    if not query_norm or semantic_family(query_name, query_norm) == "blocked":
+        return []
     scored: list[tuple[float, Any]] = []
     for prepared in prepared_records:
         score = similarity(query_name, prepared["name"], query_norm, prepared["norm"], query_grams, prepared["grams"])
-        if score >= min_score:
+        if score >= min_score and strict_match_allowed(query_name, prepared["name"], query_norm, prepared["norm"], score):
             scored.append((score, prepared["record"]))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [_candidate(record, score, query_name, match_type, component) for score, record in scored[:limit]]

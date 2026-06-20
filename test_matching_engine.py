@@ -9,8 +9,10 @@ from matching_engine import (
     match_menu_to_library,
     normalize_dish,
     run_builtin_selftest,
+    semantic_family,
     similarity,
     split_components,
+    strict_match_allowed,
     style_coverage,
 )
 
@@ -18,16 +20,74 @@ from matching_engine import (
 class MatchingEngineBuiltinTest(unittest.TestCase):
     def test_normalize_split_and_classify(self) -> None:
         self.assertEqual(normalize_dish("【热销】老长沙辣椒炒肉盖码饭"), "辣椒炒肉")
+        self.assertEqual(normalize_dish("农家小炒肉饭"), "辣椒炒肉")
+        self.assertEqual(normalize_dish("爆炒黄牛肉"), "小炒黄牛肉")
+        self.assertEqual(normalize_dish("西红柿炒鸡蛋"), "番茄炒蛋")
+        self.assertEqual(normalize_dish("北京炒合菜提示勿点"), "")
         self.assertEqual(split_components("辣椒炒肉+茄子肉末盖码饭"), ["辣椒炒肉", "茄子肉末"])
         self.assertEqual(classify_kind("辣椒炒肉+茄子肉末盖码饭"), "套餐/组合")
         self.assertEqual(classify_kind("康师傅冰红茶"), "饮品/小食")
+        self.assertEqual(classify_kind("手打金桔柠檬水"), "饮品/小食")
         self.assertEqual(classify_kind("香干炒肉盖码饭"), "单品")
+        self.assertEqual(semantic_family("一碗米饭", normalize_dish("一碗米饭")), "plain_rice")
 
     def test_similarity_scores_aliases_higher_than_unrelated_dishes(self) -> None:
         alias_score = similarity("老长沙辣椒炒肉盖码饭", "辣椒小炒肉盖饭")
         unrelated_score = similarity("老长沙辣椒炒肉盖码饭", "紫菜蛋花汤")
         self.assertGreater(alias_score, 0.75)
         self.assertLess(unrelated_score, 0.35)
+        self.assertEqual(similarity("小炒黄牛肉", "爆炒黄牛肉"), 1.0)
+        self.assertEqual(similarity("番茄炒蛋", "西红柿炒鸡蛋"), 1.0)
+
+    def test_strict_matching_rejects_high_risk_hard_negatives(self) -> None:
+        records = [
+            {"imageId": "drink", "dishName": "金桔柠檬水", "styleId": "style-1", "source": "sample"},
+            {"imageId": "meat", "dishName": "辣椒炒肉", "styleId": "style-1", "source": "sample"},
+            {"imageId": "rice", "dishName": "一碗米饭", "styleId": "style-1", "source": "sample"},
+            {"imageId": "prompt", "dishName": "北京炒合菜提示勿点", "styleId": "style-1", "source": "sample"},
+            {"imageId": "beijing", "dishName": "北京炒合菜", "styleId": "style-1", "source": "sample"},
+        ]
+        items = [
+            {"row": 1, "name": "手打金桔柠檬水"},
+            {"row": 2, "name": "火爆双脆"},
+            {"row": 3, "name": "北京炒合菜"},
+        ]
+
+        results = match_menu_to_library(items, records, selected_style="style-1")
+        by_name = {row["name"]: row for row in results}
+
+        self.assertEqual([c["dishName"] for c in by_name["手打金桔柠檬水"]["candidates"]], ["金桔柠檬水"])
+        self.assertEqual(by_name["火爆双脆"]["candidates"], [])
+        self.assertEqual([c["dishName"] for c in by_name["北京炒合菜"]["candidates"]], ["北京炒合菜"])
+
+        blocked_pairs = [
+            ("金桔柠檬水", "辣椒炒肉"),
+            ("金桔柠檬水", "一碗米饭"),
+            ("火爆双脆", "一碗米饭"),
+            ("北京炒合菜", "金桔柠檬水"),
+            ("北京炒合菜", "北京炒合菜提示勿点"),
+        ]
+        for menu_name, image_name in blocked_pairs:
+            menu_norm = normalize_dish(menu_name)
+            image_norm = normalize_dish(image_name)
+            score = similarity(menu_name, image_name, menu_norm, image_norm)
+            self.assertFalse(strict_match_allowed(menu_name, image_name, menu_norm, image_norm, score))
+
+    def test_combo_dish_match_does_not_become_single_dish_match(self) -> None:
+        records = [
+            {"imageId": "single", "dishName": "辣椒炒肉", "styleId": "style-1", "source": "sample"},
+            {"imageId": "combo", "dishName": "辣椒炒肉+茄子肉末套餐", "styleId": "style-1", "source": "sample"},
+        ]
+        items = [{"name": "辣椒炒肉+茄子肉末盖码饭"}, {"name": "辣椒炒肉"}]
+
+        results = match_menu_to_library(items, records, selected_style="style-1")
+        combo = results[0]
+        single = results[1]
+
+        self.assertEqual(combo["candidates"][0]["dishName"], "辣椒炒肉+茄子肉末套餐")
+        self.assertEqual(combo["candidates"][0]["matchType"], "dish")
+        self.assertIn("辣椒炒肉", [c["dishName"] for c in combo["candidates"] if c["matchType"] == "component"])
+        self.assertEqual([c["dishName"] for c in single["candidates"]], ["辣椒炒肉"])
 
     def test_builtin_match_outputs_candidates_components_and_style_source(self) -> None:
         results = match_menu_to_library(SAMPLE_MENU_ITEMS, SAMPLE_LIBRARY_RECORDS, selected_style="style-1")
