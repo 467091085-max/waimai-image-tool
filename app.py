@@ -14,13 +14,17 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import billing
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from admin_panel import AdminDependencies, create_admin_blueprint
+from image_pipeline import PLATFORMS, export_delivery_zip
 from matching_engine import (
     classify_kind as engine_classify_kind,
     grams as engine_grams,
@@ -44,12 +48,12 @@ DEFAULT_LIBRARY_SOURCE_DIRS = [
     "/Users/guiguixiaxia/Documents/cleanpic",
     "/Users/guiguixiaxia/Documents/watermarkpic",
 ]
-POINT_RATE = 10
-BASE_IMAGE_POINTS = 10
-PREMIUM_IMAGE_POINTS = 20
+POINT_RATE = billing.POINT_RATE
+BASE_IMAGE_POINTS = billing.QUALITY_POINTS["standard"]
+PREMIUM_IMAGE_POINTS = billing.QUALITY_POINTS["premium"]
 CUSTOM_EDIT_POINTS = 10
-WATERMARK_POINTS = 50
-EXTRA_PLATFORM_POINTS = 100
+WATERMARK_POINTS = billing.WATERMARK_POINTS
+EXTRA_PLATFORM_POINTS = billing.EXTRA_PLATFORM_POINTS
 PREVIEW_SAMPLE_COUNT = 6
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 TENCENT_AIART_HOST = "aiart.tencentcloudapi.com"
@@ -58,12 +62,6 @@ TENCENT_AIART_VERSION = "2022-12-29"
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
-
-PLATFORMS = {
-    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 5120, "default": True},
-    "taobao": {"name": "淘宝外卖/饿了么", "width": 800, "height": 800, "maxKB": 20480, "default": False},
-    "jd": {"name": "京东外卖/京东秒送", "width": 800, "height": 800, "maxKB": 5120, "default": False},
-}
 
 QUALITY_OPTIONS = {
     "standard": {
@@ -508,6 +506,7 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
     return menu
 
 
+@lru_cache(maxsize=1)
 def library_images() -> list[LibraryImage]:
     ensure_demo_data()
     images = []
@@ -827,18 +826,31 @@ def pricing_payload(total: int = 0) -> dict[str, Any]:
     }
 
 
-def account_payload() -> dict[str, Any]:
-    return {
-        "balance": DEMO_BALANCE_POINTS,
-        "rate": f"1 元 = {POINT_RATE} 积分",
-        "packages": [
-            {"name": "体验充值", "cash": 49, "points": 490, "bonus": 10},
-            {"name": "整店常用", "cash": 99, "points": 990, "bonus": 50},
-            {"name": "小团队包", "cash": 299, "points": 2990, "bonus": 200},
-        ],
-        "referral": {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180},
-        "pricing": pricing_payload(),
-    }
+def current_user_id() -> str:
+    return str(request.headers.get("X-User-Id") or request.args.get("userId") or billing.DEFAULT_USER_ID)
+
+
+def account_payload(user_id: str | None = None) -> dict[str, Any]:
+    account = billing.account_payload(user_id or billing.DEFAULT_USER_ID)
+    package_names = {49: "体验充值", 99: "整店常用", 299: "小团队包"}
+    package_base_points = {49: 490, 99: 990, 299: 2990}
+    for package in account["packages"]:
+        cash = package["cash"]
+        total_points = package["points"]
+        base_points = package_base_points.get(cash, total_points)
+        package["name"] = package_names.get(cash, package["name"])
+        package["points"] = base_points
+        package["bonus"] = max(total_points - base_points, 0)
+    account["rate"] = f"1 元 = {POINT_RATE} 积分"
+    account["customRecharge"] = {"minPoints": 100, "rate": POINT_RATE}
+    account["referral"] = {"registerReward": 100, "firstPayReward": "20% 积分返利，封顶 500 积分", "expireDays": 180}
+    account["pricing"] = pricing_payload()
+    return account
+
+
+def billing_json_error(exc: billing.BillingError):
+    body, status = billing.billing_error_response(exc)
+    return jsonify(body), status
 
 
 def pipeline_payload() -> dict[str, Any]:
@@ -1216,7 +1228,80 @@ def api_menu_status():
 
 @app.get("/api/account")
 def api_account():
-    return jsonify(account_payload())
+    return jsonify(account_payload(current_user_id()))
+
+
+@app.post("/api/recharge")
+def api_recharge():
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("userId") or current_user_id())
+    order_id = str(payload.get("orderId") or f"recharge_{int(time.time() * 1000)}")
+    try:
+        if payload.get("points") is not None:
+            points = int(payload.get("points") or 0)
+            if points < 100:
+                raise billing.InvalidRechargePackage("自定义充值最低 100 积分起充", points=points)
+            result = billing.credit_account(
+                user_id,
+                order_id,
+                points,
+                description="custom-recharge",
+                metadata={"cash": round(points / POINT_RATE, 2), "custom": True},
+            )
+        else:
+            result = billing.credit_recharge(user_id, order_id, payload.get("cash"))
+        return jsonify({"ok": True, "transaction": result, "account": account_payload(user_id)})
+    except billing.BillingError as exc:
+        return billing_json_error(exc)
+
+
+@app.post("/api/debit")
+def api_debit():
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("userId") or current_user_id())
+    order_id = str(payload.get("orderId") or f"debit_{int(time.time() * 1000)}")
+    try:
+        points = int(payload.get("points") or 0)
+        if points <= 0:
+            points = billing.calculate_image_charge(
+                image_count=payload.get("imageCount", payload.get("images", 0)),
+                quality=payload.get("quality", "standard"),
+                watermark=bool(payload.get("watermark", False)),
+                platforms=payload.get("platforms"),
+                platform_count=payload.get("platformCount"),
+            )
+        result = billing.debit_account(
+            user_id,
+            order_id,
+            points,
+            description=str(payload.get("description") or "扣除积分"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
+        return jsonify({"ok": True, "transaction": result, "account": account_payload(user_id)})
+    except billing.BillingError as exc:
+        return billing_json_error(exc)
+
+
+@app.post("/api/refund")
+def api_refund():
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("userId") or current_user_id())
+    source_order_id = str(payload.get("sourceOrderId") or payload.get("orderId") or int(time.time() * 1000))
+    order_id = f"refund_{source_order_id}"
+    try:
+        points = int(payload.get("points") or 0)
+        if points <= 0:
+            raise billing.InvalidBillingInput("退款积分必须大于 0", points=points)
+        result = billing.credit_account(
+            user_id,
+            order_id,
+            points,
+            description=str(payload.get("description") or "生成失败退回积分"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
+        return jsonify({"ok": True, "transaction": result, "account": account_payload(user_id)})
+    except billing.BillingError as exc:
+        return billing_json_error(exc)
 
 
 @app.get("/api/pipeline-config")
@@ -1301,6 +1386,7 @@ def upload_library():
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
+    library_images.cache_clear()
     return jsonify({"ok": True, "plan": build_plan()})
 
 
@@ -1313,7 +1399,19 @@ def api_export():
     selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
     platforms = payload.get("platforms") or ["meituan"]
-    return jsonify(export_zip(str(payload.get("style", "")), str(payload.get("scope", "all")), selected_rows, str(payload.get("format", "jpg")), watermark, platforms, str(payload.get("quality", "standard"))))
+    quality = str(payload.get("quality", "standard"))
+    plan = build_plan(str(payload.get("style", "")), quality)
+    return jsonify(
+        export_delivery_zip(
+            plan["results"],
+            EXPORT_DIR,
+            scope=str(payload.get("scope", "all")),
+            selected_rows=selected_rows,
+            image_format=str(payload.get("format", "jpg")),
+            watermark=watermark,
+            platforms=platforms,
+        )
+    )
 
 
 @app.get("/media/<path:name>")
@@ -1332,6 +1430,19 @@ def external_media(name: str):
 @app.get("/download/<path:name>")
 def download(name: str):
     return send_file(EXPORT_DIR / name, as_attachment=True)
+
+
+app.register_blueprint(
+    create_admin_blueprint(
+        AdminDependencies(
+            library_images=library_images,
+            media_url_for_path=media_url_for_path,
+            current_menu_path=current_menu_path,
+            parse_menu=parse_menu,
+            upload_dir=UPLOAD_DIR,
+        )
+    )
+)
 
 
 if __name__ == "__main__":

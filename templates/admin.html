@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>内部管理后台</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <header class="admin-topbar">
+    <div>
+      <span class="admin-kicker">Internal</span>
+      <h1>内部管理后台</h1>
+    </div>
+    <a href="/" class="home-link">客户首页</a>
+  </header>
+
+  <main class="admin-shell">
+    <section class="metric-grid" aria-label="图库统计">
+      <article class="metric-card">
+        <span>图库图片</span>
+        <b id="metricTotal">-</b>
+      </article>
+      <article class="metric-card">
+        <span>Clean</span>
+        <b id="metricClean">-</b>
+      </article>
+      <article class="metric-card">
+        <span>Watermark</span>
+        <b id="metricWatermark">-</b>
+      </article>
+      <article class="metric-card">
+        <span>Internal</span>
+        <b id="metricInternal">-</b>
+      </article>
+      <article class="metric-card">
+        <span>可复用</span>
+        <b id="metricReusable">-</b>
+      </article>
+      <article class="metric-card">
+        <span>门店 / 风格</span>
+        <b id="metricStores">-</b>
+      </article>
+    </section>
+
+    <section class="admin-section">
+      <div class="section-head">
+        <div>
+          <h2>样例图片</h2>
+          <p id="libraryHint">读取中</p>
+        </div>
+        <button id="refreshLibrary" type="button">刷新图库</button>
+      </div>
+      <div id="sourceBreakdown" class="source-breakdown"></div>
+      <div id="sampleGrid" class="sample-grid" aria-live="polite"></div>
+    </section>
+
+    <section class="admin-section">
+      <div class="section-head">
+        <div>
+          <h2>菜单解析审计</h2>
+          <p id="auditHint">读取中</p>
+        </div>
+        <button id="refreshAudit" type="button">刷新审计</button>
+      </div>
+      <div class="audit-summary">
+        <article>
+          <span>上传菜单文件</span>
+          <b id="auditFiles">-</b>
+        </article>
+        <article>
+          <span>解析成功</span>
+          <b id="auditParsed">-</b>
+        </article>
+        <article>
+          <span>解析失败</span>
+          <b id="auditFailed">-</b>
+        </article>
+        <article>
+          <span>总菜品</span>
+          <b id="auditItems">-</b>
+        </article>
+      </div>
+      <div class="audit-layout">
+        <div>
+          <h3>当前菜单</h3>
+          <dl id="currentMenu" class="detail-list"></dl>
+        </div>
+        <div>
+          <h3>最近审计</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>文件</th>
+                  <th>门店</th>
+                  <th>菜品</th>
+                  <th>单品</th>
+                  <th>套餐</th>
+                  <th>小食</th>
+                  <th>Sheet</th>
+                </tr>
+              </thead>
+              <tbody id="auditRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="auditErrors" class="audit-errors"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

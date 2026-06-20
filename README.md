@@ -11,12 +11,14 @@
 - 菜品拆分：自动统计单品、套餐、小吃/其他图片数量。
 - 风格预览：展示 5 套图库风格，选择风格后展示 6 张免费单品样图。
 - 出图质量：支持普通出图和精修出图两档，普通出图 10 积分/张，精修出图 20 积分/张。
-- 积分计费：品牌水印 50 积分/单，额外平台 100 积分/个平台。
+- 积分计费：SQLite 本地账本，支持套餐充值、自定义充值、生成扣费、失败退款、幂等订单。
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
 - 重做额度：每单提供免费换版额度，用完后按 10 积分/张。
 - 导出：当前统一导出 JPG，支持勾选、全选、单品、套餐导出，并按平台上限压缩文件大小。
 - 平台尺寸：支持美团、淘宝外卖/饿了么、京东外卖/京东秒送导出，不裁掉主体，按目标尺寸留边适配。
+- 内部后台：`/admin` 可查看图库来源统计、样例图片、菜单解析审计。
+- 存储底座：预留 SQLite 表结构和本地对象存储接口，后续可迁到 PostgreSQL + COS/OSS/R2。
 
 ## 默认平台尺寸
 
@@ -28,7 +30,7 @@
 | 淘宝外卖/饿了么 | 800 x 800 | 20 MB |
 | 京东外卖/京东秒送 | 800 x 800 | 5 MB |
 
-当前制作规则：美团按 4:3 输出 800 x 600；淘宝外卖/饿了么、京东外卖/京东秒送按 1:1 输出 800 x 800。全部导出为 JPG + RGB 模式，避免客户下载后还要二次转换。任意选择 1 个平台免费，每多选 1 个平台加 100 积分。若平台规则变化，只需要改 `app.py` 里的 `PLATFORMS` 常量。
+当前制作规则：美团按 4:3 输出 800 x 600；淘宝外卖/饿了么、京东外卖/京东秒送按 1:1 输出 800 x 800。全部导出为 JPG + RGB 模式，避免客户下载后还要二次转换。任意选择 1 个平台免费，每多选 1 个平台加 100 积分。若平台规则变化，只需要改 `image_pipeline.py` 里的 `PLATFORMS` 常量。
 
 ## 本地启动
 
@@ -41,6 +43,12 @@ python3 app.py
 
 ```text
 http://127.0.0.1:8790
+```
+
+内部后台：
+
+```text
+http://127.0.0.1:8790/admin
 ```
 
 如果端口被占用：
@@ -78,8 +86,9 @@ https://waimai-image-tool-1.onrender.com
 语法检查：
 
 ```bash
-PYTHONPATH=.codex_deps:. python3 -m py_compile app.py menu_parser.py matching_engine.py library_index.py
+PYTHONPATH=.codex_deps:. python3 -m py_compile app.py admin_panel.py billing.py image_pipeline.py storage_db.py menu_parser.py matching_engine.py library_index.py
 node --check static/app.js
+node --check static/admin.js
 git diff --check
 ```
 
@@ -142,6 +151,8 @@ data/uploads/   上传菜单
 data/library/   图库与演示图库
 data/library_index/   本地图库 JSONL 索引和缩略图
 data/exports/   导出图片包
+data/object_store/   本地对象存储占位
+data/app.db   本地积分账本
 ```
 
 这些目录已加入 `.gitignore`，不要把真实客户菜单和真实图库提交到 GitHub。
@@ -160,16 +171,36 @@ data/exports/   导出图片包
 LIBRARY_SOURCE_DIRS=/path/to/cleanpic:/path/to/watermarkpic
 ```
 
+## 当前验证结果
+
+最近一次本地验证：
+
+```text
+23 个模块单测通过
+5 个匹配引擎单测通过
+24 个真实菜单解析通过，共 3036 个菜品
+真实图库扫描 2316 张
+小菜单端到端烟测通过：上传、计划、充值、扣费、正式生成、两平台加水印导出 ZIP、下载 ZIP
+```
+
+线上检查：
+
+```bash
+curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+```
+
+`configured=true` 代表 Render 已读到腾讯云密钥。
+
 ## 生产化遗留问题
 
 当前版本还是 MVP，已经能跑通主流程，但要正式卖给客户，还需要继续补：
 
-- 登录和真实账户系统：目前积分是前端模拟余额。
-- 支付系统：需要接微信/支付宝/对公充值。
+- 登录系统：目前使用默认 demo 用户，需要接手机号/微信登录。
+- 支付系统：现在是账本记账，还没有真实微信/支付宝收款回调。
 - 对象存储：真实图库不要放 Render 硬盘，建议用腾讯 COS、阿里 OSS 或 Cloudflare R2。
-- 数据库：菜单、订单、积分流水、导出记录需要 PostgreSQL。
+- 数据库：当前是 SQLite，商用后菜单、订单、积分流水、导出记录需要迁到 PostgreSQL。
 - 图库清洗后台：自动识别品牌水印、菜品名水印、可复用图、需抠图图。
-- AI 接口：普通出图和精修出图需要分别接入对应的图片生成/编辑服务。
+- AI 接口：普通出图已接腾讯云混元；精修出图还需要后续接 Gemini/OpenAI 或其他高质量编辑模型。
 - 异步任务队列：正式批量出图应由 Worker 后台处理，前端轮询进度。
 - 平台尺寸复核：上线前用美团/淘宝/京东商家后台最新规则再确认一次。
 

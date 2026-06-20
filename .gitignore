@@ -10,10 +10,17 @@ data/uploads/*
 data/library/uploaded_*
 data/library/demo_store/
 data/library/_ai_outputs/
+data/library/_generated_previews/
+data/library/_style_samples/
 data/library/.demo_ready
 data/library_index/*
 data/exports/*
+data/object_store/*
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 !data/uploads/.gitkeep
 !data/library/.gitkeep
 !data/library_index/.gitkeep
 !data/exports/.gitkeep
+!data/object_store/.gitkeep

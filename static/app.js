@@ -91,6 +91,50 @@ async function api(url, opt = {}) {
   return data;
 }
 
+function orderId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function applyAccount(data) {
+  if (data?.account) {
+    state.account = data.account;
+    state.accountLoaded = true;
+    renderRecharge();
+    setControls();
+  }
+}
+
+async function rechargeAccount(payload) {
+  const data = await api("/api/recharge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderId: orderId("recharge"), ...payload })
+  });
+  applyAccount(data);
+  return data;
+}
+
+async function debitPoints(points, description, metadata = {}) {
+  const id = orderId("debit");
+  const data = await api("/api/debit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderId: id, points, description, metadata })
+  });
+  applyAccount(data);
+  return { orderId: id, data };
+}
+
+async function refundPoints(sourceOrderId, points, description, metadata = {}) {
+  const data = await api("/api/refund", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourceOrderId, points, description, metadata })
+  });
+  applyAccount(data);
+  return data;
+}
+
 function scrollToPanel(id) {
   const el = $(id);
   if (!el) return;
@@ -234,19 +278,22 @@ function renderWorkflow(items) {
 function renderRecharge() {
   $("#rateText").textContent = state.account.rate || "1 元 = 10 积分";
   $("#rechargePackages").innerHTML = (state.account.packages || []).map(pkg => (
-    `<button class="recharge-card" data-points="${pkg.points + (pkg.bonus || 0)}" type="button">
+    `<button class="recharge-card" data-cash="${pkg.cash}" type="button">
       <b>${esc(pkg.name)}</b>
       <span>${pkg.points + (pkg.bonus || 0)} 积分</span>
       <em>¥${pkg.cash}${pkg.bonus ? ` · 赠 ${pkg.bonus}` : ""}</em>
     </button>`
   )).join("");
   $$(".recharge-card").forEach(button => {
-    button.onclick = () => {
-      const added = Number(button.dataset.points || 0);
-      state.account.balance += added;
-      setControls();
-      closeRecharge();
-      toast(`已模拟充值 ${added} 积分`);
+    button.onclick = async () => {
+      try {
+        const cash = Number(button.dataset.cash || 0);
+        const data = await rechargeAccount({ cash });
+        closeRecharge();
+        toast(`已充值 ${data.transaction.points} 积分`);
+      } catch (e) {
+        toast(e.message);
+      }
     };
   });
   updateCustomRechargeHint();
@@ -273,10 +320,10 @@ function submitCustomRecharge() {
     input?.focus();
     return;
   }
-  state.account.balance += points;
-  setControls();
-  closeRecharge();
-  toast(`已模拟充值 ${points} 积分`);
+  rechargeAccount({ points }).then(data => {
+    closeRecharge();
+    toast(`已充值 ${data.transaction.points} 积分`);
+  }).catch(e => toast(e.message));
 }
 
 function renderWaiting() {
@@ -596,7 +643,7 @@ function renderPreview() {
     button.onclick = () => openRefine(Number(button.dataset.row));
   });
   $$(".redraw-btn").forEach(button => {
-    button.onclick = () => redrawImage(Number(button.dataset.row));
+    button.onclick = () => redrawImage(Number(button.dataset.row)).catch(e => toast(e.message));
   });
   $$(".single-save-btn").forEach(button => {
     button.onclick = () => exportSingle(Number(button.dataset.row)).catch(e => toast(e.message));
@@ -675,13 +722,21 @@ async function confirmStyle() {
   if (!state.plan || !state.pendingStyle) return toast("请先选择风格");
   if (!state.deliveryPlatforms.length) return toast("请至少选择一个交付平台");
   const charge = totalCharge();
+  let debitOrderId = "";
   if (!state.charged) {
     if ((state.account.balance || 0) < charge) {
       toast(`积分不足，本单需要 ${charge} 积分`);
       openRecharge();
       return;
     }
-    state.account.balance -= charge;
+    const debit = await debitPoints(charge, "正式出图", {
+      style: state.pendingStyle,
+      quality: state.quality,
+      platforms: state.deliveryPlatforms,
+      watermark: state.watermark.enabled,
+      imageCount: state.plan.summary?.total || state.menu?.count || 0
+    });
+    debitOrderId = debit.orderId;
     state.charged = true;
     state.chargedPoints = charge;
   }
@@ -709,7 +764,9 @@ async function confirmStyle() {
     toast(`已扣 ${charge} 积分，正式图片已生成${suffix}`);
   } catch (error) {
     if (state.charged) {
-      state.account.balance += charge;
+      if (debitOrderId) {
+        await refundPoints(debitOrderId, charge, "正式出图失败退回积分", { style: state.pendingStyle }).catch(() => {});
+      }
       state.charged = false;
       state.chargedPoints = 0;
       state.freeReworkRemaining = 0;
@@ -732,7 +789,7 @@ function chooseRows(mode) {
   renderPreview();
 }
 
-function redrawImage(rowNo) {
+async function redrawImage(rowNo) {
   if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
   const row = state.plan.results[rowNo - 1];
   if (!row) return;
@@ -748,7 +805,7 @@ function redrawImage(rowNo) {
     openRecharge();
     return;
   }
-  state.account.balance -= price;
+  await debitPoints(price, "单张换一版", { row: rowNo, dish: row.name });
   renderPlan(true);
   toast(`已扣 ${price} 积分，${row.name} 已重新生成一版`);
 }
@@ -801,7 +858,7 @@ function closeRefine() {
   state.refineRow = null;
 }
 
-function submitRefine() {
+async function submitRefine() {
   if (!state.refineRow || !state.plan) return;
   const prompt = $("#refinePrompt").value.trim();
   const price = state.plan.pricing.customEditPoints;
@@ -811,8 +868,8 @@ function submitRefine() {
     openRecharge();
     return;
   }
-  state.account.balance -= price;
   const row = state.plan.results[state.refineRow - 1];
+  await debitPoints(price, "自定义修改", { row: state.refineRow, dish: row.name, prompt });
   setControls();
   closeRefine();
   toast(`已扣 ${price} 积分，${row.name} 已提交修改`);
@@ -869,7 +926,7 @@ $("#closeRechargeBtn").onclick = closeRecharge;
 $("#customRechargePoints").oninput = updateCustomRechargeHint;
 $("#customRechargeBtn").onclick = submitCustomRecharge;
 $("#closeRefineBtn").onclick = closeRefine;
-$("#submitRefineBtn").onclick = submitRefine;
+$("#submitRefineBtn").onclick = () => submitRefine().catch(e => toast(e.message));
 $("#loginBtn").onclick = () => toast("登录系统接口已预留，下一步接手机号/微信登录");
 $$(".platform-check").forEach(input => {
   input.onchange = event => {
