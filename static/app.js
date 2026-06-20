@@ -179,7 +179,12 @@ async function api(url, opt = {}) {
   } catch {
     data = { error: text ? text.slice(0, 180) : "服务暂时没有返回内容" };
   }
-  if (!res.ok || data.error) throw new Error(data.error || "请求失败");
+  if (!res.ok || data.error) {
+    const error = new Error(data.error || "请求失败");
+    error.status = res.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 
@@ -382,7 +387,236 @@ function publicStatus(row) {
 
 function isPendingGeneration(row) {
   const status = publicStatus(row);
-  return ["待正式生成", "模型生成失败", "等待模型配置"].includes(status);
+  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
+  return ["待正式生成", "模型生成失败", "等待模型配置"].includes(status)
+    || ["pending", "limited", "failed", "error"].includes(generationStatus);
+}
+
+function isFailedGeneration(row) {
+  const status = publicStatus(row);
+  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
+  return status.includes("失败") || ["failed", "error"].includes(generationStatus);
+}
+
+function isWaitingGeneration(row) {
+  const status = publicStatus(row);
+  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
+  return !isFailedGeneration(row) && (
+    ["待正式生成", "等待模型配置", "待补图", "待处理"].includes(status)
+    || ["pending", "limited", "queued", "running"].includes(generationStatus)
+  );
+}
+
+function generationStatusPillClass(row) {
+  if (isFailedGeneration(row)) return "error";
+  if (isWaitingGeneration(row)) return "warning";
+  return "success";
+}
+
+function generationFailureMessage(row) {
+  if (!isFailedGeneration(row)) return "";
+  const generation = row?.generation || {};
+  return generation.error || generation.reason || "模型没有返回可用图片";
+}
+
+function formalPlanStats(plan = state.plan) {
+  const rows = Array.isArray(plan?.results) ? plan.results : [];
+  const generation = plan?.generation || {};
+  const total = Number(generation.total ?? plan?.summary?.total ?? rows.length ?? 0) || 0;
+  const failedFromRows = rows.filter(isFailedGeneration).length;
+  const pendingFromRows = rows.filter(row => isWaitingGeneration(row)).length;
+  const failed = rows.length ? failedFromRows : (Number(generation.failed || 0) || 0);
+  const pending = rows.length ? pendingFromRows : (Number(generation.pending || 0) || 0);
+  const explicitCompleted = Number(generation.completed);
+  const completed = rows.length || !Number.isFinite(explicitCompleted)
+    ? Math.max(0, total - failed - pending)
+    : explicitCompleted;
+  return { total, completed, failed, pending };
+}
+
+function formalPlanProgressText(plan = state.plan) {
+  const stats = formalPlanStats(plan);
+  const base = `已完成 ${stats.completed} 张，失败 ${stats.failed} 张，总数 ${stats.total} 张`;
+  if (stats.failed) return `${base}，请检查失败项`;
+  if (stats.pending) return `${base}，待正式生成 ${stats.pending} 张`;
+  return `${base}，可以选择导出或精修`;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const generationJobTerminalStatuses = new Set(["completed", "failed", "partially_failed", "refunded", "cancelled"]);
+
+function isGenerationJobTerminal(job) {
+  return generationJobTerminalStatuses.has(String(job?.status || ""));
+}
+
+function generationJobStats(job) {
+  const progress = job?.progress || {};
+  const total = Number(progress.total ?? job?.totalItems ?? 0) || 0;
+  const completed = Number(progress.completed ?? job?.completedItems ?? 0) || 0;
+  const failed = Number(progress.failed ?? job?.failedItems ?? 0) || 0;
+  const pending = Number(progress.pending ?? job?.pendingItems ?? Math.max(0, total - completed - failed)) || 0;
+  const rawPercent = Number(progress.percent);
+  const percent = Number.isFinite(rawPercent) ? rawPercent : (total ? ((completed + failed) / total) * 100 : 0);
+  return { total, completed, failed, pending, percent };
+}
+
+function generationJobProgressText(job, label = "正式生图中") {
+  const stats = generationJobStats(job);
+  const pendingText = stats.pending ? `，剩余 ${stats.pending} 张` : "";
+  return `${label}：已完成 ${stats.completed} 张，失败 ${stats.failed} 张，总数 ${stats.total} 张${pendingText}`;
+}
+
+function generationJobFailureText(job, limit = 3) {
+  const failed = (job?.items || []).filter(item => item?.status === "failed");
+  if (!failed.length) return "";
+  const names = failed
+    .slice(0, limit)
+    .map(item => item.dish || item.payload?.name || `第 ${item.index} 张`)
+    .filter(Boolean);
+  const more = failed.length > limit ? `等 ${failed.length} 张` : `${failed.length} 张`;
+  return names.length ? `失败项：${names.join("、")}${failed.length > limit ? ` ${more}` : ""}` : `失败项 ${more}`;
+}
+
+function updateGenerationJobProgress(job, token, label = "正式生图中") {
+  const stats = generationJobStats(job);
+  const text = generationJobProgressText(job, label);
+  const detail = [text, generationJobFailureText(job)].filter(Boolean).join("；");
+  const percent = Math.min(98, Math.max(82, 82 + stats.percent * 0.16));
+  updateBusy(token, "confirm-generate", "正在生成正式图", detail);
+  setProgress(percent, text, 4);
+}
+
+async function createGenerationJob(payload) {
+  return api("/api/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+async function runGenerationJob(jobId, payload = {}) {
+  return api(`/api/jobs/${encodeURIComponent(jobId)}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+async function getGenerationJob(jobId) {
+  return api(`/api/jobs/${encodeURIComponent(jobId)}`);
+}
+
+function shouldRunGenerationJob(job) {
+  const status = String(job?.status || "");
+  const stats = generationJobStats(job);
+  return stats.pending > 0 && ["created", "paid", "queued"].includes(status);
+}
+
+function jobRunDeferredOnly(job) {
+  const lastRun = job?.lastRun || {};
+  const selected = Number(lastRun.selected || 0);
+  return selected > 0
+    && Number(lastRun.deferred || 0) >= selected
+    && Number(lastRun.completed || 0) === 0
+    && Number(lastRun.failed || 0) === 0;
+}
+
+async function pollGenerationJob(jobId, options = {}) {
+  const token = options.token;
+  const orderId = options.orderId || "";
+  let initialDeferred = jobRunDeferredOnly(options.initial?.job);
+  if (options.initial?.job && token) {
+    updateGenerationJobProgress(options.initial.job, token);
+  }
+  let response = await getGenerationJob(jobId);
+  if (token) updateGenerationJobProgress(response.job, token);
+  const maxPolls = options.maxPolls || 240;
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    const job = response.job;
+    if (isGenerationJobTerminal(job) || initialDeferred) return response;
+    if (shouldRunGenerationJob(job)) {
+      response = await runGenerationJob(jobId, { paid: true, orderId });
+      if (token) updateGenerationJobProgress(response.job, token);
+      if (jobRunDeferredOnly(response.job)) {
+        initialDeferred = true;
+      }
+      continue;
+    }
+    const interval = Math.max(500, Math.min(5000, Number(response.poll?.intervalMs || 1500)));
+    await sleep(interval);
+    response = await getGenerationJob(jobId);
+    if (token) updateGenerationJobProgress(response.job, token);
+  }
+  throw new Error("生成任务轮询超时");
+}
+
+function generationRowFromJobItem(item, fallbackRow = {}) {
+  const row = { ...fallbackRow, ...(item?.payload || {}) };
+  const result = item?.result || {};
+  const generation = result.generation || row.generation || {};
+  if (item?.status === "failed") {
+    row.publicStatus = "模型生成失败";
+    row.backgroundAction = "模型生成失败";
+    row.generationStatus = "failed";
+    row.generation = { ...generation, status: "failed", error: item.error || generation.error || result.error };
+    return row;
+  }
+  if (["pending", "queued", "running"].includes(String(item?.status || ""))) {
+    row.publicStatus = row.publicStatus || "待正式生成";
+    row.backgroundAction = row.backgroundAction || "待正式生成";
+    row.generationStatus = row.generationStatus || "pending";
+    row.generation = { ...generation, status: generation.status || "pending" };
+    return row;
+  }
+  row.generation = generation;
+  return row;
+}
+
+function generationPlanFromJob(job, fallbackPlan = state.plan) {
+  const snapshot = job?.planSnapshot || {};
+  const fallbackRows = Array.isArray(fallbackPlan?.results) ? fallbackPlan.results : [];
+  const items = Array.isArray(job?.items) ? job.items : [];
+  const results = items.length
+    ? items.map(item => generationRowFromJobItem(item, fallbackRows[(Number(item.index) || 1) - 1] || {}))
+    : fallbackRows;
+  const stats = generationJobStats(job);
+  const pipeline = snapshot.pipeline || fallbackPlan?.pipeline || {};
+  return {
+    ...(fallbackPlan || {}),
+    ...snapshot,
+    selectedStyle: job?.style || snapshot.selectedStyle || fallbackPlan?.selectedStyle || state.pendingStyle,
+    quality: snapshot.quality || fallbackPlan?.quality || { id: job?.quality || state.quality },
+    pricing: snapshot.pricing || fallbackPlan?.pricing || {},
+    pipeline,
+    results,
+    generation: {
+      provider: "generation-jobs",
+      action: "generation_job",
+      jobId: job?.id,
+      status: job?.status,
+      total: stats.total,
+      completed: stats.completed,
+      succeeded: stats.completed,
+      failed: stats.failed,
+      pending: stats.pending,
+      configured: Boolean(pipeline?.tencent?.configured),
+      items: items.map(item => item.result?.generation || item.payload?.generation || {}).filter(Boolean),
+      errors: items
+        .filter(item => item.status === "failed")
+        .map(item => ({ dish: item.dish || item.payload?.name, message: item.error || item.result?.error || "生成失败" }))
+    }
+  };
+}
+
+async function generateFinalPlan() {
+  return api("/api/generate-final", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ style: state.pendingStyle, quality: state.quality, watermark: watermarkPayload() })
+  });
 }
 
 function setControls() {
@@ -586,11 +820,13 @@ function renderPlan(showPreview = false) {
   if (showPreview) renderPreview();
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
   const generation = p.generation || {};
+  const formalStats = formalPlanStats(p);
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
     `${quality.name} · ${quality.points} 积分/张`,
     `交付平台 ${state.deliveryPlatforms.length} 个`,
-    generation.configured ? `腾讯云已接入 · 本次生成 ${generation.succeeded || 0} 张` : "",
+    generation.jobId ? `任务进度 已完成 ${formalStats.completed} 张 / 失败 ${formalStats.failed} 张 / 总数 ${formalStats.total} 张` : "",
+    !generation.jobId && generation.configured ? `腾讯云已接入 · 本次生成 ${generation.succeeded || 0} 张` : "",
     generation.cached ? `缓存正式图 ${generation.cached} 张` : "",
     generation.pending ? `待正式生成 ${generation.pending} 张` : "",
     generation.failed ? `生成失败 ${generation.failed} 张` : "",
@@ -904,13 +1140,15 @@ function renderPreview() {
     const candidate = isPendingGeneration(row) ? null : row.candidates[0];
     const checked = state.selectedRows.has(rowNo) ? "checked" : "";
     const status = publicStatus(row);
+    const failure = generationFailureMessage(row);
     return `<div class="result">
       <label class="select-line"><input type="checkbox" class="row-check" data-row="${rowNo}" ${checked}> 选择</label>
       <div class="result-title">${esc(row.name)}</div>
-      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}" ${imageFallbackAttr(0)}>${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">待补图</div>`}
+      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}" ${imageFallbackAttr(0)}>${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">${esc(status)}</div>`}
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
-        <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
+        <div><span class="pill ${generationStatusPillClass(row)}">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
+        ${failure ? `<p class="result-error">${esc(failure)}</p>` : ""}
         ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
       </div>
     </div>`;
@@ -1063,28 +1301,46 @@ async function confirmStyle() {
       state.charged = true;
       state.chargedPoints = charge;
     }
-    updateBusy(token, "confirm-generate", "正在生成正式图", `${styleName(state.pendingStyle)} · 已扣积分，正在生成全部图片`);
+    updateBusy(token, "confirm-generate", "正在创建正式生图任务", `${styleName(state.pendingStyle)} · 已扣积分，正在准备全部图片`);
     setControls();
-    setProgress(82, "已扣积分，正在生成全部正式图片", 4);
+    setProgress(82, "已扣积分，正在创建正式生图任务", 4);
     await new Promise(resolve => setTimeout(resolve, 320));
-    state.plan = await api("/api/generate-final", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ style: state.pendingStyle, quality: state.quality, watermark: watermarkPayload() })
-    });
+    let usedGenerateFinalFallback = false;
+    try {
+      const created = await createGenerationJob({
+        style: state.pendingStyle,
+        quality: state.quality,
+        watermark: watermarkPayload(),
+        platforms: state.deliveryPlatforms,
+        points: charge,
+        orderId: debitOrderId,
+        paid: true
+      });
+      updateGenerationJobProgress(created.job, token, "正式生图任务已创建");
+      const started = await runGenerationJob(created.job.id, { paid: true, orderId: debitOrderId });
+      updateGenerationJobProgress(started.job, token);
+      const completed = await pollGenerationJob(created.job.id, { token, initial: started, orderId: debitOrderId });
+      state.plan = generationPlanFromJob(completed.job);
+    } catch (jobError) {
+      usedGenerateFinalFallback = true;
+      console.warn("Generation jobs API failed, falling back to /api/generate-final", jobError);
+      updateBusy(token, "confirm-generate", "正在使用兼容生成流程", "任务接口暂不可用，已自动切换到原有正式出图流程");
+      setProgress(86, "任务接口暂不可用，正在使用兼容生成流程", 4);
+      state.plan = await generateFinalPlan();
+      state.plan.generation = { ...(state.plan.generation || {}), fallbackMode: "generate-final" };
+    }
     state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
     state.pendingStyle = state.plan.selectedStyle;
     state.confirmed = true;
     state.freeReworkRemaining = state.plan.pricing.freeReworkQuota;
     state.selectedRows.clear();
-    const gen = state.plan.generation || {};
-    const pendingCount = Number(gen.pending || 0);
-    setProgress(100, pendingCount ? `已生成 ${gen.succeeded || 0} 张，${pendingCount} 张待正式生成` : "正式图片已生成，可以选择导出或精修", 5);
+    const stats = formalPlanStats(state.plan);
+    setProgress(100, formalPlanProgressText(state.plan), 5);
     renderPlan(true);
     scrollToPanel("#previewPanel");
-    const suffix = gen?.configured ? `，腾讯云生成 ${gen.succeeded || 0} 张${pendingCount ? `，待正式生成 ${pendingCount} 张` : ""}` : "";
-    toast(`已扣 ${charge} 积分${suffix}`);
+    const suffix = `，已完成 ${stats.completed}/${stats.total} 张${stats.failed ? `，失败 ${stats.failed} 张` : ""}${stats.pending ? `，待正式生成 ${stats.pending} 张` : ""}`;
+    toast(`已扣 ${charge} 积分${suffix}${usedGenerateFinalFallback ? "，已切换兼容流程" : ""}`);
   } catch (error) {
     if (state.charged) {
       if (debitOrderId) {
