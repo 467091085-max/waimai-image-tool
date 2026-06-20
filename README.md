@@ -198,7 +198,7 @@ Render 可用真实种子图库 359 张
 curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 ```
 
-`configured=true` 代表 Render 已读到腾讯云密钥。
+`configured=true` 代表 Render 已读到腾讯云密钥；`cosReady=true` 代表已能把临时商品图上传到腾讯 COS，商品背景生成会更稳定。
 
 ## 生产化遗留问题
 
@@ -206,7 +206,7 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 
 - 登录系统：目前使用默认 demo 用户，需要接手机号/微信登录。
 - 支付系统：现在是账本记账，还没有真实微信/支付宝收款回调。
-- 对象存储：真实图库不要放 Render 硬盘，建议用腾讯 COS、阿里 OSS 或 Cloudflare R2。
+- 对象存储：真实图库不要放 Render 硬盘。当前商品背景生成已支持腾讯 COS 临时图，生产图库也建议迁到腾讯 COS、阿里 OSS 或 Cloudflare R2。
 - 数据库：当前是 SQLite，商用后菜单、订单、积分流水、导出记录需要迁到 PostgreSQL。
 - 图库清洗后台：自动识别品牌水印、菜品名水印、可复用图、需抠图图。
 - AI 接口：普通出图已接腾讯云混元；精修出图还需要后续接 Gemini/OpenAI 或其他高质量编辑模型。
@@ -230,9 +230,16 @@ TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
+TENCENT_COS_BUCKET=你的bucket名-APPID
+TENCENT_COS_REGION=ap-guangzhou
+TENCENT_COS_PREFIX=waimai-model-inputs
 ```
 
 说明：
+
+- 商品背景生成要求腾讯云能下载 `ProductUrl`。Render 域名在腾讯云侧可能下载失败，所以正式联调建议配置腾讯 COS。
+- `TENCENT_COS_BUCKET` 需要使用完整 bucket 名，例如 `waimai-image-tool-125xxxxxxx`。
+- 如果 COS bucket 是私有读，程序会上传临时 JPG 后生成 1 小时有效的签名 URL 给商品背景接口使用。
 
 - `PUBLIC_BASE_URL` 用于把图库图片地址拼成腾讯云可下载的公网 URL。
 - `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走文生图。
@@ -283,6 +290,9 @@ TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
+TENCENT_COS_BUCKET=你的bucket名-APPID
+TENCENT_COS_REGION=ap-guangzhou
+TENCENT_COS_PREFIX=waimai-model-inputs
 ALLOW_LOCAL_IMAGE_FALLBACK=false
 ```
 

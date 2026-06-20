@@ -242,6 +242,7 @@ def tencent_ready() -> bool:
 
 def tencent_status_payload() -> dict[str, Any]:
     cfg = tencent_config()
+    cos = tencent_cos_config()
     missing = []
     if not cfg["enabled"]:
         missing.append("TENCENT_HUNYUAN_ENABLED=true")
@@ -256,7 +257,25 @@ def tencent_status_payload() -> dict[str, Any]:
         "region": cfg["region"],
         "mode": cfg["mode"],
         "syncLimit": TENCENT_SYNC_LIMIT,
+        "cosReady": cos["ready"],
+        "cosBucket": cos["bucket"] if cos["ready"] else "",
+        "cosRegion": cos["region"],
         "missing": missing,
+    }
+
+
+def tencent_cos_config() -> dict[str, Any]:
+    cfg = tencent_config()
+    bucket = os.environ.get("TENCENT_COS_BUCKET", "").strip()
+    region = os.environ.get("TENCENT_COS_REGION", cfg["region"] or "ap-guangzhou").strip() or "ap-guangzhou"
+    prefix = os.environ.get("TENCENT_COS_PREFIX", "waimai-model-inputs").strip().strip("/") or "waimai-model-inputs"
+    return {
+        "bucket": bucket,
+        "region": region,
+        "prefix": prefix,
+        "secret_id": cfg["secret_id"],
+        "secret_key": cfg["secret_key"],
+        "ready": bool(bucket and cfg["secret_id"] and cfg["secret_key"]),
     }
 
 
@@ -395,17 +414,41 @@ def model_input_public_url(candidate: dict[str, Any] | None) -> str:
     path_text = str(candidate.get("path") or "")
     path = Path(path_text) if path_text else None
     if path and path.exists() and path.suffix.lower() in IMAGE_EXTS:
-        stat = path.stat()
-        digest_source = f"{path.resolve()}:{stat.st_size}:{int(stat.st_mtime)}"
-        filename = f"{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()[:24]}.jpg"
-        target = MODEL_INPUT_DIR / filename
-        if not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            Image.open(path).convert("RGB").save(target, "JPEG", quality=92, optimize=True)
+        target = prepare_model_input_file(path)
+        cos_url = upload_model_input_to_cos(target)
+        if cos_url:
+            return cos_url
         base = public_base_url()
         if base and "127.0.0.1" not in base and "localhost" not in base:
-            return f"{base.rstrip('/')}/model-inputs/{filename}"
+            return f"{base.rstrip('/')}/model-inputs/{target.name}"
     return candidate_public_url(candidate)
+
+
+def prepare_model_input_file(path: Path) -> Path:
+    stat = path.stat()
+    digest_source = f"{path.resolve()}:{stat.st_size}:{int(stat.st_mtime)}"
+    filename = f"{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()[:24]}.jpg"
+    target = MODEL_INPUT_DIR / filename
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        Image.open(path).convert("RGB").save(target, "JPEG", quality=92, optimize=True)
+    return target
+
+
+def upload_model_input_to_cos(target: Path) -> str:
+    cos = tencent_cos_config()
+    if not cos["ready"]:
+        return ""
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+    except Exception as exc:
+        raise RuntimeError("已配置 TENCENT_COS_BUCKET，但缺少 cos-python-sdk-v5 依赖") from exc
+    key = f"{cos['prefix']}/{target.name}"
+    config = CosConfig(Region=cos["region"], SecretId=cos["secret_id"], SecretKey=cos["secret_key"], Scheme="https")
+    client = CosS3Client(config)
+    with target.open("rb") as file_obj:
+        client.put_object(Bucket=cos["bucket"], Body=file_obj, Key=key, ContentType="image/jpeg")
+    return client.get_presigned_url(Method="GET", Bucket=cos["bucket"], Key=key, Expired=3600)
 
 
 def external_image_path(image_id_with_ext: str) -> Path | None:
@@ -1456,8 +1499,16 @@ def pipeline_payload() -> dict[str, Any]:
     return {
         "provider": tencent["provider"],
         "imageEditApiReady": tencent["configured"],
-        "objectStorageReady": bool(os.environ.get("OBJECT_STORAGE_BUCKET")),
-        "expectedEnv": ["TENCENT_HUNYUAN_ENABLED", "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "TENCENTCLOUD_REGION", "PUBLIC_BASE_URL"],
+        "objectStorageReady": bool(tencent.get("cosReady") or os.environ.get("OBJECT_STORAGE_BUCKET")),
+        "expectedEnv": [
+            "TENCENT_HUNYUAN_ENABLED",
+            "TENCENTCLOUD_SECRET_ID",
+            "TENCENTCLOUD_SECRET_KEY",
+            "TENCENTCLOUD_REGION",
+            "PUBLIC_BASE_URL",
+            "TENCENT_COS_BUCKET",
+            "TENCENT_COS_REGION",
+        ],
         "tencent": tencent,
         "stages": ["菜单解析", "风格确认", "图库匹配", "统一背景", "预览导出"],
     }
