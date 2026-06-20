@@ -1,0 +1,349 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import time
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_CLEAN_DIR = Path("/Users/guiguixiaxia/Documents/cleanpic")
+DEFAULT_WATERMARK_DIR = Path("/Users/guiguixiaxia/Documents/watermarkpic")
+DEFAULT_INDEX_DIR = BASE_DIR / "data" / "library_index"
+DEFAULT_INDEX_PATH = DEFAULT_INDEX_DIR / "library_index.jsonl"
+DEFAULT_THUMB_DIR = DEFAULT_INDEX_DIR / "thumbs"
+
+IMAGE_SUFFIXES = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".gif",
+    ".tif",
+    ".tiff",
+    ".psd",
+    ".avif",
+    ".heic",
+    ".heif",
+}
+
+COMBO_KEYWORDS = (
+    "套餐",
+    "组合",
+    "双拼",
+    "三拼",
+    "四拼",
+    "多拼",
+    "混拼",
+    "拼盘",
+    "全家福",
+    "自选",
+    "任选",
+    "搭配",
+    "搭子",
+    "加购",
+    "套饭",
+    "份餐",
+    "分享",
+    "combo",
+    "set",
+)
+
+DRINK_KEYWORDS = (
+    "饮品",
+    "饮料",
+    "可乐",
+    "雪碧",
+    "芬达",
+    "美年达",
+    "冰红茶",
+    "绿茶",
+    "红茶",
+    "乌龙茶",
+    "柠檬茶",
+    "奶茶",
+    "豆浆",
+    "果汁",
+    "椰汁",
+    "橙汁",
+    "酸梅汤",
+    "矿泉水",
+    "纯净水",
+    "苏打水",
+    "咖啡",
+    "酸奶",
+    "啤酒",
+    "汽水",
+    "茶饮",
+)
+
+PROMO_KEYWORDS = (
+    "收藏",
+    "关注",
+    "门店",
+    "福利",
+    "宠粉",
+    "免费",
+    "发票",
+    "好评",
+    "到店",
+    "公告",
+)
+
+RAW_KEYWORDS = ("生食", "需自行", "自行煮", "半成品", "冷冻")
+_WORD_RE = re.compile(r"[\u4e00-\u9fff0-9a-z]+")
+_PLUS_RE = re.compile(r"(\+|＋|加|配|搭)")
+
+
+@dataclass
+class ScanResult:
+    records: list[dict[str, Any]]
+    errors: list[dict[str, str]] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
+    roots: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def total(self) -> int:
+        return len(self.records)
+
+    def summary(self) -> dict[str, Any]:
+        source_counts: dict[str, int] = {}
+        tag_counts: dict[str, int] = {}
+        for record in self.records:
+            source = str(record.get("source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+            for tag in record.get("tags") or []:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        return {
+            "total": self.total,
+            "sources": source_counts,
+            "tags": tag_counts,
+            "errors": len(self.errors),
+            "elapsedSeconds": round(self.elapsed_seconds, 3),
+        }
+
+
+def normalize(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).lower()
+    return "".join(_WORD_RE.findall(normalized))
+
+
+def sha1_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def image_roots(
+    clean_dir: str | Path | None = None,
+    watermark_dir: str | Path | None = None,
+    roots: Mapping[str, str | Path] | None = None,
+) -> dict[str, Path]:
+    if roots is not None:
+        return {str(source): Path(path).expanduser() for source, path in roots.items()}
+    return {
+        "clean": Path(clean_dir).expanduser() if clean_dir is not None else DEFAULT_CLEAN_DIR,
+        "watermark": Path(watermark_dir).expanduser() if watermark_dir is not None else DEFAULT_WATERMARK_DIR,
+    }
+
+
+def is_image_path(path: Path, suffixes: Iterable[str] | None = None) -> bool:
+    allowed = {item.lower() for item in (suffixes or IMAGE_SUFFIXES)}
+    return path.is_file() and not path.name.startswith(".") and path.suffix.lower() in allowed
+
+
+def iter_image_paths(root: Path, suffixes: Iterable[str] | None = None) -> Iterable[Path]:
+    if not root.exists():
+        return
+    for path in sorted(root.rglob("*")):
+        if is_image_path(path, suffixes):
+            yield path
+
+
+def detect_tags(dish: str, norm: str) -> dict[str, Any]:
+    searchable = f"{dish.lower()} {norm}"
+    tags = []
+    is_combo = bool(_PLUS_RE.search(dish)) or any(keyword in searchable for keyword in COMBO_KEYWORDS)
+    is_drink = any(keyword in searchable for keyword in DRINK_KEYWORDS)
+    is_promo = any(keyword in searchable for keyword in PROMO_KEYWORDS)
+    is_raw = any(keyword in searchable for keyword in RAW_KEYWORDS)
+    if is_combo:
+        tags.append("combo")
+    if is_drink:
+        tags.append("drink")
+    if is_promo:
+        tags.append("promo")
+    if is_raw:
+        tags.append("raw")
+    return {
+        "is_combo": is_combo,
+        "is_drink": is_drink,
+        "is_promo": is_promo,
+        "is_raw": is_raw,
+        "tags": tags,
+    }
+
+
+def thumbnail_path_for(thumb_dir: Path, source: str, digest: str) -> Path:
+    return thumb_dir / source / digest[:2] / f"{digest}.jpg"
+
+
+def make_thumbnail(src: Path, target: Path, size: tuple[int, int]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(src) as img:
+        img = ImageOps.exif_transpose(img)
+        if getattr(img, "is_animated", False):
+            img.seek(0)
+        if img.mode == "P" and "transparency" in img.info:
+            img = img.convert("RGBA")
+        img.thumbnail(size, Image.Resampling.LANCZOS)
+        if img.mode not in {"RGB", "L"}:
+            img = img.convert("RGB")
+        elif img.mode == "L":
+            img = img.convert("RGB")
+        img.save(target, format="JPEG", quality=82, optimize=True)
+
+
+def build_record(
+    path: Path,
+    root: Path,
+    source: str,
+    thumb_dir: Path | None = DEFAULT_THUMB_DIR,
+    make_thumbs: bool = True,
+    thumb_size: tuple[int, int] = (256, 256),
+) -> dict[str, Any]:
+    rel = path.relative_to(root)
+    parts = rel.parts
+    store = parts[0] if len(parts) > 1 else root.name
+    category_path = "/".join(parts[1:-1]) if len(parts) > 2 else ""
+    dish = path.stem.strip()
+    norm = normalize(dish)
+    digest = sha1_file(path)
+    stat = path.stat()
+    thumb_path = thumbnail_path_for(thumb_dir, source, digest) if thumb_dir else None
+
+    with Image.open(path) as img:
+        img = ImageOps.exif_transpose(img)
+        width, height = img.size
+
+    if make_thumbs and thumb_path is not None:
+        make_thumbnail(path, thumb_path, thumb_size)
+
+    record = {
+        "id": digest[:18],
+        "sha1": digest,
+        "source": source,
+        "source_root": str(root),
+        "store": store,
+        "category_path": category_path,
+        "dish": dish,
+        "norm": norm,
+        "suffix": path.suffix.lower(),
+        "size": stat.st_size,
+        "width": width,
+        "height": height,
+        "path": str(path),
+        "relative_path": rel.as_posix(),
+        "thumb_path": str(thumb_path) if thumb_path else "",
+    }
+    record.update(detect_tags(dish, norm))
+    return record
+
+
+def scan_library(
+    clean_dir: str | Path | None = None,
+    watermark_dir: str | Path | None = None,
+    roots: Mapping[str, str | Path] | None = None,
+    thumb_dir: str | Path | None = DEFAULT_THUMB_DIR,
+    make_thumbs: bool = True,
+    thumb_size: tuple[int, int] = (256, 256),
+    image_suffixes: Iterable[str] | None = None,
+) -> ScanResult:
+    started = time.perf_counter()
+    resolved_roots = image_roots(clean_dir=clean_dir, watermark_dir=watermark_dir, roots=roots)
+    records: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    resolved_thumb_dir = Path(thumb_dir).expanduser() if thumb_dir is not None else None
+
+    for source, root in resolved_roots.items():
+        if not root.exists():
+            errors.append({"source": source, "path": str(root), "error": "source directory does not exist"})
+            continue
+        for path in iter_image_paths(root, image_suffixes):
+            try:
+                records.append(
+                    build_record(
+                        path=path,
+                        root=root,
+                        source=source,
+                        thumb_dir=resolved_thumb_dir,
+                        make_thumbs=make_thumbs,
+                        thumb_size=thumb_size,
+                    )
+                )
+            except (OSError, UnidentifiedImageError, ValueError) as exc:
+                errors.append({"source": source, "path": str(path), "error": str(exc)})
+
+    records.sort(key=lambda item: (str(item["source"]), str(item["store"]), str(item["relative_path"])))
+    return ScanResult(
+        records=records,
+        errors=errors,
+        elapsed_seconds=time.perf_counter() - started,
+        roots={source: str(path) for source, path in resolved_roots.items()},
+    )
+
+
+def write_index(records: ScanResult | Iterable[Mapping[str, Any]], output_path: str | Path = DEFAULT_INDEX_PATH) -> Path:
+    path = Path(output_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    items = records.records if isinstance(records, ScanResult) else records
+    with path.open("w", encoding="utf-8") as handle:
+        for record in items:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
+    return path
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scan local clean/watermarked image libraries into a JSONL index.")
+    parser.add_argument("--clean-dir", default=str(DEFAULT_CLEAN_DIR), help="clean source directory")
+    parser.add_argument("--watermark-dir", default=str(DEFAULT_WATERMARK_DIR), help="watermarked source directory")
+    parser.add_argument("--output", default=str(DEFAULT_INDEX_PATH), help="JSONL index output path")
+    parser.add_argument("--thumb-dir", default=str(DEFAULT_THUMB_DIR), help="thumbnail output directory")
+    parser.add_argument("--no-thumbs", action="store_true", help="skip thumbnail generation")
+    parser.add_argument("--thumb-size", type=int, default=256, help="max thumbnail edge in pixels")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+    result = scan_library(
+        clean_dir=args.clean_dir,
+        watermark_dir=args.watermark_dir,
+        thumb_dir=args.thumb_dir,
+        make_thumbs=not args.no_thumbs,
+        thumb_size=(args.thumb_size, args.thumb_size),
+    )
+    index_path = write_index(result, args.output)
+    summary = result.summary()
+    print(json.dumps({"index": str(index_path), **summary}, ensure_ascii=False, indent=2, sort_keys=True))
+    if result.errors:
+        print("errors:")
+        for error in result.errors[:20]:
+            print(f"- {error['source']} {error['path']}: {error['error']}")
+        if len(result.errors) > 20:
+            print(f"- ... {len(result.errors) - 20} more")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import base64
 import hashlib
 import hmac
@@ -15,14 +14,21 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, redirect, render_template, request, send_file, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from matching_engine import (
+    classify_kind as engine_classify_kind,
+    grams as engine_grams,
+    normalize_dish,
+    similarity as engine_similarity,
+    split_components as engine_split_components,
+)
+from menu_parser import parse_menu as parse_excel_menu
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -34,6 +40,10 @@ for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR):
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MENU_EXTS = {".xls", ".xlsx"}
+DEFAULT_LIBRARY_SOURCE_DIRS = [
+    "/Users/guiguixiaxia/Documents/cleanpic",
+    "/Users/guiguixiaxia/Documents/watermarkpic",
+]
 POINT_RATE = 10
 BASE_IMAGE_POINTS = 10
 PREMIUM_IMAGE_POINTS = 20
@@ -82,6 +92,8 @@ class LibraryImage:
     norm: str
     grams: set[str]
     style_id: str
+    source: str = "internal"
+    reusable: bool = True
 
 
 DEMO_MENU = [
@@ -125,6 +137,54 @@ STYLE_PROMPTS = {
     "style-4": "红色节日促销背景，热卖氛围，画面明亮但不出现文字",
     "style-5": "竹编自然背景，中式餐饮质感，清爽自然光，真实菜品摄影",
 }
+
+
+def configured_library_dirs() -> list[Path]:
+    raw = os.environ.get("LIBRARY_SOURCE_DIRS", "")
+    values = [x.strip() for x in raw.split(os.pathsep) if x.strip()] if raw else DEFAULT_LIBRARY_SOURCE_DIRS
+    dirs = []
+    for value in values:
+        path = Path(value).expanduser()
+        if path.exists() and path.is_dir():
+            dirs.append(path.resolve())
+    return dirs
+
+
+def source_kind_for_path(path: Path) -> str:
+    text = str(path).lower()
+    if "watermarkpic" in text or "watermarkpick" in text:
+        return "watermark"
+    if "cleanpic" in text or "cleanpick" in text:
+        return "clean"
+    return "external"
+
+
+def stable_style_id(store: str, source: str = "external") -> str:
+    digest = hashlib.sha1(f"{source}:{store}".encode("utf-8")).hexdigest()[:10]
+    return f"{source}-{digest}"
+
+
+def image_style_name(image: LibraryImage) -> str:
+    if image.style_id in STYLE_COLORS:
+        return STYLE_COLORS[image.style_id][0]
+    suffix = "可复用图库" if image.reusable else "水印图库"
+    return f"{image.store} · {suffix}"
+
+
+def style_name_for(style_id: str) -> str:
+    if style_id in STYLE_COLORS:
+        return STYLE_COLORS[style_id][0]
+    for image in library_images():
+        if image.style_id == style_id:
+            return image_style_name(image)
+    return "上传图库风格"
+
+
+def style_color_for(style_id: str) -> tuple[int, int, int]:
+    if style_id in STYLE_COLORS:
+        return STYLE_COLORS[style_id][1]
+    digest = hashlib.sha1(style_id.encode("utf-8")).digest()
+    return (225 - digest[0] % 42, 228 - digest[1] % 38, 232 - digest[2] % 34)
 
 
 def env_truthy(name: str, default: bool = False) -> bool:
@@ -266,6 +326,23 @@ def candidate_public_url(candidate: dict[str, Any]) -> str:
     return ""
 
 
+def external_image_path(image_id_with_ext: str) -> Path | None:
+    image_id = Path(image_id_with_ext).stem
+    if not re.fullmatch(r"[a-f0-9]{18}", image_id):
+        return None
+    approved_dirs = configured_library_dirs()
+    for image in library_images():
+        if image.image_id != image_id:
+            continue
+        try:
+            resolved = image.path.resolve()
+        except FileNotFoundError:
+            return None
+        if any(resolved.is_relative_to(base) for base in approved_dirs):
+            return resolved
+    return None
+
+
 def output_resolution_for_style(style_id: str) -> str:
     return "1024:768" if style_id != "style-3" else "1024:1024"
 
@@ -317,32 +394,15 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
 
 
 def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", str(text or "")).lower()
-    text = re.sub(r"[【\[].*?[】\]]", "", text)
-    text = re.sub(r"[（(][^）)]{0,30}[）)]", "", text)
-    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|克|g|斤|个|只|份|瓶|罐)", "", text)
-    for word in ["招牌", "爆款", "热销", "福利", "现炒", "现煎", "盖码饭", "盖浇饭", "木桶饭", "套餐", "单人餐", "米饭"]:
-        text = text.replace(word, "")
-    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
+    return normalize_dish(text)
 
 
 def grams(text: str) -> set[str]:
-    if not text:
-        return set()
-    out = {text}
-    for size in (2, 3):
-        if len(text) >= size:
-            out.update(text[i : i + size] for i in range(len(text) - size + 1))
-    return out
+    return engine_grams(text)
 
 
 def similarity(menu_name: str, image_name: str, menu_norm: str, image_norm: str, menu_grams: set[str], image_grams: set[str]) -> float:
-    if not menu_norm or not image_norm:
-        return 0.0
-    seq = SequenceMatcher(None, menu_norm, image_norm).ratio()
-    jac = len(menu_grams & image_grams) / max(1, len(menu_grams | image_grams))
-    contains = 0.22 if menu_norm in image_norm or image_norm in menu_norm else 0.0
-    return min(1.0, seq * 0.48 + jac * 0.42 + contains)
+    return engine_similarity(menu_name, image_name, menu_norm, image_norm, menu_grams, image_grams)
 
 
 def safe_filename(name: str) -> str:
@@ -412,23 +472,11 @@ def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def split_components(name: str, attrs: str) -> list[str]:
-    parts = re.split(r"[+#/／、,，|丨]+", unicodedata.normalize("NFKC", f"{name} {attrs}"))
-    out = []
-    for part in parts:
-        clean = re.sub(r"[【\[].*?[】\]]", "", part)
-        clean = re.sub(r"[（(].*?[）)]", "", clean).strip()
-        if len(normalize(clean)) >= 2:
-            out.append(clean)
-    return out[:8]
+    return engine_split_components(name, attrs)
 
 
 def detect_kind(name: str, attrs: str) -> str:
-    text = f"{name} {attrs}"
-    if any(x in text for x in ["套餐", "双拼", "三拼", "四拼", "+", "自选", "任选", "组合"]):
-        return "套餐/组合"
-    if any(x in text for x in ["可乐", "雪梨", "矿泉水", "饮品", "豆浆", "果汁", "王老吉", "芬达", "冰红茶", "雪碧", "汤"]):
-        return "饮品/小食"
-    return "单品"
+    return engine_classify_kind(name, attrs)
 
 
 def parse_menu(path: Path | None = None) -> dict[str, Any]:
@@ -437,44 +485,27 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
     if path is None:
         items = demo_menu_items()
         return {"file": "demo_menu.xlsx", "store": "演示盖码饭门店", "count": len(items), "kindCounts": kind_counts(items), "items": items, "demo": True}
-    raw = pd.read_excel(path, sheet_name=0, header=None, dtype=str).fillna("")
-    header_row = 0
-    name_col = None
-    headers = []
-    name_headers = {"菜单名", "菜品名", "菜名", "餐品名", "餐品名称", "商品名", "商品名称", "产品名", "产品名称", "名称", "品名"}
-    for ridx in range(min(12, len(raw))):
-        row = [str(v).strip() for v in raw.iloc[ridx].tolist()]
-        for cidx, value in enumerate(row):
-            if value in name_headers:
-                header_row = ridx
-                name_col = cidx
-                headers = row
-                break
-        if name_col is not None:
-            break
-    if name_col is None:
-        name_col = 0
-        headers = [f"列{i + 1}" for i in range(raw.shape[1])]
-    cat_col = next((i for i, h in enumerate(headers) if h in {"一级分类", "二级分类", "分类", "分类名", "商品分类", "菜单分类", "分组", "品类"}), None)
-    price_col = next((i for i, h in enumerate(headers) if h in {"活动价", "价格", "售价", "销售价", "会员价", "折扣价", "原价", "现价"}), None)
-    attr_col = next((i for i, h in enumerate(headers) if h in {"属性", "规格", "规格名", "套餐内容", "内容", "描述", "备注"}), None)
-    items = []
-    seen = set()
-    for ridx in range(header_row + 1, len(raw)):
-        row = [str(v).strip() for v in raw.iloc[ridx].tolist()]
-        name = row[name_col] if name_col < len(row) else ""
-        norm = normalize(name)
-        if len(norm) < 2:
-            continue
-        cat = row[cat_col] if cat_col is not None and cat_col < len(row) else ""
-        price = row[price_col] if price_col is not None and price_col < len(row) else ""
-        attrs = row[attr_col] if attr_col is not None and attr_col < len(row) else ""
-        key = f"{cat}|{name}|{price}"
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append({"row": ridx + 1, "category": cat, "name": name, "price": price, "kind": detect_kind(name, attrs), "norm": norm, "components": split_components(name, attrs)})
-    return {"file": path.name, "store": re.sub(r"^运营数据_", "", path.stem), "count": len(items), "kindCounts": kind_counts(items), "items": items, "demo": False}
+    menu = parse_excel_menu(path)
+    for item in menu["items"]:
+        raw_components = [str(value).strip() for value in item.get("components", []) if str(value).strip()]
+        attrs = " ".join(raw_components)
+        item["norm"] = normalize(item.get("name", ""))
+        item["kind"] = detect_kind(item.get("name", ""), attrs)
+        components = raw_components or split_components(item.get("name", ""), "")
+        deduped_components = []
+        seen_components = set()
+        for component in components:
+            label = re.sub(r"(套餐|组合|单人餐|双人餐|盖码饭|盖浇饭|木桶饭)$", "", component).strip(" -_·:：")
+            label = label or component
+            norm = normalize(label)
+            if len(norm) < 2 or norm in seen_components:
+                continue
+            seen_components.add(norm)
+            deduped_components.append(label)
+        item["components"] = deduped_components[:8]
+    menu["kindCounts"] = kind_counts(menu["items"])
+    menu["count"] = len(menu["items"])
+    return menu
 
 
 def library_images() -> list[LibraryImage]:
@@ -493,7 +524,25 @@ def library_images() -> list[LibraryImage]:
         norm = normalize(dish)
         if not norm:
             continue
-        images.append(LibraryImage(hashlib.sha1(str(path).encode()).hexdigest()[:18], path, store, dish, norm, grams(norm), style_id))
+        images.append(LibraryImage(hashlib.sha1(str(path).encode()).hexdigest()[:18], path, store, dish, norm, grams(norm), style_id, "internal", True))
+    for source_dir in configured_library_dirs():
+        source = source_kind_for_path(source_dir)
+        reusable = source != "watermark"
+        for path in sorted(source_dir.rglob("*")):
+            if path.suffix.lower() not in IMAGE_EXTS or not path.is_file():
+                continue
+            try:
+                rel = path.relative_to(source_dir)
+            except ValueError:
+                rel = Path(path.name)
+            store = rel.parts[0] if len(rel.parts) > 1 else source_dir.name
+            dish = path.stem
+            norm = normalize(dish)
+            if not norm:
+                continue
+            style_id = stable_style_id(store, source)
+            image_id = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:18]
+            images.append(LibraryImage(image_id, path, store, dish, norm, grams(norm), style_id, source, reusable))
     return images
 
 
@@ -529,7 +578,9 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
         score = similarity(item["name"], image.dish, item["norm"], image.norm, item_grams, image.grams)
         if score >= 0.15:
             scored.append((score, image))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    reusable = sorted((x for x in scored if x[1].reusable), key=lambda x: (x[0], x[1].source == "clean"), reverse=True)
+    reference_only = sorted((x for x in scored if not x[1].reusable), key=lambda x: x[0], reverse=True)
+    scored = (reusable + reference_only)[:limit]
     return [
         {
             "imageId": image.image_id,
@@ -537,11 +588,34 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
             "dishName": image.dish,
             "store": image.store,
             "styleId": image.style_id,
-            "url": f"/media/{image.path.relative_to(LIBRARY_DIR).as_posix()}",
+            "styleName": image_style_name(image),
+            "source": image.source,
+            "reusable": image.reusable,
+            "url": media_url_for_path(image.path),
             "path": str(image.path),
         }
         for score, image in scored[:limit]
     ]
+
+
+def component_matches(item: dict[str, Any], library: list[LibraryImage], limit: int = 4) -> list[dict[str, Any]]:
+    matches = []
+    for component in item.get("components") or []:
+        norm = normalize(component)
+        if len(norm) < 2:
+            continue
+        component_item = {**item, "name": component, "norm": norm}
+        candidates = top_candidates(component_item, library, limit)
+        matches.append({"name": component, "norm": norm, "candidates": candidates})
+    return matches
+
+
+def media_url_for_path(path: Path) -> str:
+    try:
+        return f"/media/{path.relative_to(LIBRARY_DIR).as_posix()}"
+    except ValueError:
+        image_id = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:18]
+        return f"/external-media/{image_id}{path.suffix.lower()}"
 
 
 def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score: float = 100.0) -> dict[str, Any]:
@@ -551,7 +625,10 @@ def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score
         "dishName": dish,
         "store": source,
         "styleId": style_id,
-        "url": f"/media/{path.relative_to(LIBRARY_DIR).as_posix()}",
+        "styleName": style_name_for(style_id),
+        "source": source,
+        "reusable": not source.startswith("watermark"),
+        "url": media_url_for_path(path),
         "path": str(path),
         "generated": source.startswith("generated"),
     }
@@ -590,7 +667,7 @@ def existing_ai_output_candidate(item: dict[str, Any], style_id: str, quality: s
 
 def should_materialize(row: dict[str, Any]) -> bool:
     candidate = row["candidates"][0] if row.get("candidates") else None
-    return bool(not candidate or candidate.get("generated") or row.get("backgroundAction") in {"智能补图", "智能统一风格", "需抠图换背景", "需要定制/生成"})
+    return bool(not candidate or candidate.get("generated") or row.get("backgroundAction") in {"智能补图", "智能统一风格", "需抠图换背景", "需要定制/生成", "需去水印/重绘", "套餐组合生成"})
 
 
 def materialize_final_images(plan: dict[str, Any], selected_style: str, quality: str | None = "standard") -> dict[str, Any]:
@@ -666,15 +743,15 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             same = next((c for c in candidates if c["styleId"] == style_id), None)
             sample = sample or same
-            if same and row["status"] == "直接可用":
+            if same and same.get("reusable", True) and row["status"] == "直接可用":
                 direct += 1
             elif same:
                 review += 1
             else:
                 bg_replace += 1
         sample = sample or style_sample_candidate(style_id)
-        style_name = STYLE_COLORS.get(style_id, (f"上传风格 {idx}", (230, 230, 230), (80, 80, 80)))[0]
-        color = STYLE_COLORS.get(style_id, ("", (230, 230, 230), (80, 80, 80)))[1]
+        style_name = style_name_for(style_id)
+        color = style_color_for(style_id)
         options.append(
             {
                 "id": style_id,
@@ -811,8 +888,9 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
     results = []
     for item in menu["items"]:
         candidates = top_candidates(item, library)
+        components = component_matches(item, library) if item.get("kind") == "套餐/组合" else []
         original_status = status_for(candidates)
-        results.append({**item, "status": original_status, "originalStatus": original_status, "candidates": candidates})
+        results.append({**item, "status": original_status, "originalStatus": original_status, "candidates": candidates, "componentMatches": components})
     styles = style_options(results)
     selected_style = selected_style or (styles[0]["id"] if styles else "")
     for row in results:
@@ -835,6 +913,10 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         chosen = candidates[0] if candidates else None
         if not chosen:
             action = "需要定制/生成"
+        elif not chosen.get("reusable", True):
+            action = "需去水印/重绘"
+        elif row["kind"] == "套餐/组合" and detect_kind(str(chosen.get("dishName") or ""), "") != "套餐/组合":
+            action = "套餐组合生成"
         elif chosen.get("generated") and row["originalStatus"] == "未找到":
             action = "智能补图"
         elif chosen.get("generated"):
@@ -842,17 +924,17 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         else:
             action = "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
-        row["publicStatus"] = "已生成" if chosen else "待补图"
+        row["publicStatus"] = "待处理" if chosen and not chosen.get("reusable", True) else ("已生成" if chosen else "待补图")
         row["points"] = points_for(row["status"], action, row["kind"], quality_info["id"])
     total_points = sum(int(row.get("points") or 0) for row in results)
     summary = {
         "total": len(results),
         "direct": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
         "review": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
-        "missing": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
+        "missing": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成", "需去水印/重绘", "套餐组合生成"}),
         "reuse": sum(1 for r in results if r["backgroundAction"] == "背景一致，直接复用"),
         "bgReplace": sum(1 for r in results if r["backgroundAction"] in {"智能统一风格", "需抠图换背景"}),
-        "custom": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成"}),
+        "custom": sum(1 for r in results if r["backgroundAction"] in {"智能补图", "需要定制/生成", "需去水印/重绘", "套餐组合生成"}),
         "points": total_points,
     }
     menu_count = sum(1 for p in UPLOAD_DIR.iterdir() if p.suffix.lower() in MENU_EXTS) or 1
@@ -1142,6 +1224,27 @@ def api_pipeline_config():
     return jsonify(pipeline_payload())
 
 
+@app.get("/api/library-status")
+def api_library_status():
+    library = library_images()
+    sources: dict[str, int] = {}
+    reusable = 0
+    for image in library:
+        sources[image.source] = sources.get(image.source, 0) + 1
+        if image.reusable:
+            reusable += 1
+    return jsonify(
+        {
+            "total": len(library),
+            "reusable": reusable,
+            "sources": sources,
+            "stores": len({image.store for image in library}),
+            "styles": len({image.style_id for image in library}),
+            "externalDirs": [str(path) for path in configured_library_dirs()],
+        }
+    )
+
+
 @app.get("/api/tencent-status")
 def api_tencent_status():
     return jsonify(tencent_status_payload())
@@ -1216,6 +1319,14 @@ def api_export():
 @app.get("/media/<path:name>")
 def media(name: str):
     return send_from_directory(LIBRARY_DIR, name)
+
+
+@app.get("/external-media/<path:name>")
+def external_media(name: str):
+    path = external_image_path(name)
+    if path is None:
+        return jsonify({"error": "图片不存在或未授权"}), 404
+    return send_file(path)
 
 
 @app.get("/download/<path:name>")

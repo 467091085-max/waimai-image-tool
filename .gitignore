@@ -9,8 +9,11 @@ __pycache__/
 data/uploads/*
 data/library/uploaded_*
 data/library/demo_store/
+data/library/_ai_outputs/
 data/library/.demo_ready
+data/library_index/*
 data/exports/*
 !data/uploads/.gitkeep
 !data/library/.gitkeep
+!data/library_index/.gitkeep
 !data/exports/.gitkeep

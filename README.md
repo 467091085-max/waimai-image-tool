@@ -5,6 +5,9 @@
 ## 已实现功能
 
 - 菜单上传：支持 `.xls` 和 `.xlsx`，提供标准菜单模板下载。
+- 菜单解析审计：支持多 Sheet、空行表头、运营数据导出、成本/活动噪声表过滤。
+- 真实图库读取：本地自动扫描 `cleanpic` / `watermarkpic`，clean 图优先匹配，水印图只做参考。
+- 图库索引：可生成 JSONL 图片资产索引和缩略图，包含店铺、菜品名、尺寸、来源、标签、sha1。
 - 菜品拆分：自动统计单品、套餐、小吃/其他图片数量。
 - 风格预览：展示 5 套图库风格，选择风格后展示 6 张免费单品样图。
 - 出图质量：支持普通出图和精修出图两档，普通出图 10 积分/张，精修出图 20 积分/张。
@@ -75,9 +78,28 @@ https://waimai-image-tool-1.onrender.com
 语法检查：
 
 ```bash
-python3 -m py_compile app.py
+PYTHONPATH=.codex_deps:. python3 -m py_compile app.py menu_parser.py matching_engine.py library_index.py
 node --check static/app.js
 git diff --check
+```
+
+单元测试：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 -m unittest discover -s tests
+PYTHONPATH=.codex_deps:. python3 test_matching_engine.py
+```
+
+真实菜单解析审计：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 -m menu_parser /Users/guiguixiaxia/Documents/menus
+```
+
+真实图库索引扫描：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 -m library_index --no-thumbs --output data/library_index/library_index.jsonl
 ```
 
 接口和导出链路检查：
@@ -118,10 +140,25 @@ PY
 ```text
 data/uploads/   上传菜单
 data/library/   图库与演示图库
+data/library_index/   本地图库 JSONL 索引和缩略图
 data/exports/   导出图片包
 ```
 
 这些目录已加入 `.gitignore`，不要把真实客户菜单和真实图库提交到 GitHub。
+
+默认本地真实资料目录：
+
+```text
+/Users/guiguixiaxia/Documents/menus
+/Users/guiguixiaxia/Documents/cleanpic
+/Users/guiguixiaxia/Documents/watermarkpic
+```
+
+如需改成其他位置，可以设置：
+
+```text
+LIBRARY_SOURCE_DIRS=/path/to/cleanpic:/path/to/watermarkpic
+```
 
 ## 生产化遗留问题
 
