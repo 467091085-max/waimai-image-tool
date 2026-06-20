@@ -7,6 +7,7 @@
 - 菜单上传：支持 `.xls` 和 `.xlsx`，提供标准菜单模板下载。
 - 菜单解析审计：支持多 Sheet、空行表头、运营数据导出、成本/活动噪声表过滤。
 - 真实图库读取：本地自动扫描 `cleanpic` / `watermarkpic`，clean 图优先匹配，水印图只做参考。
+- 线上真实种子图库：仓库内已导入一批由 `cleanpic` 压缩生成的无水印真实菜品图，Render 不依赖 Mac 本地目录也能展示真实图片。
 - 图库索引：可生成 JSONL 图片资产索引和缩略图，包含店铺、菜品名、尺寸、来源、标签、sha1。
 - 菜品拆分：自动统计单品、套餐、小吃/其他图片数量。
 - 风格预览：展示 5 套图库风格，选择风格后展示 6 张免费单品样图。
@@ -111,6 +112,12 @@ PYTHONPATH=.codex_deps:. python3 -m menu_parser /Users/guiguixiaxia/Documents/me
 PYTHONPATH=.codex_deps:. python3 -m library_index --no-thumbs --output data/library_index/library_index.jsonl
 ```
 
+从 Mac 的 `cleanpic` 生成线上真实种子图库：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 scripts/import_seed_library.py --limit 360 --max-side 900 --quality 82
+```
+
 接口和导出链路检查：
 
 ```bash
@@ -149,6 +156,7 @@ PY
 ```text
 data/uploads/   上传菜单
 data/library/   图库与演示图库
+data/library/seed_*/   可部署到 Render 的真实无水印种子图库
 data/library_index/   本地图库 JSONL 索引和缩略图
 data/exports/   导出图片包
 data/object_store/   本地对象存储占位
@@ -180,6 +188,7 @@ LIBRARY_SOURCE_DIRS=/path/to/cleanpic:/path/to/watermarkpic
 5 个匹配引擎单测通过
 24 个真实菜单解析通过，共 3036 个菜品
 真实图库扫描 2316 张
+Render 可用真实种子图库 359 张
 小菜单端到端烟测通过：上传、计划、充值、扣费、正式生成、两平台加水印导出 ZIP、下载 ZIP
 ```
 

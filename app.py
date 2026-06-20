@@ -510,12 +510,15 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
 def library_images() -> list[LibraryImage]:
     ensure_demo_data()
     images = []
+    has_seed_library = any(path.is_dir() and path.name.startswith("seed_") for path in LIBRARY_DIR.iterdir())
     for path in sorted(LIBRARY_DIR.rglob("*")):
         if path.suffix.lower() not in IMAGE_EXTS:
             continue
         rel = path.relative_to(LIBRARY_DIR)
         parts = rel.parts
         if parts and parts[0].startswith("_"):
+            continue
+        if has_seed_library and parts and parts[0] == "demo_store":
             continue
         store = parts[0] if len(parts) > 1 else "uploaded"
         style_id = next((p for p in parts if p.startswith("style-")), "style-upload")
@@ -634,6 +637,9 @@ def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score
 
 
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
+    library_sample = next((image for image in library_images() if image.style_id == style_id), None)
+    if library_sample is not None:
+        return candidate_from_path(library_sample.path, library_sample.dish, library_sample.style_id, library_sample.source, 90.0)
     sample = next((p for p in sorted((LIBRARY_DIR / "demo_store" / style_id).glob("*.jpg"))), None)
     if sample is None:
         sample = LIBRARY_DIR / "_style_samples" / style_id / "整店风格预览.jpg"
@@ -728,6 +734,9 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
 
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = sorted({c["styleId"] for r in results for c in r["candidates"] if c["styleId"]})
+    for style_id in sorted({image.style_id for image in library_images() if image.style_id}):
+        if style_id not in style_ids:
+            style_ids.append(style_id)
     if not style_ids:
         style_ids = list(STYLE_COLORS)
     options = []
