@@ -41,12 +41,16 @@ async function api(url) {
 
 function renderLibrary(data) {
   const summary = data.summary || {};
+  const cleaning = data.cleaningSummary || summary.cleaning || {};
   const sources = data.sources || {};
   setText("#metricTotal", summary.total ?? 0);
   setText("#metricClean", sources.clean ?? 0);
   setText("#metricWatermark", sources.watermark ?? 0);
   setText("#metricInternal", sources.internal ?? 0);
-  setText("#metricReusable", summary.reusable ?? 0);
+  setText("#metricReusable", cleaning.reusable ?? summary.reusable ?? 0);
+  setText("#metricWatermarkRisk", cleaning.watermarkRisk ?? 0);
+  setText("#metricNeedsReview", cleaning.needsReview ?? 0);
+  setText("#metricLowQuality", cleaning.lowQuality ?? 0);
   setText("#metricStores", `${summary.stores ?? 0} / ${summary.styles ?? 0}`);
   setText("#libraryHint", `来源 ${Object.keys(sources).length} 类，样例 ${data.samples?.length || 0} 张`);
 
@@ -68,6 +72,11 @@ function renderLibrary(data) {
 
 function sampleCard(sample) {
   const source = sample.source || "unknown";
+  const reviewReasons = sample.reviewReasons || [];
+  const state = reviewReasons.length || sample.hasBrandWatermark || sample.hasDishText
+    ? "需审核"
+    : sample.reusable ? "可复用" : "仅参考";
+  const quality = sample.qualityScore == null ? "" : `<span>质量 ${esc(sample.qualityScore)}</span>`;
   const image = sample.url
     ? `<img src="${esc(sample.url)}" alt="${esc(sample.dishName || "样例图片")}" loading="lazy">`
     : '<span>无图片</span>';
@@ -77,10 +86,11 @@ function sampleCard(sample) {
       <figcaption>
         <div class="sample-meta">
           <span class="pill ${sourceClass(source)}">${esc(sourceLabels[source] || source)}</span>
-          <span>${sample.reusable ? "可复用" : "仅参考"}</span>
+          <span>${esc(state)}</span>
         </div>
         <b title="${esc(sample.dishName)}">${esc(sample.dishName || "未命名菜品")}</b>
         <span title="${esc(sample.store)}">${esc(sample.store || "未知门店")}</span>
+        ${quality}
       </figcaption>
     </article>`
   );

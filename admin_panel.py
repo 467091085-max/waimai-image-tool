@@ -9,6 +9,7 @@ from flask import Blueprint, Response, jsonify, render_template, request
 
 MENU_EXTS = {".xls", ".xlsx"}
 REQUIRED_SOURCES = ("clean", "watermark", "internal")
+CLEANING_LOW_QUALITY_SCORE = 0.7
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,12 @@ def library_sample_payload(deps: AdminDependencies, limit: int = 18) -> dict[str
         sources.setdefault(source, 0)
 
     stores = {str(_field(image, "store", "")) for image in images if _field(image, "store", "")}
-    styles = {str(_field(image, "style_id", "")) for image in images if _field(image, "style_id", "")}
-    reusable = sum(1 for image in images if bool(_field(image, "reusable", False)))
+    styles = {
+        str(_first_field(image, "style_id", "styleId", "style", default=""))
+        for image in images
+        if _first_field(image, "style_id", "styleId", "style", default="")
+    }
+    cleaning = library_cleaning_summary(images)
 
     by_source: dict[str, list[dict[str, Any]]] = {source: [] for source in sorted(sources)}
     sample_pool: dict[str, list[dict[str, Any]]] = {source: [] for source in sorted(sources)}
@@ -74,14 +79,46 @@ def library_sample_payload(deps: AdminDependencies, limit: int = 18) -> dict[str
         "ok": True,
         "summary": {
             "total": len(images),
-            "reusable": reusable,
-            "referenceOnly": max(0, len(images) - reusable),
+            "reusable": cleaning["reusable"],
+            "referenceOnly": max(0, len(images) - cleaning["reusable"]),
             "stores": len(stores),
             "styles": len(styles),
+            "cleaning": cleaning,
         },
+        "cleaningSummary": cleaning,
         "sources": dict(sorted(sources.items())),
         "samples": samples[:limit],
         "bySource": by_source,
+    }
+
+
+def library_cleaning_summary(images: Sequence[Any]) -> dict[str, int]:
+    reusable = 0
+    watermark_risk = 0
+    needs_review = 0
+    low_quality = 0
+
+    for image in images:
+        if _as_bool(_field(image, "reusable", False)):
+            reusable += 1
+
+        has_watermark = _image_has_watermark_risk(image)
+        has_dish_text = _as_bool(_first_field(image, "has_dish_text", "hasDishText", default=False))
+        quality_score = _quality_score(image)
+        reasons = _review_reasons(image)
+
+        if has_watermark:
+            watermark_risk += 1
+        if quality_score is not None and quality_score < CLEANING_LOW_QUALITY_SCORE:
+            low_quality += 1
+        if has_watermark or has_dish_text or reasons or (quality_score is not None and quality_score < CLEANING_LOW_QUALITY_SCORE):
+            needs_review += 1
+
+    return {
+        "reusable": reusable,
+        "watermarkRisk": watermark_risk,
+        "needsReview": needs_review,
+        "lowQuality": low_quality,
     }
 
 
@@ -206,14 +243,19 @@ def _balanced_samples(by_source: Mapping[str, Sequence[dict[str, Any]]], limit: 
 def _image_sample(image: Any, deps: AdminDependencies) -> dict[str, Any]:
     path_value = _field(image, "path", "")
     path = Path(path_value) if path_value else Path()
+    style_id = str(_first_field(image, "style_id", "styleId", "style", default=""))
     return {
-        "imageId": str(_field(image, "image_id", "")),
-        "dishName": str(_field(image, "dish", "")),
+        "imageId": str(_first_field(image, "image_id", "imageId", "id", default="")),
+        "dishName": str(_first_field(image, "dish", "dishName", "name", default="")),
         "store": str(_field(image, "store", "")),
         "source": str(_field(image, "source", "unknown") or "unknown"),
-        "styleId": str(_field(image, "style_id", "")),
-        "styleName": _style_label(str(_field(image, "style_id", ""))),
-        "reusable": bool(_field(image, "reusable", False)),
+        "styleId": style_id,
+        "styleName": _style_label(style_id),
+        "reusable": _as_bool(_field(image, "reusable", False)),
+        "hasBrandWatermark": _image_has_watermark_risk(image),
+        "hasDishText": _as_bool(_first_field(image, "has_dish_text", "hasDishText", default=False)),
+        "qualityScore": _quality_score(image),
+        "reviewReasons": _review_reasons(image),
         "url": deps.media_url_for_path(path) if path_value else "",
     }
 
@@ -230,6 +272,47 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _first_field(value: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        item = _field(value, name, None)
+        if item is not None:
+            return item
+    return default
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "none", "null"}
+    return bool(value)
+
+
+def _quality_score(image: Any) -> float | None:
+    value = _first_field(image, "quality_score", "qualityScore", default=None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _review_reasons(image: Any) -> list[str]:
+    value = _first_field(image, "review_reasons", "reviewReasons", default=[])
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _image_has_watermark_risk(image: Any) -> bool:
+    explicit = _first_field(image, "has_brand_watermark", "hasBrandWatermark", default=None)
+    source = str(_field(image, "source", "") or "").lower()
+    path_value = str(_field(image, "path", "") or "").lower()
+    inferred = source == "watermark" or "watermarkpic" in source or "watermarkpic" in path_value
+    return (explicit is not None and _as_bool(explicit)) or inferred
 
 
 def _bounded_int(value: str | None, default: int, minimum: int, maximum: int) -> int:

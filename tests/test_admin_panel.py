@@ -31,6 +31,10 @@ def make_app(upload_dir: Path) -> Flask:
             style_id="style-clean",
             source="clean",
             reusable=True,
+            has_brand_watermark=False,
+            has_dish_text=False,
+            quality_score=1.0,
+            review_reasons=[],
         ),
         SimpleNamespace(
             image_id="watermark001",
@@ -40,6 +44,10 @@ def make_app(upload_dir: Path) -> Flask:
             style_id="style-watermark",
             source="watermark",
             reusable=False,
+            has_brand_watermark=True,
+            has_dish_text=False,
+            quality_score=0.75,
+            review_reasons=["品牌水印风险：来源或路径为 watermark"],
         ),
         SimpleNamespace(
             image_id="internal001",
@@ -49,6 +57,10 @@ def make_app(upload_dir: Path) -> Flask:
             style_id="style-1",
             source="internal",
             reusable=True,
+            has_brand_watermark=False,
+            has_dish_text=True,
+            quality_score=0.5,
+            review_reasons=["菜品名文字风险：包含活动词"],
         ),
     ]
 
@@ -100,12 +112,20 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertEqual(data["summary"]["total"], 3)
+        self.assertEqual(data["cleaningSummary"]["reusable"], 2)
+        self.assertEqual(data["cleaningSummary"]["watermarkRisk"], 1)
+        self.assertEqual(data["cleaningSummary"]["needsReview"], 2)
+        self.assertEqual(data["cleaningSummary"]["lowQuality"], 1)
+        self.assertEqual(data["summary"]["cleaning"], data["cleaningSummary"])
         self.assertEqual(data["sources"]["clean"], 1)
         self.assertEqual(data["sources"]["watermark"], 1)
         self.assertEqual(data["sources"]["internal"], 1)
         self.assertEqual({sample["source"] for sample in data["samples"]}, {"clean", "watermark", "internal"})
         for sample in data["samples"]:
-            self.assertGreaterEqual(sample.keys(), {"imageId", "dishName", "store", "source", "reusable", "url"})
+            self.assertGreaterEqual(
+                sample.keys(),
+                {"imageId", "dishName", "store", "source", "reusable", "url", "qualityScore", "reviewReasons"},
+            )
             self.assertNotIn("path", sample)
         payload = json.dumps(data, ensure_ascii=False).lower()
         self.assertNotIn("secret", payload)
