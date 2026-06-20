@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>蒜头外卖菜品图工作台</title>
+  <title>外卖菜品图一键生成工具</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">蒜</span>
+      <span class="brand-mark">图</span>
       <div>
-        <h1>蒜头外卖菜品图工作台</h1>
+        <h1>外卖菜品图一键生成工具</h1>
         <p>上传菜单，选择风格，生成整店统一菜品图</p>
       </div>
     </div>
@@ -56,6 +56,10 @@
           <em>生成后可用</em>
         </button>
         <input id="menuFile" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      </div>
+      <div class="upload-helper">
+        <a class="template-link" href="/download-menu-template">下载标准菜单模板</a>
+        <span>建议按模板填写，系统会更稳定地识别菜品名、分类、价格和套餐。</span>
       </div>
       <div id="menuStatus" class="menu-status">等待选择菜单</div>
     </section>
@@ -103,11 +107,11 @@
           <div class="quality-options">
             <label class="quality-option">
               <input class="quality-radio" type="radio" name="quality" value="standard" checked>
-              <span><b>普通出图</b><em>混元 · 10积分/张 · 约 ¥1</em></span>
+              <span><b>普通出图</b><em>10积分/张</em></span>
             </label>
             <label class="quality-option premium">
               <input class="quality-radio" type="radio" name="quality" value="premium">
-              <span><b>精修出图</b><em>Gemini · 20积分/张 · 约 ¥2</em></span>
+              <span><b>精修出图</b><em>20积分/张</em></span>
             </label>
           </div>
         </div>
@@ -115,22 +119,22 @@
           <div class="platform-head">
             <div>
               <b>交付平台和尺寸</b>
-              <p>默认生成美团主图；每增加一个平台，额外 100 积分/单。</p>
+              <p>任选 1 个平台免费；每多选 1 个平台，额外 100 积分/单。</p>
             </div>
-            <span id="platformChargeHint">美团 800×600</span>
+            <span id="platformChargeHint">请选择至少 1 个平台</span>
           </div>
           <div id="platformOptions" class="platform-options">
-            <label class="platform-option required">
-              <input type="checkbox" value="meituan" checked disabled>
-              <span><b>美团外卖</b><em>800×600 · ≤5MB · 默认</em></span>
+            <label class="platform-option">
+              <input class="platform-check" type="checkbox" value="meituan">
+              <span><b>美团外卖</b><em>800×600 · ≤5MB · 选中免费</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="taobao">
-              <span><b>淘宝外卖/饿了么</b><em>800×800 · ≤20MB · +100积分</em></span>
+              <span><b>淘宝外卖/饿了么</b><em>800×800 · ≤20MB · 加选 +100积分</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="jd">
-              <span><b>京东外卖/京东秒送</b><em>800×800 · ≤5MB · +100积分</em></span>
+              <span><b>京东外卖/京东秒送</b><em>800×800 · ≤5MB · 加选 +100积分</em></span>
             </label>
           </div>
         </div>
@@ -169,8 +173,8 @@
             </label>
           </div>
           <div id="watermarkDemo" class="watermark-demo">
-            <span>水印预览</span>
-            <b>品牌名</b>
+            <span>水印预览 · 美团外卖 800×600</span>
+            <div class="watermark-preview-canvas"></div>
           </div>
         </div>
         <div class="style-confirm">
@@ -226,7 +230,6 @@
         <label>图片格式
           <select id="formatSelect">
             <option value="jpg">JPG</option>
-            <option value="png">PNG</option>
           </select>
         </label>
         <button id="exportZipBtn" class="primary" disabled>打包导出 ZIP</button>

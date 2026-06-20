@@ -52,7 +52,6 @@ QUALITY_OPTIONS = {
     "standard": {
         "id": "standard",
         "name": "普通出图",
-        "provider": "混元",
         "points": BASE_IMAGE_POINTS,
         "cash": round(BASE_IMAGE_POINTS / POINT_RATE, 2),
         "description": "适合常规上架图，成本更低。",
@@ -60,7 +59,6 @@ QUALITY_OPTIONS = {
     "premium": {
         "id": "premium",
         "name": "精修出图",
-        "provider": "Gemini",
         "points": PREMIUM_IMAGE_POINTS,
         "cash": round(PREMIUM_IMAGE_POINTS / POINT_RATE, 2),
         "description": "适合更高质感和更复杂的统一风格。",
@@ -239,10 +237,11 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
     header_row = 0
     name_col = None
     headers = []
+    name_headers = {"菜单名", "菜品名", "菜名", "餐品名", "餐品名称", "商品名", "商品名称", "产品名", "产品名称", "名称", "品名"}
     for ridx in range(min(12, len(raw))):
         row = [str(v).strip() for v in raw.iloc[ridx].tolist()]
         for cidx, value in enumerate(row):
-            if value in {"菜单名", "菜品名", "商品名", "商品名称", "名称"}:
+            if value in name_headers:
                 header_row = ridx
                 name_col = cidx
                 headers = row
@@ -252,9 +251,9 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
     if name_col is None:
         name_col = 0
         headers = [f"列{i + 1}" for i in range(raw.shape[1])]
-    cat_col = next((i for i, h in enumerate(headers) if h in {"一级分类", "分类", "分类名", "品类"}), None)
-    price_col = next((i for i, h in enumerate(headers) if h in {"活动价", "价格", "售价", "原价"}), None)
-    attr_col = next((i for i, h in enumerate(headers) if h in {"属性", "规格", "规格名"}), None)
+    cat_col = next((i for i, h in enumerate(headers) if h in {"一级分类", "二级分类", "分类", "分类名", "商品分类", "菜单分类", "分组", "品类"}), None)
+    price_col = next((i for i, h in enumerate(headers) if h in {"活动价", "价格", "售价", "销售价", "会员价", "折扣价", "原价", "现价"}), None)
+    attr_col = next((i for i, h in enumerate(headers) if h in {"属性", "规格", "规格名", "套餐内容", "内容", "描述", "备注"}), None)
     items = []
     seen = set()
     for ridx in range(header_row + 1, len(raw)):
@@ -594,7 +593,7 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
             "rate": f"1 元 = {POINT_RATE} 积分",
             "addOns": [
                 {"name": "风格预览", "price": f"免费 {PREVIEW_SAMPLE_COUNT} 张样图"},
-                {"name": "正式出图", "price": f"{quality_info['points']} 积分/张 · {quality_info['provider']}"},
+                {"name": "正式出图", "price": f"{quality_info['points']} 积分/张"},
                 {"name": "自定义修改", "price": f"{CUSTOM_EDIT_POINTS} 积分/张"},
                 {"name": "品牌水印", "price": f"{WATERMARK_POINTS} 积分/单"},
                 {"name": "增加平台尺寸", "price": f"{EXTRA_PLATFORM_POINTS} 积分/平台"},
@@ -761,7 +760,7 @@ def export_zip(
     selected = set(selected_rows or [])
     selected_platforms = parse_platforms(platforms)
     image_format = image_format.lower()
-    if image_format not in {"jpg", "jpeg", "png"}:
+    if image_format not in {"jpg", "jpeg"}:
         image_format = "jpg"
     ext = ".jpg" if image_format in {"jpg", "jpeg"} else f".{image_format}"
     watermark_enabled = isinstance(watermark, dict) and bool(watermark.get("enabled"))
@@ -812,6 +811,20 @@ def export_zip(
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/download-menu-template")
+def download_menu_template():
+    rows = [
+        {"分类": "热销", "菜品名": "老长沙辣椒炒肉盖码饭", "价格": "19.8", "类型": "单品", "套餐内容/规格": "", "备注": "菜品名为必填"},
+        {"分类": "热销", "菜品名": "小炒黄牛肉盖码饭", "价格": "25.8", "类型": "单品", "套餐内容/规格": "", "备注": ""},
+        {"分类": "套餐", "菜品名": "辣椒炒肉+茄子肉末盖码饭", "价格": "24.8", "类型": "套餐/组合", "套餐内容/规格": "辣椒炒肉；茄子肉末；米饭", "备注": "套餐建议写清包含菜品"},
+        {"分类": "小吃饮品", "菜品名": "紫菜蛋花汤", "价格": "3.9", "类型": "饮品/小食", "套餐内容/规格": "", "备注": ""},
+    ]
+    output = io.BytesIO()
+    pd.DataFrame(rows).to_excel(output, index=False)
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="外卖菜品菜单模板.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/plan")

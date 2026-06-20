@@ -16,7 +16,7 @@ const state = {
   freeReworkRemaining: 0,
   stylePreview: null,
   watermark: defaultWatermark(),
-  deliveryPlatforms: ["meituan"],
+  deliveryPlatforms: [],
   quality: "standard"
 };
 
@@ -46,8 +46,8 @@ const platformMeta = {
 };
 
 const qualityMeta = {
-  standard: { name: "普通出图", provider: "混元", points: 10, cash: 1 },
-  premium: { name: "精修出图", provider: "Gemini", points: 20, cash: 2 }
+  standard: { name: "普通出图", points: 10 },
+  premium: { name: "精修出图", points: 20 }
 };
 
 function currentQuality() {
@@ -137,9 +137,13 @@ function watermarkPayload() {
 
 function exportPlatforms() {
   const chosen = $("#platformSelect")?.value || "purchased";
+  if (!state.deliveryPlatforms.length) {
+    toast("请至少选择一个交付平台");
+    return [];
+  }
   if (chosen === "purchased") return [...state.deliveryPlatforms];
   if (!state.deliveryPlatforms.includes(chosen)) {
-    toast(`请先在正式出图前购买${platformMeta[chosen]?.name || "该平台"}尺寸`);
+    toast(`请先在交付平台和尺寸里勾选${platformMeta[chosen]?.name || "该平台"}`);
     return [];
   }
   return [chosen];
@@ -186,7 +190,7 @@ function setControls() {
   if (startEm) {
     startEm.textContent = state.running ? "处理中" : state.plan ? "重新预览" : state.uploaded ? "自动开始" : "等待菜单";
   }
-  $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running;
+  $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running || !state.deliveryPlatforms.length;
   $("#confirmStyleBtn").textContent = state.plan ? `扣 ${totalCharge()} 积分，生成正式图` : "确认风格，生成正式图";
   $("#exportShortcutBtn").disabled = !state.confirmed;
   if (exportEm) exportEm.textContent = state.confirmed ? "去导出" : "生成后可用";
@@ -195,6 +199,8 @@ function setControls() {
   $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
   $("#pointsBalance").textContent = `${state.account.balance || 0}`;
   updateChargeText();
+  renderQualityControls();
+  renderPlatformControls();
   unlockPanels();
 }
 
@@ -209,7 +215,9 @@ function updateChargeText() {
     const parts = [`正式出图 ${base} 积分`];
     if (wm) parts.push(`品牌水印 ${wm} 积分`);
     if (platform) parts.push(`增加平台 ${platform} 积分`);
-    hint.textContent = `${parts.join(" + ")}，确认后一次性扣除。`;
+    hint.textContent = state.deliveryPlatforms.length
+      ? `${parts.join(" + ")}，确认后一次性扣除。`
+      : "请先选择至少一个交付平台，首个平台免费。";
   }
 }
 
@@ -289,8 +297,8 @@ function renderWaiting() {
     { title: "导出图片", status: "待预览" }
   ]);
   $("#styleBox").innerHTML = `<div class="empty">菜单上传后会自动展示可选风格</div>`;
-  $("#stylePreviewBox").className = "style-preview-box empty";
-  $("#stylePreviewBox").innerHTML = "先选择一个图库风格，这里会展示 6 张免费单品样图";
+  $("#stylePreviewBox").className = "style-preview-box";
+  $("#stylePreviewBox").innerHTML = previewPlaceholders("等待菜单");
   $("#selectedStyleHint").textContent = "还没有选择风格";
   $("#summary").innerHTML = "";
   $("#reworkBanner").innerHTML = "";
@@ -332,7 +340,7 @@ function renderPlan(showPreview = false) {
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
-    `${quality.name} ${quality.provider} · ${quality.points} 积分/张`,
+    `${quality.name} · ${quality.points} 积分/张`,
     `交付平台 ${state.deliveryPlatforms.length} 个`,
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
@@ -349,13 +357,24 @@ function renderPlatformControls() {
   $$(".platform-check").forEach(input => {
     input.checked = state.deliveryPlatforms.includes(input.value);
     input.disabled = locked;
+    const meta = platformMeta[input.value];
+    const desc = input.closest(".platform-option")?.querySelector("em");
+    if (desc && meta) {
+      const selectedIndex = state.deliveryPlatforms.indexOf(input.value);
+      const priceText = selectedIndex < 0
+        ? (state.deliveryPlatforms.length ? "加选 +100积分" : "选中免费")
+        : (selectedIndex === 0 ? "当前免费" : "已加选 +100积分");
+      desc.textContent = `${meta.size} · ≤${sizeLimitText(meta)} · ${priceText}`;
+    }
   });
   const names = state.deliveryPlatforms.map(id => {
     const meta = platformMeta[id];
     return `${meta?.name || id} ${meta?.size || ""} · ≤${sizeLimitText(meta)}`;
   });
   const charge = platformCharge();
-  $("#platformChargeHint").textContent = charge ? `${names.join(" / ")} · +${charge}积分` : names.join(" / ");
+  $("#platformChargeHint").textContent = names.length
+    ? (charge ? `${names.join(" / ")} · +${charge}积分` : `${names.join(" / ")} · 免费`)
+    : "请选择至少 1 个平台";
   const select = $("#platformSelect");
   if (select) {
     if (select.value !== "purchased" && !state.deliveryPlatforms.includes(select.value)) {
@@ -375,13 +394,15 @@ function renderQualityControls() {
   });
   const hint = $("#qualityChargeHint");
   if (hint) {
-    hint.textContent = `${quality.name} · ${quality.provider} · ${quality.points}积分/张`;
+    hint.textContent = `${quality.name} · ${quality.points}积分/张`;
   }
 }
 
 function renderWatermarkControls() {
   const enabled = $("#watermarkEnabled");
   if (!enabled) return;
+  setPreviewAspect();
+  const meta = platformMeta[primaryPlatform()] || platformMeta.meituan;
   const locked = state.confirmed;
   enabled.checked = state.watermark.enabled;
   enabled.disabled = locked;
@@ -400,7 +421,7 @@ function renderWatermarkControls() {
   const text = state.watermark.text || state.menu?.store || "品牌名";
   demo.className = `watermark-demo ${state.watermark.enabled ? "enabled" : ""} ${state.watermark.pattern} ${state.watermark.position}`;
   demo.innerHTML = `
-    <span>${locked ? "水印已锁定" : "水印预览"}</span>
+    <span>${locked ? "水印已锁定" : `水印预览 · ${meta.name} ${meta.size}`}</span>
     <div class="watermark-preview-canvas">
       ${watermarkOverlay(text)}
     </div>
@@ -440,6 +461,16 @@ function styleName(styleId) {
   return state.plan?.styles.find(s => s.id === styleId)?.name || "已选风格";
 }
 
+function previewPlaceholders(text = "免费样图") {
+  return Array.from({ length: 6 }, (_, index) => `
+    <div class="preview-sample placeholder">
+      <b>样图 ${index + 1}</b>
+      <div class="sample-frame"></div>
+      <p>${esc(text)}</p>
+    </div>
+  `).join("");
+}
+
 function renderStyles() {
   const p = state.plan;
   $("#selectedStyleHint").textContent = state.pendingStyle ? `已选择：${styleName(state.pendingStyle)}` : "还没有选择风格";
@@ -470,13 +501,13 @@ function renderStylePreview() {
   const box = $("#stylePreviewBox");
   if (!box) return;
   if (!state.pendingStyle) {
-    box.className = "style-preview-box empty";
-    box.innerHTML = "先选择一个图库风格，这里会展示 6 张免费单品样图";
+    box.className = "style-preview-box";
+    box.innerHTML = previewPlaceholders("选择风格后生成");
     return;
   }
   if (!state.stylePreview || state.stylePreview.style !== state.pendingStyle) {
-    box.className = "style-preview-box empty";
-    box.innerHTML = "正在生成 6 张免费单品样图...";
+    box.className = "style-preview-box";
+    box.innerHTML = previewPlaceholders("正在生成");
     return;
   }
   box.className = "style-preview-box";
@@ -598,7 +629,7 @@ async function uploadMenu() {
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
     state.watermark = defaultWatermark();
-    state.deliveryPlatforms = ["meituan"];
+    state.deliveryPlatforms = [];
     state.selectedRows.clear();
     renderWaiting();
     shouldAutoStart = true;
@@ -641,6 +672,7 @@ async function startJob(options = {}) {
 
 async function confirmStyle() {
   if (!state.plan || !state.pendingStyle) return toast("请先选择风格");
+  if (!state.deliveryPlatforms.length) return toast("请至少选择一个交付平台");
   const charge = totalCharge();
   if (!state.charged) {
     if ((state.account.balance || 0) < charge) {
@@ -839,11 +871,17 @@ $$(".platform-check").forEach(input => {
       state.deliveryPlatforms.push(value);
     }
     if (!event.target.checked) {
+      if (state.deliveryPlatforms.length <= 1) {
+        event.target.checked = true;
+        toast("请至少保留一个交付平台");
+        renderPlatformControls();
+        return;
+      }
       state.deliveryPlatforms = state.deliveryPlatforms.filter(id => id !== value);
-      if (!state.deliveryPlatforms.includes("meituan")) state.deliveryPlatforms.unshift("meituan");
     }
     renderPlatformControls();
-    renderPlan(state.confirmed);
+    if (state.plan) renderPlan(state.confirmed);
+    else setControls();
   };
 });
 $$(".quality-radio").forEach(input => {
