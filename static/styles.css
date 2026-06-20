@@ -983,6 +983,24 @@ main {
   color: var(--teal);
   font-weight: 800;
 }
+.pill.warning {
+  background: #fff8e1;
+  border-color: #f6d18d;
+  color: #8a5a00;
+  font-weight: 800;
+}
+.pill.error {
+  background: #fff4f2;
+  border-color: #f4b3ab;
+  color: #b3261e;
+  font-weight: 800;
+}
+.result-error {
+  margin: 4px 0 0;
+  color: #b3261e;
+  font-size: 12px;
+  font-weight: 800;
+}
 .save-link,
 .single-save-btn {
   color: var(--teal);
