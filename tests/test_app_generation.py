@@ -171,6 +171,39 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][1]["NegativePrompt"], app_module.NEGATIVE_IMAGE_PROMPT)
             self.assertEqual(payloads[1][1]["ProductUrl"], source["url"])
 
+    def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
+        calls: list[str] = []
+
+        def fake_cloud(action: str, payload: dict[str, object], host: str, service: str, version: str, timeout: int = 70) -> dict[str, object]:
+            calls.append(host)
+            raise RuntimeError(f"{host} ResourceInsufficient: 资源不足")
+
+        with mock.patch.object(app_module, "tencent_cloud_api_request", side_effect=fake_cloud):
+            with self.assertRaisesRegex(RuntimeError, "aiart.tencentcloudapi.com.*hunyuan.tencentcloudapi.com"):
+                app_module.tencent_api_request("TextToImageLite", {"Prompt": "测试"})
+
+        self.assertEqual(calls, [app_module.TENCENT_AIART_HOST, app_module.TENCENT_HUNYUAN_HOST])
+
+    def test_preview_keeps_replace_background_error_when_text_fallback_also_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            save_image(source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background", side_effect=RuntimeError("aiart not open")),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")),
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            self.assertIsNone(preview_candidate)
+            self.assertEqual(generation["status"], "failed")
+            self.assertIn("商品背景生成失败", generation["error"])
+            self.assertIn("文生图兜底失败", generation["error"])
+
     def test_preview_sample_materializes_with_tencent_instead_of_local_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

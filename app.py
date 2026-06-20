@@ -313,8 +313,8 @@ def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, s
 def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70) -> dict[str, Any]:
     if action == "TextToImageLite":
         endpoints = [
-            (TENCENT_HUNYUAN_HOST, TENCENT_HUNYUAN_SERVICE, TENCENT_HUNYUAN_VERSION),
             (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
+            (TENCENT_HUNYUAN_HOST, TENCENT_HUNYUAN_SERVICE, TENCENT_HUNYUAN_VERSION),
         ]
         errors = []
         for host, service, version in endpoints:
@@ -324,12 +324,14 @@ def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70)
                 return response
             except RuntimeError as exc:
                 errors.append(str(exc))
-                if "NotExist" not in str(exc) and "ServiceNotActivated" not in str(exc):
-                    raise
         raise RuntimeError("；".join(errors))
     response = tencent_cloud_api_request(action, payload, TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION, timeout)
     response["_Endpoint"] = TENCENT_AIART_HOST
     return response
+
+
+def combined_generation_error(primary_label: str, primary_error: Exception, fallback_label: str, fallback_error: Exception) -> RuntimeError:
+    return RuntimeError(f"{primary_label}失败：{primary_error}；{fallback_label}失败：{fallback_error}")
 
 
 def read_remote_image(url: str, timeout: int = 60) -> Image.Image:
@@ -878,7 +880,10 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                 try:
                     detail = tencent_replace_background(item, source_candidate, selected_style, target, quality)
                 except Exception as replace_error:
-                    detail = tencent_text_to_image(item, selected_style, quality, target)
+                    try:
+                        detail = tencent_text_to_image(item, selected_style, quality, target)
+                    except Exception as text_error:
+                        raise combined_generation_error("商品背景生成", replace_error, "文生图兜底", text_error) from text_error
                     result["fallbackFrom"] = "ReplaceBackground"
                     result["fallbackMessage"] = str(replace_error)[:220]
             else:
@@ -1161,7 +1166,10 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                         detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
                     except Exception as exc:
                         replace_error = exc
-                        detail = tencent_text_to_image(row, selected_style, quality, target)
+                        try:
+                            detail = tencent_text_to_image(row, selected_style, quality, target)
+                        except Exception as text_error:
+                            raise combined_generation_error("商品背景生成", exc, "文生图兜底", text_error) from text_error
                 else:
                     detail = tencent_text_to_image(row, selected_style, quality, target)
                 if replace_error is not None:
