@@ -33,6 +33,7 @@ worktrees/image-pipeline       feature/image-pipeline
 worktrees/account-billing      feature/account-billing
 worktrees/admin-panel          feature/admin-panel
 worktrees/storage-db           feature/storage-db
+worktrees/async-jobs           feature/async-jobs
 ```
 
 ## Responsibilities
@@ -84,19 +85,26 @@ worktrees/storage-db           feature/storage-db
 - Separate local dev DB from production DB.
 - Prepare object storage interface for future COS/OSS.
 
+`feature/async-jobs`
+
+- Move formal batch generation toward job-based execution.
+- Add generation job/item status lifecycle.
+- Add polling-friendly APIs for progress and retry.
+- Keep existing synchronous `/api/generate-final` working until async flow is fully integrated.
+
 ## Merge Order
 
 1. `feature/menu-parser`
 2. `feature/library-import`
 3. `feature/matching-engine`
 4. `feature/image-pipeline`
-5. `feature/admin-panel`
-6. `feature/storage-db`
-7. `feature/account-billing`
+5. `feature/storage-db`
+6. `feature/async-jobs`
+7. `feature/admin-panel`
+8. `feature/account-billing`
 
 `main` stays deployable. Each branch should be merged only after local tests pass.
 
 ## Local Data Rule
 
 Do not copy real customer files into the repository. Scripts should read from the local source directories above or from environment variables.
-
