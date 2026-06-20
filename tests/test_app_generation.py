@@ -266,6 +266,34 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(style_candidate["source"], "generated-style-sample")
             self.assertTrue((root / "_style_backgrounds" / "style-6" / "背景风格样图.jpg").exists())
 
+    def test_style_background_sample_prefers_real_library_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "seed_real_store" / "style-6" / "招牌辣椒炒肉盖码饭.jpg"
+            fallback = root / "_style_backgrounds" / "style-6" / "背景风格样图.jpg"
+            save_image(real, (220, 80, 60))
+            save_image(fallback, (80, 110, 140))
+            app_module.library_images.cache_clear()
+
+            try:
+                with (
+                    mock.patch.object(app_module, "LIBRARY_DIR", root),
+                    mock.patch.object(app_module, "ensure_demo_data"),
+                    mock.patch.object(app_module, "tencent_ready", return_value=True),
+                    mock.patch.object(app_module, "tencent_style_background") as tencent_style,
+                    mock.patch.object(app_module, "draw_demo_image") as draw_demo,
+                ):
+                    style_candidate = app_module.style_sample_candidate("style-6")
+            finally:
+                app_module.library_images.cache_clear()
+
+            self.assertEqual(style_candidate["dishName"], "招牌辣椒炒肉盖码饭")
+            self.assertEqual(style_candidate["source"], "internal")
+            self.assertEqual(style_candidate["styleSampleSource"], "library")
+            self.assertIn("seed_real_store", style_candidate["url"])
+            tencent_style.assert_not_called()
+            draw_demo.assert_not_called()
+
     def test_style_background_sample_can_use_tencent_when_explicitly_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

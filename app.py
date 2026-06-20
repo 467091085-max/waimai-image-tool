@@ -171,6 +171,44 @@ BEVERAGE_WORDS = (
 )
 SOUP_WORDS = ("汤", "羹", "粥")
 GENERIC_MATCH_WORDS = {"米饭", "白饭", "米", "饭", "套餐", "组合", "主食", "餐具", "饮料"}
+STYLE_SAMPLE_PREFERRED_WORDS = (
+    "辣椒炒肉",
+    "小炒黄牛肉",
+    "黄牛肉",
+    "红烧肉",
+    "回锅肉",
+    "番茄炒蛋",
+    "茄子",
+    "招牌",
+    "盖码饭",
+    "盖浇饭",
+    "木桶饭",
+    "牛肉",
+    "鸡",
+)
+STYLE_SAMPLE_BAD_WORDS = tuple(
+    sorted(
+        GENERIC_MATCH_WORDS
+        | {
+            "背景",
+            "勿点",
+            "不要",
+            "不需要",
+            "温馨提示",
+            "提示",
+            "收藏",
+            "宠粉",
+            "起点",
+            "可乐",
+            "雪碧",
+            "王老吉",
+            "矿泉水",
+            "冰红茶",
+        },
+        key=len,
+        reverse=True,
+    )
+)
 
 
 def configured_library_dirs() -> list[Path]:
@@ -903,6 +941,18 @@ def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score
     }
 
 
+def candidate_from_library_image(image: LibraryImage, score: float = 100.0) -> dict[str, Any]:
+    candidate = candidate_from_path(image.path, image.dish, image.style_id, image.source, score)
+    candidate["imageId"] = image.image_id
+    candidate["store"] = image.store
+    candidate["source"] = image.source
+    candidate["reusable"] = image.reusable
+    candidate["url"] = media_url_for_path(image.path)
+    candidate["path"] = str(image.path)
+    candidate["generated"] = False
+    return candidate
+
+
 def style_background_seed_candidate() -> dict[str, Any] | None:
     preferred_names = ("辣椒炒肉", "黄牛肉", "红烧肉", "盖码饭", "招牌")
     images = [image for image in library_images() if image.reusable]
@@ -914,11 +964,56 @@ def style_background_seed_candidate() -> dict[str, Any] | None:
     return None
 
 
+def style_sample_rank(image: LibraryImage) -> tuple[int, str, str]:
+    text = image.dish
+    score = 0
+    if image.source == "internal":
+        score += 18
+    elif image.source == "clean":
+        score += 12
+    if semantic_family(text, image.norm) == "food":
+        score += 22
+    else:
+        score -= 60
+    if detect_kind(text, "") == "单品":
+        score += 16
+    else:
+        score -= 18
+    if any(word and word in text for word in STYLE_SAMPLE_BAD_WORDS):
+        score -= 120
+    for index, word in enumerate(STYLE_SAMPLE_PREFERRED_WORDS):
+        if word in text:
+            score += max(8, 36 - index * 2)
+    if 4 <= len(image.norm) <= 18:
+        score += 8
+    return score, image.store, image.dish
+
+
+def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
+    images = [
+        image
+        for image in library_images()
+        if image.style_id == style_id
+        and image.reusable
+        and image.store != "demo_store"
+        and image.path.exists()
+    ]
+    if not images:
+        return None
+    images.sort(key=style_sample_rank, reverse=True)
+    candidate = candidate_from_library_image(images[0], 100.0)
+    candidate["styleSampleSource"] = "library"
+    return candidate
+
+
 def style_background_target(style_id: str) -> Path:
     return LIBRARY_DIR / "_style_backgrounds" / style_id / "背景风格样图.jpg"
 
 
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
+    library_sample = style_representative_candidate(style_id)
+    if library_sample:
+        return library_sample
     target = style_background_target(style_id)
     metadata = load_ai_output_metadata(target) if target.exists() else None
     if target.exists() and not tencent_style_backgrounds_enabled():
