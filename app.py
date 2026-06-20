@@ -59,6 +59,9 @@ DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 TENCENT_AIART_HOST = "aiart.tencentcloudapi.com"
 TENCENT_AIART_SERVICE = "aiart"
 TENCENT_AIART_VERSION = "2022-12-29"
+TENCENT_HUNYUAN_HOST = "hunyuan.tencentcloudapi.com"
+TENCENT_HUNYUAN_SERVICE = "hunyuan"
+TENCENT_HUNYUAN_VERSION = "2023-09-01"
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
@@ -262,20 +265,20 @@ def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70) -> dict[str, Any]:
+def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, service: str, version: str, timeout: int = 70) -> dict[str, Any]:
     cfg = tencent_config()
     if not tencent_ready():
         raise RuntimeError("腾讯云生图环境变量未配置完整")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     timestamp = int(time.time())
     date = time.strftime("%Y-%m-%d", time.gmtime(timestamp))
-    canonical_headers = f"content-type:application/json; charset=utf-8\nhost:{TENCENT_AIART_HOST}\nx-tc-action:{action.lower()}\n"
+    canonical_headers = f"content-type:application/json; charset=utf-8\nhost:{host}\nx-tc-action:{action.lower()}\n"
     signed_headers = "content-type;host;x-tc-action"
     canonical_request = "\n".join(["POST", "/", "", canonical_headers, signed_headers, sha256_hex(body)])
-    credential_scope = f"{date}/{TENCENT_AIART_SERVICE}/tc3_request"
+    credential_scope = f"{date}/{service}/tc3_request"
     string_to_sign = "\n".join(["TC3-HMAC-SHA256", str(timestamp), credential_scope, sha256_hex(canonical_request)])
     secret_date = hmac_sha256(("TC3" + cfg["secret_key"]).encode("utf-8"), date)
-    secret_service = hmac_sha256(secret_date, TENCENT_AIART_SERVICE)
+    secret_service = hmac_sha256(secret_date, service)
     secret_signing = hmac_sha256(secret_service, "tc3_request")
     signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
     authorization = (
@@ -286,24 +289,46 @@ def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70)
     headers = {
         "Authorization": authorization,
         "Content-Type": "application/json; charset=utf-8",
-        "Host": TENCENT_AIART_HOST,
+        "Host": host,
         "X-TC-Action": action,
         "X-TC-Timestamp": str(timestamp),
-        "X-TC-Version": TENCENT_AIART_VERSION,
+        "X-TC-Version": version,
         "X-TC-Region": cfg["region"],
     }
-    req = urllib.request.Request(f"https://{TENCENT_AIART_HOST}", data=body.encode("utf-8"), headers=headers, method="POST")
+    req = urllib.request.Request(f"https://{host}", data=body.encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"腾讯云接口 HTTP {exc.code}: {raw[:500]}") from exc
+        raise RuntimeError(f"{host} HTTP {exc.code}: {raw[:500]}") from exc
     data = json.loads(raw)
     response = data.get("Response", {})
     if "Error" in response:
         error = response["Error"]
-        raise RuntimeError(f"{error.get('Code', 'TencentError')}: {error.get('Message', '调用失败')}")
+        raise RuntimeError(f"{host} {error.get('Code', 'TencentError')}: {error.get('Message', '调用失败')}")
+    return response
+
+
+def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70) -> dict[str, Any]:
+    if action == "TextToImageLite":
+        endpoints = [
+            (TENCENT_HUNYUAN_HOST, TENCENT_HUNYUAN_SERVICE, TENCENT_HUNYUAN_VERSION),
+            (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
+        ]
+        errors = []
+        for host, service, version in endpoints:
+            try:
+                response = tencent_cloud_api_request(action, payload, host, service, version, timeout)
+                response["_Endpoint"] = host
+                return response
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                if "NotExist" not in str(exc) and "ServiceNotActivated" not in str(exc):
+                    raise
+        raise RuntimeError("；".join(errors))
+    response = tencent_cloud_api_request(action, payload, TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION, timeout)
+    response["_Endpoint"] = TENCENT_AIART_HOST
     return response
 
 
@@ -384,9 +409,9 @@ def style_prompt_for(style_id: str) -> str:
 
 
 def quality_detail(quality: str | None = "standard") -> str:
-    detail = "高清、真实、菜品细节清楚、外卖平台主图、主体完整居中、不要裁切菜品主体"
+    detail = "高清真实、菜品细节清楚、主体完整居中"
     if quality_config(quality)["id"] == "premium":
-        detail += "、更精致的摆盘、专业商业摄影光影"
+        detail += "、专业商业摄影光影"
     return detail
 
 
@@ -402,23 +427,21 @@ def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | Non
     detail = quality_detail(quality)
     kind = row.get("kind") or "菜品"
     dish = row.get("name", "外卖菜品")
+    forbidden = "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
     if kind == "套餐/组合" or prompt_type == "combo":
         return (
-            f"{dish}，套餐组合外卖主图，组合内容包含：{row_components_text(row)}，{style}，"
-            f"{detail}，多菜品组合摆放协调，主体完整且所有主要菜品清楚可见，背景必须跟所选背景一致。"
-            "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-        )[:1000]
+            f"{dish}，套餐组合外卖主图，外卖平台主图，包含：{row_components_text(row)}，{style}，"
+            f"{detail}，多菜品协调摆放，主体完整，背景必须跟所选背景一致。{forbidden}"
+        )[:250]
     if prompt_type == "replace_background":
         return (
             f"保留「{dish}」菜品主体完整，仅替换为{style}，外卖平台主图，{detail}，"
-            "背景必须跟所选背景一致，不改变菜品本身，不添加其他无关物体。"
-            "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-        )[:1000]
+            f"背景必须跟所选背景一致，不改变菜品本身，不添加无关物体。{forbidden}"
+        )[:250]
     return (
-        f"{dish}，{kind}，纯文生图生成外卖平台主图，{style}，{detail}，"
-        "主体完整且居中，背景必须跟所选背景一致，真实餐饮商业摄影质感。"
-        "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-    )[:1000]
+        f"{dish}，{kind}，纯文生图，外卖平台主图，{style}，{detail}，"
+        f"背景必须跟所选背景一致，真实餐饮商业摄影质感。{forbidden}"
+    )[:250]
 
 
 def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
@@ -434,16 +457,23 @@ def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | Non
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": prompt_type, "requestId": response.get("RequestId"), "seed": response.get("Seed")}
+    return {
+        "provider": "tencent-hunyuan",
+        "action": "TextToImageLite",
+        "promptType": prompt_type,
+        "requestId": response.get("RequestId"),
+        "seed": response.get("Seed"),
+        "endpoint": response.get("_Endpoint"),
+    }
 
 
 def prompt_for_style_background(style_id: str) -> str:
     return (
         f"外卖菜品主图背景风格样图，展示{style_prompt_for(style_id)}。"
-        "画面中可以有一份普通中式菜品作为占位主体，但重点是让背景、桌面、光影和整体色调清楚可见。"
-        "主体完整居中，商业餐饮摄影质感，背景风格必须鲜明且和其他背景方案明显不同。"
-        "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-    )[:1000]
+        "一份普通中式菜品占位，背景、桌面、光影和色调清楚可见。"
+        "主体完整居中，背景风格必须鲜明且和其他方案明显不同。"
+        "不要出现文字、价格、logo、水印、人物。"
+    )[:250]
 
 
 def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
@@ -458,7 +488,14 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "style_background", "requestId": response.get("RequestId"), "seed": response.get("Seed")}
+    return {
+        "provider": "tencent-hunyuan",
+        "action": "TextToImageLite",
+        "promptType": "style_background",
+        "requestId": response.get("RequestId"),
+        "seed": response.get("Seed"),
+        "endpoint": response.get("_Endpoint"),
+    }
 
 
 def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
@@ -478,7 +515,7 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId")}
+    return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId"), "endpoint": response.get("_Endpoint")}
 
 
 def normalize(text: str) -> str:
