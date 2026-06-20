@@ -98,8 +98,96 @@ PROMO_KEYWORDS = (
 )
 
 RAW_KEYWORDS = ("生食", "需自行", "自行煮", "半成品", "冷冻")
+LOW_REUSE_KEYWORDS = (
+    "米饭",
+    "白饭",
+    "可乐",
+    "雪碧",
+    "王老吉",
+    "矿泉水",
+    "纯净水",
+    "饮料",
+    "饮品",
+    "纸巾",
+    "餐具",
+    "打包",
+    "调料",
+    "蘸料",
+)
+PROMPT_IMAGE_KEYWORDS = (
+    "勿点",
+    "不要点",
+    "提示",
+    "背景",
+    "公告",
+    "模板",
+    "示例",
+    "占位",
+    "测试",
+)
+TEXT_RISK_KEYWORDS = (
+    "水印",
+    "logo",
+    "商标",
+    "文字",
+    "带字",
+    "字样",
+    "菜单",
+    "海报",
+    "价目",
+    "价格",
+    "电话",
+    "热线",
+    "扫码",
+    "二维码",
+    "活动",
+    "优惠",
+    "满减",
+    "立减",
+    "特价",
+    "买一送一",
+    "关注",
+    "收藏",
+    "好评",
+    "公告",
+    "提示",
+    "勿点",
+)
+BRAND_REVIEW_KEYWORDS = (
+    "可口可乐",
+    "百事",
+    "王老吉",
+    "美团",
+    "饿了么",
+    "京东",
+    "淘宝",
+    "抖音",
+    "微信",
+    "支付宝",
+    "logo",
+    "商标",
+)
+ACTIVITY_REVIEW_KEYWORDS = (
+    "活动",
+    "优惠",
+    "满减",
+    "立减",
+    "特价",
+    "买一送一",
+    "第二份",
+    "赠",
+    "免费",
+    "福利",
+    "秒杀",
+    "团购",
+    "折扣",
+    "爆款",
+    "新品",
+)
+LOW_QUALITY_SCORE_THRESHOLD = 0.7
 _WORD_RE = re.compile(r"[\u4e00-\u9fff0-9a-z]+")
 _PLUS_RE = re.compile(r"(\+|＋|加|配|搭)")
+_PHONE_RE = re.compile(r"(?:1[3-9]\d{9}|0\d{2,3}[- ]?\d{7,8}|400[- ]?\d{3}[- ]?\d{4})")
 
 
 @dataclass
@@ -125,6 +213,7 @@ class ScanResult:
             "total": self.total,
             "sources": source_counts,
             "tags": tag_counts,
+            "cleaning": cleaning_summary(self.records),
             "errors": len(self.errors),
             "elapsedSeconds": round(self.elapsed_seconds, 3),
         }
@@ -193,6 +282,99 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
     }
 
 
+def detect_reuse_flags(
+    dish: str,
+    source: str,
+    path: str | Path | None = None,
+    relative_path: str | Path | None = None,
+) -> dict[str, Any]:
+    dish_text = str(dish).lower()
+    filename = Path(str(path)).stem if path is not None else dish
+    filename_raw = str(filename).lower()
+    review_text = f"{dish_text} {filename_raw}"
+    normalized_text = normalize(review_text)
+    filename_text = normalize(filename_raw)
+    source_text = normalize(source)
+    path_text = normalize(str(path or ""))
+    review_reasons: list[str] = []
+    score = 1.0
+
+    has_brand_watermark = "watermark" in source_text or "watermarkpic" in path_text
+    if has_brand_watermark:
+        score -= 0.25
+        review_reasons.append("品牌水印风险：来源或路径为 watermark")
+
+    has_phone = bool(_PHONE_RE.search(review_text))
+    has_brand_word = any(keyword.lower() in review_text or normalize(keyword) in normalized_text for keyword in BRAND_REVIEW_KEYWORDS)
+    has_activity_word = any(keyword in review_text or normalize(keyword) in normalized_text for keyword in ACTIVITY_REVIEW_KEYWORDS)
+    has_text_word = any(keyword.lower() in review_text or normalize(keyword) in normalized_text for keyword in TEXT_RISK_KEYWORDS)
+    has_dish_text = has_phone or has_activity_word or has_text_word
+    if has_phone:
+        review_reasons.append("菜品名文字风险：包含电话")
+    if has_brand_word:
+        review_reasons.append("菜品名文字风险：包含明显品牌词")
+    if has_activity_word:
+        review_reasons.append("菜品名文字风险：包含活动词")
+    if has_text_word and not (has_phone or has_activity_word):
+        review_reasons.append("菜品名文字风险：包含文字/提示词")
+    if has_dish_text:
+        score -= 0.2
+
+    prompt_hits = [keyword for keyword in PROMPT_IMAGE_KEYWORDS if keyword in review_text or normalize(keyword) in filename_text]
+    low_reuse_hits = [keyword for keyword in LOW_REUSE_KEYWORDS if keyword in review_text or normalize(keyword) in filename_text]
+    if prompt_hits:
+        score -= 0.45
+        review_reasons.append(f"低复用图：提示/背景类文件名（{','.join(prompt_hits[:3])}）")
+    if low_reuse_hits:
+        score -= 0.35
+        review_reasons.append(f"低复用图：泛词/饮料/主食文件名（{','.join(low_reuse_hits[:3])}）")
+
+    quality_score = round(max(0.0, min(1.0, score)), 2)
+    reusable = not has_brand_watermark and not has_dish_text and quality_score >= LOW_QUALITY_SCORE_THRESHOLD
+    return {
+        "reusable": reusable,
+        "has_brand_watermark": has_brand_watermark,
+        "has_dish_text": has_dish_text,
+        "quality_score": quality_score,
+        "review_reasons": review_reasons,
+    }
+
+
+def cleaning_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    total = 0
+    reusable = 0
+    watermark_risk = 0
+    needs_review = 0
+    low_quality = 0
+    for record in records:
+        total += 1
+        is_reusable = bool(record.get("reusable", False))
+        has_watermark = bool(record.get("has_brand_watermark", False))
+        has_dish_text = bool(record.get("has_dish_text", False))
+        quality_score = record.get("quality_score")
+        try:
+            score_value = float(quality_score) if quality_score is not None else None
+        except (TypeError, ValueError):
+            score_value = None
+        reasons = record.get("review_reasons") or []
+
+        if is_reusable:
+            reusable += 1
+        if has_watermark:
+            watermark_risk += 1
+        if score_value is not None and score_value < LOW_QUALITY_SCORE_THRESHOLD:
+            low_quality += 1
+        if has_watermark or has_dish_text or reasons or (score_value is not None and score_value < LOW_QUALITY_SCORE_THRESHOLD):
+            needs_review += 1
+    return {
+        "total": total,
+        "reusable": reusable,
+        "watermarkRisk": watermark_risk,
+        "needsReview": needs_review,
+        "lowQuality": low_quality,
+    }
+
+
 def thumbnail_path_for(thumb_dir: Path, source: str, digest: str) -> Path:
     return thumb_dir / source / digest[:2] / f"{digest}.jpg"
 
@@ -256,6 +438,7 @@ def build_record(
         "thumb_path": str(thumb_path) if thumb_path else "",
     }
     record.update(detect_tags(dish, norm))
+    record.update(detect_reuse_flags(dish=dish, source=source, path=path, relative_path=rel))
     return record
 
 
