@@ -204,6 +204,25 @@ class AppGenerationTests(unittest.TestCase):
             self.assertIn("商品背景生成失败", generation["error"])
             self.assertIn("文生图兜底失败", generation["error"])
 
+    def test_preview_reuses_same_style_candidate_without_tencent_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "same_style.jpg"
+            save_image(source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background") as replace,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-2", "standard")
+
+            replace.assert_not_called()
+            self.assertIsNotNone(preview_candidate)
+            self.assertEqual(generation["status"], "reused")
+            self.assertEqual(preview_candidate["styleId"], "style-2")
+
     def test_preview_sample_materializes_with_tencent_instead_of_local_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -278,6 +297,14 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][0], "ReplaceBackground")
             self.assertEqual(payloads[0][1]["ProductUrl"], "https://cdn.example.test/seed.jpg")
             self.assertIn("背景风格样图", str(payloads[0][1]["Prompt"]))
+
+    def test_candidate_public_url_encodes_chinese_paths(self) -> None:
+        with app_module.app.test_request_context(base_url="https://waimai.example.test"):
+            url = app_module.candidate_public_url({"url": "/media/门店/style-1/辣椒炒肉(热销).jpg"})
+
+        self.assertIn("%E9%97%A8%E5%BA%97", url)
+        self.assertIn("%E8%BE%A3%E6%A4%92%E7%82%92%E8%82%89", url)
+        self.assertTrue(url.startswith("https://waimai.example.test/media/"))
 
     def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
         with (

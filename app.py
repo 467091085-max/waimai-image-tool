@@ -11,6 +11,7 @@ import shutil
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -370,13 +371,19 @@ def is_public_http_url(url: str) -> bool:
 
 def candidate_public_url(candidate: dict[str, Any]) -> str:
     url = str(candidate.get("url") or "")
+    def normalize_public_url(value: str) -> str:
+        parts = urllib.parse.urlsplit(value)
+        quoted_path = urllib.parse.quote(parts.path, safe="/%")
+        quoted_query = urllib.parse.quote(parts.query, safe="=&%/:+,-_.~")
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, quoted_path, quoted_query, parts.fragment))
+
     if is_public_http_url(url):
-        return url
+        return normalize_public_url(url)
     base = public_base_url()
     if not base or "127.0.0.1" in base or "localhost" in base:
         return ""
     if url.startswith("/"):
-        return f"{base}{url}"
+        return normalize_public_url(f"{base}{url}")
     return ""
 
 
@@ -889,6 +896,9 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
     cached = generated_preview_candidate(item, selected_style)
     if cached:
         return cached, {"status": "cached", "provider": cached.get("aiProvider") or "tencent-hunyuan", "action": cached.get("generationAction") or "Cached"}
+    same_style = reusable_selected_style_candidate(item, selected_style)
+    if same_style:
+        return same_style, {"status": "reused", "provider": "library", "action": "Reuse"}
     source_candidate = source_candidate_for_generation(item)
     result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
     if tencent_ready():
