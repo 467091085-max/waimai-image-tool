@@ -16,6 +16,7 @@ data/library/_style_samples/
 data/library/.demo_ready
 data/library_index/*
 data/exports/*
+data/model_inputs/*
 data/object_store/*
 data/*.db
 data/*.sqlite
@@ -24,4 +25,5 @@ data/*.sqlite3
 !data/library/.gitkeep
 !data/library_index/.gitkeep
 !data/exports/.gitkeep
+!data/model_inputs/.gitkeep
 !data/object_store/.gitkeep

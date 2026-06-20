@@ -40,7 +40,8 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 LIBRARY_DIR = DATA_DIR / "library"
 EXPORT_DIR = DATA_DIR / "exports"
-for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR):
+MODEL_INPUT_DIR = DATA_DIR / "model_inputs"
+for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR, MODEL_INPUT_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -371,6 +372,7 @@ def is_public_http_url(url: str) -> bool:
 
 def candidate_public_url(candidate: dict[str, Any]) -> str:
     url = str(candidate.get("url") or "")
+
     def normalize_public_url(value: str) -> str:
         parts = urllib.parse.urlsplit(value)
         quoted_path = urllib.parse.quote(parts.path, safe="/%")
@@ -385,6 +387,25 @@ def candidate_public_url(candidate: dict[str, Any]) -> str:
     if url.startswith("/"):
         return normalize_public_url(f"{base}{url}")
     return ""
+
+
+def model_input_public_url(candidate: dict[str, Any] | None) -> str:
+    if not candidate:
+        return ""
+    path_text = str(candidate.get("path") or "")
+    path = Path(path_text) if path_text else None
+    if path and path.exists() and path.suffix.lower() in IMAGE_EXTS:
+        stat = path.stat()
+        digest_source = f"{path.resolve()}:{stat.st_size}:{int(stat.st_mtime)}"
+        filename = f"{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()[:24]}.jpg"
+        target = MODEL_INPUT_DIR / filename
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            Image.open(path).convert("RGB").save(target, "JPEG", quality=92, optimize=True)
+        base = public_base_url()
+        if base and "127.0.0.1" not in base and "localhost" not in base:
+            return f"{base.rstrip('/')}/model-inputs/{filename}"
+    return candidate_public_url(candidate)
 
 
 def external_image_path(image_id_with_ext: str) -> Path | None:
@@ -488,7 +509,7 @@ def prompt_for_style_background(style_id: str) -> str:
 
 def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     source_candidate = style_background_seed_candidate()
-    product_url = candidate_public_url(source_candidate) if source_candidate else ""
+    product_url = model_input_public_url(source_candidate)
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
     response = tencent_api_request(
@@ -514,7 +535,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
 
 
 def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
-    product_url = candidate_public_url(source_candidate)
+    product_url = model_input_public_url(source_candidate)
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "replace_background"
@@ -2050,6 +2071,13 @@ def external_media(name: str):
     if path is None:
         return jsonify({"error": "图片不存在或未授权"}), 404
     return send_file(path)
+
+
+@app.get("/model-inputs/<path:name>")
+def model_inputs(name: str):
+    if not re.fullmatch(r"[a-f0-9]{24}\.jpg", name):
+        return jsonify({"error": "图片不存在"}), 404
+    return send_from_directory(MODEL_INPUT_DIR, name)
 
 
 @app.get("/download/<path:name>")
