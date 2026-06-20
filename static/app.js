@@ -17,7 +17,9 @@ const state = {
   stylePreview: null,
   watermark: defaultWatermark(),
   deliveryPlatforms: [],
-  quality: "standard"
+  quality: "standard",
+  busy: null,
+  previewLoadingStyle: ""
 };
 
 const $ = s => document.querySelector(s);
@@ -50,6 +52,9 @@ const qualityMeta = {
   premium: { name: "精修出图", points: 20 }
 };
 
+const styleDisplayNames = ["一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景"];
+let busySerial = 0;
+
 function currentQuality() {
   return qualityMeta[state.quality] || qualityMeta.standard;
 }
@@ -72,6 +77,85 @@ function sizeLimitText(meta) {
   return kb >= 1024 ? `${Math.round(kb / 1024)}MB` : `${kb}KB`;
 }
 
+function styleDisplayName(index) {
+  return styleDisplayNames[index] || `${index + 1}号背景`;
+}
+
+function styleFallbackImage(index) {
+  const palettes = [
+    ["#f2c58d", "#fff7e7", "#9a622e"],
+    ["#50545d", "#d8bd7a", "#ffffff"],
+    ["#e6eaee", "#ffffff", "#5f7483"],
+    ["#c84943", "#ffe3a0", "#7e241f"],
+    ["#d4bd81", "#f8ffe9", "#5a8a5b"],
+    ["#b7d7e8", "#fff2d4", "#336b87"]
+  ];
+  const [bg, soft, accent] = palettes[index % palettes.length];
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="${soft}"/>
+          <stop offset="1" stop-color="${bg}"/>
+        </linearGradient>
+      </defs>
+      <rect width="800" height="600" fill="url(#bg)"/>
+      <ellipse cx="400" cy="350" rx="255" ry="132" fill="#fff" opacity=".94"/>
+      <ellipse cx="400" cy="350" rx="205" ry="96" fill="${accent}" opacity=".18"/>
+      <circle cx="330" cy="325" r="58" fill="${accent}" opacity=".78"/>
+      <circle cx="438" cy="346" r="74" fill="${accent}" opacity=".58"/>
+      <circle cx="506" cy="314" r="44" fill="${accent}" opacity=".42"/>
+      <path d="M210 438c108 42 278 51 394 5" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" opacity=".54"/>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function styleChoices(plan = state.plan) {
+  const raw = Array.isArray(plan?.styles) ? plan.styles.slice(0, 6) : [];
+  const choices = raw.map((style, index) => ({
+    ...style,
+    name: styleDisplayName(index),
+    uiName: styleDisplayName(index),
+    uiIndex: index
+  }));
+  const usedIds = new Set(choices.map(style => style.id));
+  for (let index = choices.length; index < 6; index += 1) {
+    const fallback = raw.length ? raw[index % raw.length] : {};
+    let id = `style-${index + 1}`;
+    if (usedIds.has(id)) id = `ui-style-${index + 1}`;
+    usedIds.add(id);
+    choices.push({
+      ...fallback,
+      id,
+      name: styleDisplayName(index),
+      uiName: styleDisplayName(index),
+      uiIndex: index,
+      count: fallback.count || 0,
+      sample: null,
+      direct: fallback.direct || 0,
+      review: fallback.review || 0,
+      bgReplace: fallback.bgReplace || 0,
+      custom: fallback.custom || 0
+    });
+  }
+  return choices.slice(0, 6);
+}
+
+function watermarkDemoImage() {
+  const previewImage = state.stylePreview?.samples?.find(sample => sample.candidate?.url)?.candidate?.url;
+  if (previewImage) return previewImage;
+  const choices = styleChoices();
+  const selected = choices.find(style => style.id === state.pendingStyle) || choices[0];
+  if (selected?.sample?.url) return selected.sample.url;
+  const resultImage = state.plan?.results?.find(row => row.candidates?.[0]?.url)?.candidates?.[0]?.url;
+  return resultImage || styleFallbackImage(0);
+}
+
+function imageFallbackAttr(index = 0) {
+  return `onerror="this.onerror=null;this.src='${styleFallbackImage(index)}'"`;
+}
+
 function baseImageCharge() {
   const total = state.plan?.summary?.total ?? state.menu?.count ?? 0;
   return total * imagePoints();
@@ -89,6 +173,72 @@ async function api(url, opt = {}) {
   const data = await res.json();
   if (!res.ok || data.error) throw new Error(data.error || "请求失败");
   return data;
+}
+
+function isBusy(...keys) {
+  if (!state.busy) return false;
+  return keys.length ? keys.includes(state.busy.key) : true;
+}
+
+function renderBusy() {
+  const el = $("#globalBusy");
+  if (!el) return;
+  if (!state.busy) {
+    el.classList.remove("show");
+    el.setAttribute("aria-hidden", "true");
+    el.innerHTML = "";
+    document.body.classList.remove("has-global-busy");
+    return;
+  }
+  el.classList.add("show");
+  el.setAttribute("aria-hidden", "false");
+  document.body.classList.add("has-global-busy");
+  el.innerHTML = `
+    <div class="global-busy-card" role="status">
+      <span class="busy-spinner"></span>
+      <b>${esc(state.busy.title)}</b>
+      <p>${esc(state.busy.detail || "请稍候，任务正在处理")}</p>
+    </div>
+  `;
+}
+
+function beginBusy(key, title, detail = "") {
+  const token = ++busySerial;
+  state.busy = { token, key, title, detail };
+  renderBusy();
+  setControls();
+  return token;
+}
+
+function updateBusy(token, key, title, detail = "") {
+  if (!state.busy || state.busy.token !== token) return;
+  state.busy = { token, key, title, detail };
+  renderBusy();
+  setControls();
+}
+
+function endBusy(token) {
+  if (!state.busy || state.busy.token !== token) return;
+  state.busy = null;
+  renderBusy();
+  setControls();
+}
+
+function setButtonLoading(button, loading, loadingText = "") {
+  if (!button) return;
+  if (loading) {
+    if (!button.dataset.defaultHtml) button.dataset.defaultHtml = button.innerHTML;
+    if (loadingText) button.textContent = loadingText;
+    button.classList.add("is-loading");
+    button.disabled = true;
+    return;
+  }
+  if (button.dataset.defaultHtml) {
+    button.innerHTML = button.dataset.defaultHtml;
+    delete button.dataset.defaultHtml;
+  }
+  button.classList.remove("is-loading");
+  button.disabled = false;
 }
 
 function orderId(prefix) {
@@ -221,30 +371,51 @@ function publicStatus(row) {
   return "已生成";
 }
 
+function isPendingGeneration(row) {
+  const status = publicStatus(row);
+  return ["待正式生成", "模型生成失败", "等待模型配置"].includes(status);
+}
+
 function setControls() {
   const menuFile = state.menu?.file || "菜单";
   const menuCount = state.menu?.count ?? 0;
+  const busy = Boolean(state.busy);
+  const uploadBusy = isBusy("upload-menu");
+  const planBusy = isBusy("style-plan");
+  const confirmBusy = isBusy("confirm-charge", "confirm-generate");
+  const exportBusy = isBusy("export-zip");
   const startSub = $("#startJobBtn")?.querySelector(".step-copy span");
   const startEm = $("#startJobBtn")?.querySelector("em");
+  const chooseEm = $("#chooseMenuBtn")?.querySelector("em");
   const exportEm = $("#exportShortcutBtn")?.querySelector("em");
-  $("#startJobBtn").disabled = !state.uploaded || state.running;
+  $("#chooseMenuBtn").disabled = state.running || busy;
+  $("#chooseMenuBtn").classList.toggle("is-loading", uploadBusy);
+  if (chooseEm) chooseEm.textContent = uploadBusy ? "上传中" : "点击上传";
+  $("#startJobBtn").disabled = !state.uploaded || state.running || busy;
+  $("#startJobBtn").classList.toggle("is-loading", planBusy);
   if (startSub) {
-    startSub.textContent = state.running ? "正在处理，请稍候" : state.plan ? "可重新生成免费样图" : "上传菜单后自动展示";
+    startSub.textContent = planBusy ? "正在生成背景图和免费样图" : state.running ? "正在处理，请稍候" : state.plan ? "可重新生成免费样图" : "上传菜单后自动展示";
   }
   if (startEm) {
-    startEm.textContent = state.running ? "处理中" : state.plan ? "重新预览" : state.uploaded ? "自动开始" : "等待菜单";
+    startEm.textContent = planBusy ? "生成中" : state.running ? "处理中" : state.plan ? "重新预览" : state.uploaded ? "自动开始" : "等待菜单";
   }
-  $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running || !state.deliveryPlatforms.length;
-  $("#confirmStyleBtn").textContent = state.plan ? `扣 ${totalCharge()} 积分，生成正式图` : "确认风格，生成正式图";
-  $("#exportShortcutBtn").disabled = !state.confirmed;
-  if (exportEm) exportEm.textContent = state.confirmed ? "去导出" : "生成后可用";
-  $("#exportZipBtn").disabled = !state.confirmed;
+  $("#confirmStyleBtn").disabled = !state.plan || !state.pendingStyle || state.running || busy || Boolean(state.previewLoadingStyle) || !state.deliveryPlatforms.length;
+  $("#confirmStyleBtn").classList.toggle("is-loading", confirmBusy);
+  $("#confirmStyleBtn").textContent = confirmBusy
+    ? (isBusy("confirm-charge") ? "扣费中" : "生成中")
+    : (state.plan ? `扣 ${totalCharge()} 积分，生成正式图` : "确认风格，生成正式图");
+  $("#exportShortcutBtn").disabled = !state.confirmed || busy;
+  if (exportEm) exportEm.textContent = exportBusy ? "打包中" : state.confirmed ? "去导出" : "生成后可用";
+  $("#exportZipBtn").disabled = !state.confirmed || busy;
+  $("#exportZipBtn").classList.toggle("is-loading", exportBusy);
+  $("#exportZipBtn").textContent = exportBusy ? "打包中" : "打包导出 ZIP";
   $("#menuStatus").textContent = state.uploaded ? `菜单已就绪：${menuFile} · ${menuCount} 个菜` : "等待选择菜单";
   $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
   $("#pointsBalance").textContent = `${state.account.balance || 0}`;
   updateChargeText();
   renderQualityControls();
   renderPlatformControls();
+  renderWatermarkControls();
   unlockPanels();
 }
 
@@ -286,13 +457,19 @@ function renderRecharge() {
   )).join("");
   $$(".recharge-card").forEach(button => {
     button.onclick = async () => {
+      if (state.busy) return toast("请等待当前任务完成");
+      const cash = Number(button.dataset.cash || 0);
+      const token = beginBusy("recharge", "正在充值积分", `充值套餐 ¥${cash}，请稍候`);
+      setButtonLoading(button, true, "充值中");
       try {
-        const cash = Number(button.dataset.cash || 0);
         const data = await rechargeAccount({ cash });
         closeRecharge();
         toast(`已充值 ${data.transaction.points} 积分`);
       } catch (e) {
         toast(e.message);
+      } finally {
+        setButtonLoading(button, false);
+        endBusy(token);
       }
     };
   });
@@ -312,7 +489,7 @@ function updateCustomRechargeHint() {
   hint.textContent = points < 100 ? "最低 100 积分起充" : `约 ¥${cash}`;
 }
 
-function submitCustomRecharge() {
+async function submitCustomRecharge() {
   const input = $("#customRechargePoints");
   const points = Math.floor(Number(input?.value || 0));
   if (!Number.isFinite(points) || points < 100) {
@@ -320,10 +497,20 @@ function submitCustomRecharge() {
     input?.focus();
     return;
   }
-  rechargeAccount({ points }).then(data => {
+  if (state.busy) return toast("请等待当前任务完成");
+  const button = $("#customRechargeBtn");
+  const token = beginBusy("recharge", "正在充值积分", `自定义充值 ${points} 积分`);
+  setButtonLoading(button, true, "充值中");
+  try {
+    const data = await rechargeAccount({ points });
     closeRecharge();
     toast(`已充值 ${data.transaction.points} 积分`);
-  }).catch(e => toast(e.message));
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    setButtonLoading(button, false);
+    endBusy(token);
+  }
 }
 
 function renderWaiting() {
@@ -343,7 +530,8 @@ function renderWaiting() {
     { title: "正式生图", status: "待扣积分" },
     { title: "导出图片", status: "待预览" }
   ]);
-  $("#styleBox").innerHTML = `<div class="empty">菜单上传后会自动展示可选风格</div>`;
+  $("#styleBox").innerHTML = `<div class="empty">菜单上传后会展示 6 张背景风格图</div>`;
+  $("#stylePreviewTitle").textContent = "先选择背景，这里会展示 6 张免费单品样图";
   $("#stylePreviewBox").className = "style-preview-box";
   $("#stylePreviewBox").innerHTML = previewPlaceholders("等待菜单");
   $("#selectedStyleHint").textContent = "还没有选择风格";
@@ -351,6 +539,7 @@ function renderWaiting() {
   $("#reworkBanner").innerHTML = "";
   $("#resultBox").innerHTML = `<div class="empty">扣积分生成后展示正式图片</div>`;
   renderQualityControls();
+  renderWatermarkControls();
   setControls();
 }
 
@@ -361,6 +550,7 @@ function renderPlan(showPreview = false) {
   const counts = menuCounts();
   const basePoints = baseImageCharge();
   const quality = currentQuality();
+  const styles = styleChoices(p);
   if (p.account && !state.accountLoaded) {
     state.account = p.account;
     state.accountLoaded = true;
@@ -373,7 +563,7 @@ function renderPlan(showPreview = false) {
   $("#cash").textContent = `${totalCharge()} 积分`;
   renderWorkflow([
     { title: "选择菜单", status: `${p.menu.count} 个菜品`, state: "done" },
-    { title: "风格预览", status: `已展示 ${p.styles.length} 套风格`, state: "done" },
+    { title: "风格预览", status: `已展示 ${styles.length} 张背景图`, state: "done" },
     { title: "选择风格", status: state.confirmed ? styleName(p.selectedStyle) : "请选择一套", state: state.confirmed ? "done" : "active" },
     { title: "正式生图", status: state.confirmed ? `已扣 ${state.chargedPoints || basePoints} 积分` : `待扣 ${basePoints} 积分`, state: state.confirmed ? "done" : "" },
     { title: "导出图片", status: state.confirmed ? "可以导出" : "待预览", state: state.confirmed ? "active" : "" }
@@ -385,11 +575,15 @@ function renderPlan(showPreview = false) {
   renderWatermarkControls();
   if (showPreview) renderPreview();
   else $("#resultBox").innerHTML = `<div class="empty">选择风格并确认后，系统会扣积分生成全部正式图片</div>`;
+  const generation = p.generation || {};
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
     `${quality.name} · ${quality.points} 积分/张`,
     `交付平台 ${state.deliveryPlatforms.length} 个`,
-    p.generation?.configured ? `腾讯云已接入 · 本次 ${p.generation.succeeded || 0} 张` : "",
+    generation.configured ? `腾讯云已接入 · 本次生成 ${generation.succeeded || 0} 张` : "",
+    generation.cached ? `缓存正式图 ${generation.cached} 张` : "",
+    generation.pending ? `待正式生成 ${generation.pending} 张` : "",
+    generation.failed ? `生成失败 ${generation.failed} 张` : "",
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
     `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
@@ -401,7 +595,7 @@ function renderPlan(showPreview = false) {
 
 function renderPlatformControls() {
   setPreviewAspect();
-  const locked = state.confirmed;
+  const locked = state.confirmed || Boolean(state.busy);
   $$(".platform-check").forEach(input => {
     input.checked = state.deliveryPlatforms.includes(input.value);
     input.disabled = locked;
@@ -438,7 +632,7 @@ function renderQualityControls() {
   const quality = currentQuality();
   $$(".quality-radio").forEach(input => {
     input.checked = input.value === state.quality;
-    input.disabled = state.confirmed || state.running;
+    input.disabled = state.confirmed || state.running || Boolean(state.busy);
   });
   const hint = $("#qualityChargeHint");
   if (hint) {
@@ -451,7 +645,7 @@ function renderWatermarkControls() {
   if (!enabled) return;
   setPreviewAspect();
   const meta = platformMeta[primaryPlatform()] || platformMeta.meituan;
-  const locked = state.confirmed;
+  const locked = state.confirmed || Boolean(state.busy);
   enabled.checked = state.watermark.enabled;
   enabled.disabled = locked;
   $("#watermarkType").value = state.watermark.type;
@@ -471,6 +665,7 @@ function renderWatermarkControls() {
   demo.innerHTML = `
     <span>${locked ? "水印已锁定" : `水印预览 · ${meta.name} ${meta.size}`}</span>
     <div class="watermark-preview-canvas">
+      <img class="watermark-demo-image" src="${watermarkDemoImage()}" alt="水印示意图" ${imageFallbackAttr(0)}>
       ${watermarkOverlay(text)}
     </div>
   `;
@@ -506,7 +701,7 @@ function renderReworkBanner() {
 }
 
 function styleName(styleId) {
-  return state.plan?.styles.find(s => s.id === styleId)?.name || "已选风格";
+  return styleChoices().find(s => s.id === styleId)?.uiName || "已选背景";
 }
 
 function previewPlaceholders(text = "免费样图") {
@@ -522,42 +717,49 @@ function previewPlaceholders(text = "免费样图") {
 function renderStyles() {
   const p = state.plan;
   $("#selectedStyleHint").textContent = state.pendingStyle ? `已选择：${styleName(state.pendingStyle)}` : "还没有选择风格";
-  $("#styleBox").innerHTML = p.styles.map(s => {
+  $("#styleBox").innerHTML = styleChoices(p).map(s => {
     const selected = s.id === state.pendingStyle;
-    const ready = s.direct + s.review + s.bgReplace;
-    return `<button class="style ${selected ? "active" : ""}" data-style="${s.id}" type="button">
-      <img src="${s.sample?.url || ""}" alt="${esc(s.name)}">
+    const ready = (s.direct || 0) + (s.review || 0) + (s.bgReplace || 0);
+    const loading = state.previewLoadingStyle === s.id;
+    const sampleUrl = s.sample?.url || styleFallbackImage(s.uiIndex);
+    return `<button class="style ${selected ? "active" : ""} ${loading ? "is-loading" : ""}" data-style="${s.id}" type="button">
+      <img src="${sampleUrl}" alt="${esc(s.uiName)}" ${imageFallbackAttr(s.uiIndex)}>
       <span class="style-body">
-        <b>${esc(s.name)}</b>
-        <span>适配本菜单约 ${Math.round((ready / Math.max(1, p.summary.total)) * 100)}%</span>
-        <em>${selected ? "已选中" : "点击选择"}</em>
+        <b>${esc(s.uiName)}</b>
+        <span>背景预览 ${s.uiIndex + 1}/6 · 适配约 ${Math.round((ready / Math.max(1, p.summary.total)) * 100)}%</span>
+        <em>${loading ? "样图生成中" : selected ? "已选中" : "点击选择"}</em>
       </span>
     </button>`;
   }).join("");
   $$(".style").forEach(button => {
     button.onclick = () => {
+      if (state.busy || state.previewLoadingStyle) return toast("请等待当前样图生成完成");
       state.pendingStyle = button.dataset.style;
       renderStyles();
       setControls();
       loadStylePreview(state.pendingStyle).catch(e => toast(e.message));
-      toast("风格已选中，正在生成 6 张免费单品样图");
+      toast("背景已选中，正在生成 6 张免费单品样图");
     };
   });
 }
 
 function renderStylePreview() {
   const box = $("#stylePreviewBox");
+  const title = $("#stylePreviewTitle");
   if (!box) return;
   if (!state.pendingStyle) {
+    if (title) title.textContent = "先选择背景，这里会展示 6 张免费单品样图";
     box.className = "style-preview-box";
-    box.innerHTML = previewPlaceholders("选择风格后生成");
+    box.innerHTML = previewPlaceholders("选择背景后生成");
     return;
   }
   if (!state.stylePreview || state.stylePreview.style !== state.pendingStyle) {
+    if (title) title.textContent = `${styleName(state.pendingStyle)} · 免费样图生成中`;
     box.className = "style-preview-box";
     box.innerHTML = previewPlaceholders("正在生成");
     return;
   }
+  if (title) title.textContent = `${styleName(state.pendingStyle)} · 6 张免费单品样图`;
   box.className = "style-preview-box";
   if (!state.stylePreview.samples.length) {
     box.className = "style-preview-box empty";
@@ -568,7 +770,7 @@ function renderStylePreview() {
     const image = sample.candidate;
     return `<div class="preview-sample">
       <b>${esc(sample.name)}</b>
-      ${image ? `<img src="${image.url}" alt="${esc(sample.name)}">` : `<div class="empty image-empty">待补图</div>`}
+      ${image ? `<img src="${image.url}" alt="${esc(sample.name)}" ${imageFallbackAttr(0)}>` : `<div class="empty image-empty">待补图</div>`}
       <p>免费样图</p>
     </div>`;
   }).join("");
@@ -576,12 +778,22 @@ function renderStylePreview() {
 
 async function loadStylePreview(styleId) {
   state.stylePreview = null;
+  state.previewLoadingStyle = styleId;
+  renderStyles();
   renderStylePreview();
-  state.stylePreview = await api(`/api/style-preview?style=${encodeURIComponent(styleId)}`);
-  renderStylePreview();
-  setProgress(72, "6 张免费单品样图已生成，请确认风格", 3);
-  setControls();
-  scrollToPanel("#stylePreviewBox");
+  const token = beginBusy("style-preview", "正在生成免费样图", `${styleName(styleId)} · 6 张免费单品样图`);
+  try {
+    state.stylePreview = await api(`/api/style-preview?style=${encodeURIComponent(styleId)}`);
+    renderStylePreview();
+    renderWatermarkControls();
+    setProgress(72, "6 张免费单品样图已生成，请确认风格", 3);
+    scrollToPanel("#stylePreviewBox");
+  } finally {
+    if (state.previewLoadingStyle === styleId) state.previewLoadingStyle = "";
+    renderStyles();
+    endBusy(token);
+    setControls();
+  }
 }
 
 function renderPreview() {
@@ -594,13 +806,13 @@ function renderPreview() {
     : `换一版 ${imagePoints()}积分`;
   const card = (row, index) => {
     const rowNo = index + 1;
-    const candidate = row.candidates[0];
+    const candidate = isPendingGeneration(row) ? null : row.candidates[0];
     const checked = state.selectedRows.has(rowNo) ? "checked" : "";
     const status = publicStatus(row);
     return `<div class="result">
       <label class="select-line"><input type="checkbox" class="row-check" data-row="${rowNo}" ${checked}> 选择</label>
       <div class="result-title">${esc(row.name)}</div>
-      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}">${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">待补图</div>`}
+      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}" ${imageFallbackAttr(0)}>${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">待补图</div>`}
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
@@ -643,22 +855,24 @@ function renderPreview() {
     button.onclick = () => openRefine(Number(button.dataset.row));
   });
   $$(".redraw-btn").forEach(button => {
-    button.onclick = () => redrawImage(Number(button.dataset.row)).catch(e => toast(e.message));
+    button.onclick = () => redrawImage(Number(button.dataset.row), button).catch(e => toast(e.message));
   });
   $$(".single-save-btn").forEach(button => {
-    button.onclick = () => exportSingle(Number(button.dataset.row)).catch(e => toast(e.message));
+    button.onclick = () => exportSingle(Number(button.dataset.row), button).catch(e => toast(e.message));
   });
 }
 
 async function uploadMenu() {
   const file = $("#menuFile").files[0];
   if (!file) return;
+  if (state.busy) return toast("请等待当前任务完成");
   const name = file.name.toLowerCase();
   if (!name.endsWith(".xls") && !name.endsWith(".xlsx")) {
     toast("请上传 xls 或 xlsx 菜单");
     return;
   }
   state.running = true;
+  const token = beginBusy("upload-menu", "正在上传菜单", `${file.name} 正在上传并解析`);
   setControls();
   setProgress(15, "正在上传菜单", 1);
   const fd = new FormData();
@@ -684,6 +898,7 @@ async function uploadMenu() {
     toast("菜单已上传，正在自动生成风格方案");
   } finally {
     state.running = false;
+    endBusy(token);
     setControls();
   }
   if (shouldAutoStart) await startJob({ auto: true });
@@ -691,9 +906,10 @@ async function uploadMenu() {
 
 async function startJob(options = {}) {
   if (!state.uploaded) return toast("请先选择菜单");
-  if (state.running) return;
+  if (state.running || state.busy) return toast("请等待当前任务完成");
   const doScroll = options.doScroll !== false;
   state.running = true;
+  const token = beginBusy("style-plan", "正在生成背景风格图", "正在识别菜单、匹配图库并准备 6 张背景图");
   state.confirmed = false;
   state.charged = false;
   state.chargedPoints = 0;
@@ -704,6 +920,7 @@ async function startJob(options = {}) {
   setProgress(38, "正在识别菜品和品类", 2);
   try {
     await new Promise(resolve => setTimeout(resolve, 260));
+    updateBusy(token, "style-plan", "正在生成免费风格方案", "正在整理 6 张背景风格图，请稍候");
     setProgress(56, "正在生成 6 张免费单品风格预览", 2);
     state.plan = await api(`/api/plan?quality=${encodeURIComponent(state.quality)}`);
     state.style = state.plan.selectedStyle;
@@ -714,6 +931,7 @@ async function startJob(options = {}) {
     if (options.auto) toast("风格方案已生成，请选择一套风格");
   } finally {
     state.running = false;
+    endBusy(token);
     setControls();
   }
 }
@@ -721,29 +939,36 @@ async function startJob(options = {}) {
 async function confirmStyle() {
   if (!state.plan || !state.pendingStyle) return toast("请先选择风格");
   if (!state.deliveryPlatforms.length) return toast("请至少选择一个交付平台");
+  if (state.running || state.busy) return toast("请等待当前任务完成");
   const charge = totalCharge();
   let debitOrderId = "";
-  if (!state.charged) {
-    if ((state.account.balance || 0) < charge) {
-      toast(`积分不足，本单需要 ${charge} 积分`);
-      openRecharge();
-      return;
-    }
-    const debit = await debitPoints(charge, "正式出图", {
-      style: state.pendingStyle,
-      quality: state.quality,
-      platforms: state.deliveryPlatforms,
-      watermark: state.watermark.enabled,
-      imageCount: state.plan.summary?.total || state.menu?.count || 0
-    });
-    debitOrderId = debit.orderId;
-    state.charged = true;
-    state.chargedPoints = charge;
+  if (!state.charged && (state.account.balance || 0) < charge) {
+    toast(`积分不足，本单需要 ${charge} 积分`);
+    openRecharge();
+    return;
   }
   state.running = true;
-  setControls();
-  setProgress(82, "已扣积分，正在生成全部正式图片", 4);
+  const token = beginBusy(
+    state.charged ? "confirm-generate" : "confirm-charge",
+    state.charged ? "正在生成正式图" : "正在扣费",
+    state.charged ? `${styleName(state.pendingStyle)} · 正式图生成中` : `本单将扣 ${charge} 积分，正在确认余额`
+  );
   try {
+    if (!state.charged) {
+      const debit = await debitPoints(charge, "正式出图", {
+        style: state.pendingStyle,
+        quality: state.quality,
+        platforms: state.deliveryPlatforms,
+        watermark: state.watermark.enabled,
+        imageCount: state.plan.summary?.total || state.menu?.count || 0
+      });
+      debitOrderId = debit.orderId;
+      state.charged = true;
+      state.chargedPoints = charge;
+    }
+    updateBusy(token, "confirm-generate", "正在生成正式图", `${styleName(state.pendingStyle)} · 已扣积分，正在生成全部图片`);
+    setControls();
+    setProgress(82, "已扣积分，正在生成全部正式图片", 4);
     await new Promise(resolve => setTimeout(resolve, 320));
     state.plan = await api("/api/generate-final", {
       method: "POST",
@@ -756,15 +981,17 @@ async function confirmStyle() {
     state.confirmed = true;
     state.freeReworkRemaining = state.plan.pricing.freeReworkQuota;
     state.selectedRows.clear();
-    setProgress(100, "正式图片已生成，可以选择导出或精修", 5);
+    const gen = state.plan.generation || {};
+    const pendingCount = Number(gen.pending || 0);
+    setProgress(100, pendingCount ? `已生成 ${gen.succeeded || 0} 张，${pendingCount} 张待正式生成` : "正式图片已生成，可以选择导出或精修", 5);
     renderPlan(true);
     scrollToPanel("#previewPanel");
-    const gen = state.plan.generation;
-    const suffix = gen?.configured ? `，腾讯云生成 ${gen.succeeded || 0} 张` : "";
-    toast(`已扣 ${charge} 积分，正式图片已生成${suffix}`);
+    const suffix = gen?.configured ? `，腾讯云生成 ${gen.succeeded || 0} 张${pendingCount ? `，待正式生成 ${pendingCount} 张` : ""}` : "";
+    toast(`已扣 ${charge} 积分${suffix}`);
   } catch (error) {
     if (state.charged) {
       if (debitOrderId) {
+        updateBusy(token, "confirm-refund", "生成失败，正在退回积分", "正式图生成失败，本次扣费会自动退回");
         await refundPoints(debitOrderId, charge, "正式出图失败退回积分", { style: state.pendingStyle }).catch(() => {});
       }
       state.charged = false;
@@ -774,6 +1001,7 @@ async function confirmStyle() {
     throw error;
   } finally {
     state.running = false;
+    if (token) endBusy(token);
     setControls();
   }
 }
@@ -789,8 +1017,9 @@ function chooseRows(mode) {
   renderPreview();
 }
 
-async function redrawImage(rowNo) {
+async function redrawImage(rowNo, button = null) {
   if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
+  if (state.busy) return toast("请等待当前任务完成");
   const row = state.plan.results[rowNo - 1];
   if (!row) return;
   const price = row.points || imagePoints();
@@ -805,38 +1034,60 @@ async function redrawImage(rowNo) {
     openRecharge();
     return;
   }
-  await debitPoints(price, "单张换一版", { row: rowNo, dish: row.name });
-  renderPlan(true);
-  toast(`已扣 ${price} 积分，${row.name} 已重新生成一版`);
+  const token = beginBusy("redraw-debit", "正在扣费并换版", `${row.name} · ${price} 积分`);
+  setButtonLoading(button, true, "扣费中");
+  try {
+    await debitPoints(price, "单张换一版", { row: rowNo, dish: row.name });
+    renderPlan(true);
+    toast(`已扣 ${price} 积分，${row.name} 已重新生成一版`);
+  } finally {
+    setButtonLoading(button, false);
+    endBusy(token);
+  }
 }
 
 async function exportImages() {
   if (!state.confirmed) return toast("请先生成正式图片");
+  if (state.busy) return toast("请等待当前任务完成");
   const scope = $("#scopeSelect").value;
   const selectedRows = scope === "selected" ? [...state.selectedRows] : [];
   if (scope === "selected" && !selectedRows.length) return toast("请先勾选要导出的图片");
   const platforms = exportPlatforms();
   if (!platforms.length) return;
-  const data = await api("/api/export", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
-  });
-  toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
-  location.href = data.download;
+  const token = beginBusy("export-zip", "正在打包 ZIP", "正在按平台尺寸生成下载包，请勿重复点击");
+  try {
+    const data = await api("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
+    });
+    toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
+    location.href = data.download;
+  } finally {
+    endBusy(token);
+  }
 }
 
-async function exportSingle(rowNo) {
+async function exportSingle(rowNo, button = null) {
   if (!state.confirmed) return toast("请先生成正式图片");
+  if (state.busy) return toast("请等待当前任务完成");
   const platforms = exportPlatforms();
   if (!platforms.length) return;
-  const data = await api("/api/export", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
-  });
-  toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
-  location.href = data.download;
+  const row = state.plan?.results?.[rowNo - 1];
+  const token = beginBusy("export-single", "正在准备单张保存", `${row?.name || "单张图片"} · 正在生成下载文件`);
+  setButtonLoading(button, true, "保存中");
+  try {
+    const data = await api("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
+    });
+    toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
+    location.href = data.download;
+  } finally {
+    setButtonLoading(button, false);
+    endBusy(token);
+  }
 }
 
 function openRefine(rowNo) {
@@ -860,6 +1111,7 @@ function closeRefine() {
 
 async function submitRefine() {
   if (!state.refineRow || !state.plan) return;
+  if (state.busy) return toast("请等待当前任务完成");
   const prompt = $("#refinePrompt").value.trim();
   const price = state.plan.pricing.customEditPoints;
   if (!prompt) return toast("请先填写精修要求");
@@ -869,10 +1121,18 @@ async function submitRefine() {
     return;
   }
   const row = state.plan.results[state.refineRow - 1];
-  await debitPoints(price, "自定义修改", { row: state.refineRow, dish: row.name, prompt });
-  setControls();
-  closeRefine();
-  toast(`已扣 ${price} 积分，${row.name} 已提交修改`);
+  const token = beginBusy("refine-debit", "正在扣费", `${row.name} · 自定义修改 ${price} 积分`);
+  const button = $("#submitRefineBtn");
+  setButtonLoading(button, true, "提交中");
+  try {
+    await debitPoints(price, "自定义修改", { row: state.refineRow, dish: row.name, prompt });
+    setControls();
+    closeRefine();
+    toast(`已扣 ${price} 积分，${row.name} 已提交修改`);
+  } finally {
+    setButtonLoading(button, false);
+    endBusy(token);
+  }
 }
 
 async function refreshAccount() {

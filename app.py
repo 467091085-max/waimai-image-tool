@@ -120,12 +120,15 @@ DEMO_DISHES = [
     "康师傅冰红茶",
 ]
 
+BACKGROUND_LABELS = ("一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景")
+
 STYLE_COLORS = {
-    "style-1": ("原木暖色背景", (238, 205, 155), (173, 102, 42)),
-    "style-2": ("黑石板背景", (60, 64, 67), (218, 187, 121)),
-    "style-3": ("浅灰极简背景", (229, 232, 235), (90, 116, 132)),
-    "style-4": ("红色促销背景", (181, 44, 39), (255, 221, 148)),
-    "style-5": ("竹编自然背景", (210, 184, 122), (84, 136, 84)),
+    "style-1": ("一号背景", (238, 205, 155), (173, 102, 42)),
+    "style-2": ("二号背景", (60, 64, 67), (218, 187, 121)),
+    "style-3": ("三号背景", (229, 232, 235), (90, 116, 132)),
+    "style-4": ("四号背景", (181, 44, 39), (255, 221, 148)),
+    "style-5": ("五号背景", (210, 184, 122), (84, 136, 84)),
+    "style-6": ("六号背景", (231, 216, 190), (96, 118, 98)),
 }
 
 STYLE_PROMPTS = {
@@ -134,7 +137,10 @@ STYLE_PROMPTS = {
     "style-3": "浅灰极简背景，干净明亮，留白舒服，真实餐饮摄影",
     "style-4": "红色节日促销背景，热卖氛围，画面明亮但不出现文字",
     "style-5": "竹编自然背景，中式餐饮质感，清爽自然光，真实菜品摄影",
+    "style-6": "米白餐盘背景，清爽柔和光线，真实餐饮摄影，适合外卖菜品统一主图",
 }
+
+NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景"
 
 
 def configured_library_dirs() -> list[Path]:
@@ -345,42 +351,76 @@ def output_resolution_for_style(style_id: str) -> str:
     return "1024:768" if style_id != "style-3" else "1024:1024"
 
 
-def prompt_for_dish(row: dict[str, Any], style_id: str, quality: str | None = "standard") -> str:
-    style = STYLE_PROMPTS.get(style_id, STYLE_PROMPTS["style-1"])
-    detail = "高清、真实、菜品细节清楚、外卖平台主图、主体完整居中"
+def style_prompt_for(style_id: str) -> str:
+    if style_id in STYLE_PROMPTS:
+        return STYLE_PROMPTS[style_id]
+    return f"严格贴合所选背景风格「{style_name_for(style_id)}」，背景、光线、色彩和构图保持一致"
+
+
+def quality_detail(quality: str | None = "standard") -> str:
+    detail = "高清、真实、菜品细节清楚、外卖平台主图、主体完整居中、不要裁切菜品主体"
     if quality_config(quality)["id"] == "premium":
         detail += "、更精致的摆盘、专业商业摄影光影"
+    return detail
+
+
+def row_components_text(row: dict[str, Any]) -> str:
+    components = [str(value).strip() for value in row.get("components") or [] if str(value).strip()]
+    if components:
+        return "、".join(components[:6])
+    return str(row.get("name") or "套餐组合")
+
+
+def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | None = "standard", prompt_type: str = "text_to_image") -> str:
+    style = style_prompt_for(style_id)
+    detail = quality_detail(quality)
     kind = row.get("kind") or "菜品"
+    dish = row.get("name", "外卖菜品")
+    if kind == "套餐/组合" or prompt_type == "combo":
+        return (
+            f"{dish}，套餐组合外卖主图，组合内容包含：{row_components_text(row)}，{style}，"
+            f"{detail}，多菜品组合摆放协调，主体完整且所有主要菜品清楚可见，背景必须跟所选背景一致。"
+            "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
+        )[:1000]
+    if prompt_type == "replace_background":
+        return (
+            f"保留「{dish}」菜品主体完整，仅替换为{style}，外卖平台主图，{detail}，"
+            "背景必须跟所选背景一致，不改变菜品本身，不添加其他无关物体。"
+            "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
+        )[:1000]
     return (
-        f"{row.get('name', '外卖菜品')}，{kind}，{style}，{detail}。"
-        "不要出现任何文字、价格、logo、水印、人物、包装袋，不要裁切菜品主体。"
+        f"{dish}，{kind}，纯文生图生成外卖平台主图，{style}，{detail}，"
+        "主体完整且居中，背景必须跟所选背景一致，真实餐饮商业摄影质感。"
+        "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
     )[:1000]
 
 
 def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
+    prompt_type = "combo" if row.get("kind") == "套餐/组合" else "text_to_image"
     response = tencent_api_request(
         "TextToImageLite",
         {
-            "Prompt": prompt_for_dish(row, style_id, quality),
-            "NegativePrompt": "文字，水印，logo，品牌名，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景",
+            "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
+            "NegativePrompt": NEGATIVE_IMAGE_PROMPT,
             "Resolution": output_resolution_for_style(style_id),
             "RspImgType": "url",
             "LogoAdd": 0,
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"action": "TextToImageLite", "requestId": response.get("RequestId"), "seed": response.get("Seed")}
+    return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": prompt_type, "requestId": response.get("RequestId"), "seed": response.get("Seed")}
 
 
-def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path) -> dict[str, Any]:
+def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
     product_url = candidate_public_url(source_candidate)
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
+    prompt_type = "combo" if row.get("kind") == "套餐/组合" else "replace_background"
     response = tencent_api_request(
         "ReplaceBackground",
         {
             "ProductUrl": product_url,
-            "Prompt": STYLE_PROMPTS.get(style_id, STYLE_PROMPTS["style-1"]),
+            "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
             "Product": str(row.get("name") or "")[:50],
             "Resolution": output_resolution_for_style(style_id),
             "RspImgType": "url",
@@ -388,7 +428,7 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"action": "ReplaceBackground", "requestId": response.get("RequestId")}
+    return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId")}
 
 
 def normalize(text: str) -> str:
@@ -662,17 +702,154 @@ def ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None
     target = LIBRARY_DIR / "_ai_outputs" / style_id / quality_id / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
     candidate = candidate_from_path(target, item["name"], style_id, source, 100.0)
     candidate["aiProvider"] = "tencent-hunyuan" if source.startswith("tencent") else "local-demo"
+    candidate["generated"] = True
     return candidate, target
+
+
+def ai_output_metadata_path(target: Path) -> Path:
+    return target.with_suffix(target.suffix + ".json")
+
+
+def load_ai_output_metadata(target: Path) -> dict[str, Any] | None:
+    meta_path = ai_output_metadata_path(target)
+    if not meta_path.exists():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_ai_output_metadata(target: Path, metadata: dict[str, Any]) -> None:
+    meta_path = ai_output_metadata_path(target)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def existing_ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None) -> dict[str, Any] | None:
     candidate, target = ai_output_candidate(item, style_id, quality, "generated-final")
-    return candidate if target.exists() else None
+    if not target.exists():
+        return None
+    metadata = load_ai_output_metadata(target)
+    if not successful_model_metadata(metadata):
+        return None
+    assert metadata is not None
+    candidate["aiProvider"] = "tencent-hunyuan"
+    candidate["generationStatus"] = "cached"
+    candidate["generationAction"] = str(metadata.get("action") or "")
+    candidate["generationProvider"] = "tencent-hunyuan"
+    if isinstance(metadata.get("tencent"), dict):
+        candidate["tencent"] = metadata["tencent"]
+    return candidate
 
 
-def should_materialize(row: dict[str, Any]) -> bool:
+def is_generated_candidate(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    source = str(candidate.get("source") or "")
+    return bool(candidate.get("generated") or source.startswith("generated") or source.startswith("tencent"))
+
+
+def source_candidates_for_generation(row: dict[str, Any]) -> list[dict[str, Any]]:
+    return [c for c in row.get("candidates") or [] if c.get("path") and not is_generated_candidate(c)]
+
+
+def source_candidate_for_generation(row: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = source_candidates_for_generation(row)
+    return next((c for c in candidates if c.get("reusable", True)), candidates[0] if candidates else None)
+
+
+def strip_nonfinal_generated_candidates(row: dict[str, Any]) -> None:
+    row["candidates"] = [
+        c for c in row.get("candidates") or []
+        if not is_generated_candidate(c) or c.get("aiProvider") == "tencent-hunyuan" or str(c.get("source") or "").startswith("tencent")
+    ]
+
+
+def reusable_selected_style_candidate(row: dict[str, Any], selected_style: str) -> dict[str, Any] | None:
+    return next((c for c in source_candidates_for_generation(row) if c.get("styleId") == selected_style and c.get("reusable", True)), None)
+
+
+def materialization_reason(row: dict[str, Any], selected_style: str) -> str | None:
+    if not selected_style:
+        return "no_selected_style"
+    sources = source_candidates_for_generation(row)
+    if row.get("kind") == "套餐/组合":
+        return "combo"
+    if reusable_selected_style_candidate(row, selected_style):
+        return None
+    if not sources:
+        return "missing_image"
+    if any(not c.get("reusable", True) for c in sources):
+        return "not_reusable"
+    return "style_mismatch"
+
+
+def should_materialize(row: dict[str, Any], selected_style: str = "") -> bool:
+    if selected_style:
+        return materialization_reason(row, selected_style) is not None
     candidate = row["candidates"][0] if row.get("candidates") else None
     return bool(not candidate or candidate.get("generated") or row.get("backgroundAction") in {"智能补图", "智能统一风格", "需抠图换背景", "需要定制/生成", "需去水印/重绘", "套餐组合生成"})
+
+
+def successful_model_metadata(metadata: dict[str, Any] | None) -> bool:
+    return bool(metadata and metadata.get("status") == "succeeded" and metadata.get("provider") == "tencent-hunyuan")
+
+
+def final_ready_candidate(candidate: dict[str, Any], selected_style: str, action: str) -> bool:
+    if candidate.get("aiProvider") == "tencent-hunyuan" or str(candidate.get("source") or "").startswith("tencent"):
+        return True
+    return action == "背景一致，直接复用" and candidate.get("styleId") == selected_style and not candidate.get("generated")
+
+
+def prepare_results_for_export(results: list[dict[str, Any]], selected_style: str) -> list[dict[str, Any]]:
+    prepared = []
+    for row in results:
+        copy_row = {**row}
+        action = str(copy_row.get("backgroundAction") or "")
+        copy_row["candidates"] = [
+            candidate for candidate in copy_row.get("candidates") or []
+            if final_ready_candidate(candidate, selected_style, action)
+        ]
+        if not copy_row["candidates"] and action not in {"背景一致，直接复用", "正式生成"}:
+            copy_row["publicStatus"] = copy_row.get("publicStatus") or "待正式生成"
+        prepared.append(copy_row)
+    return prepared
+
+
+def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str, Any]) -> None:
+    candidate["aiProvider"] = str(metadata.get("provider") or candidate.get("aiProvider") or "")
+    candidate["generationStatus"] = str(metadata.get("status") or "")
+    candidate["generationAction"] = str(metadata.get("action") or "")
+    candidate["generationProvider"] = str(metadata.get("provider") or "")
+    if isinstance(metadata.get("tencent"), dict):
+        candidate["tencent"] = metadata["tencent"]
+
+
+def promote_candidate(row: dict[str, Any], candidate: dict[str, Any]) -> None:
+    image_id = candidate.get("imageId")
+    path = candidate.get("path")
+    row["candidates"] = [candidate] + [c for c in row.get("candidates", []) if c.get("imageId") != image_id and c.get("path") != path]
+
+
+def generation_row_result(row: dict[str, Any], provider: str, action: str, reason: str | None) -> dict[str, Any]:
+    return {
+        "row": row.get("row"),
+        "dish": row.get("name"),
+        "provider": provider,
+        "action": action,
+        "reason": reason,
+        "attempted": False,
+        "succeeded": False,
+        "fallback": False,
+        "status": "pending",
+    }
+
+
+def bump_generation_action(generation: dict[str, Any], action: str) -> None:
+    actions = generation.setdefault("actions", {})
+    actions[action] = int(actions.get(action) or 0) + 1
 
 
 def materialize_final_images(plan: dict[str, Any], selected_style: str, quality: str | None = "standard") -> dict[str, Any]:
@@ -680,60 +857,183 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
     generation = {
         "provider": status["provider"],
         "configured": status["configured"],
+        "action": "materialize_final_images",
         "attempted": 0,
         "succeeded": 0,
         "fallback": 0,
+        "localFallback": 0,
+        "actionFallback": 0,
+        "cached": 0,
+        "limited": 0,
+        "failed": 0,
+        "pending": 0,
         "skipped": 0,
         "limit": TENCENT_SYNC_LIMIT,
         "errors": [],
+        "actions": {},
+        "items": [],
     }
     if not selected_style:
+        generation["action"] = "missing_selected_style"
         return generation
     live_budget = TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT >= 0 else 0
     for row in plan["results"]:
-        candidate = row["candidates"][0] if row.get("candidates") else None
-        if not should_materialize(row):
+        strip_nonfinal_generated_candidates(row)
+        reason = materialization_reason(row, selected_style)
+        source_candidate = source_candidate_for_generation(row)
+        item_result = generation_row_result(row, status["provider"], "Reuse", reason)
+        if reason is None:
             generation["skipped"] += 1
+            item_result.update({"provider": "library", "status": "reused", "reason": "same_style_reuse"})
+            bump_generation_action(generation, "Reuse")
+            row["generation"] = item_result
+            generation["items"].append(item_result)
             continue
-        ai_candidate, target = ai_output_candidate(row, selected_style, quality, "generated-local")
-        if target.exists():
-            row["candidates"].insert(0, ai_candidate)
+
+        _, target = ai_output_candidate(row, selected_style, quality, "generated-final")
+        metadata = load_ai_output_metadata(target) if target.exists() else None
+        if target.exists() and successful_model_metadata(metadata):
+            assert metadata is not None
+            cached_action = str(metadata.get("action") or "Cached")
+            ai_candidate, _ = ai_output_candidate(row, selected_style, quality, f"tencent-{cached_action}")
+            candidate_generation_metadata(ai_candidate, metadata)
+            promote_candidate(row, ai_candidate)
             row["publicStatus"] = "已生成"
-            generation["skipped"] += 1
+            row["backgroundAction"] = "正式生成"
+            row["generationStatus"] = "cached"
+            item_result.update({"provider": "tencent-hunyuan", "action": cached_action, "status": "cached", "succeeded": True, "cached": True})
+            generation["cached"] += 1
+            bump_generation_action(generation, "Cached")
+            row["generation"] = item_result
+            generation["items"].append(item_result)
             continue
+
+        if status["configured"] and generation["attempted"] >= live_budget:
+            generation["limited"] += 1
+            generation["pending"] += 1
+            item_result.update(
+                {
+                    "provider": "tencent-hunyuan",
+                    "action": "Limited",
+                    "status": "limited",
+                    "reason": f"{reason}: TENCENT_HUNYUAN_SYNC_LIMIT reached",
+                }
+            )
+            row["backgroundAction"] = "待正式生成"
+            row["publicStatus"] = "待正式生成"
+            row["generationStatus"] = "limited"
+            row["generation"] = item_result
+            bump_generation_action(generation, "Limited")
+            generation["items"].append(item_result)
+            continue
+
         used_tencent = False
-        source_candidate = next((c for c in row.get("candidates", [])[1:] if not c.get("generated")), None)
-        if status["configured"] and generation["attempted"] < live_budget:
+        detail: dict[str, Any] | None = None
+        replace_error: Exception | None = None
+        if status["configured"]:
             generation["attempted"] += 1
+            item_result["attempted"] = True
             try:
-                mode = tencent_config()["mode"]
-                if mode in {"auto", "replace", "replace_background"} and source_candidate:
+                if source_candidate:
                     try:
-                        detail = tencent_replace_background(row, source_candidate, selected_style, target)
-                    except Exception:
-                        if mode != "auto":
-                            raise
+                        detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
+                    except Exception as exc:
+                        replace_error = exc
                         detail = tencent_text_to_image(row, selected_style, quality, target)
                 else:
                     detail = tencent_text_to_image(row, selected_style, quality, target)
+                if replace_error is not None:
+                    generation["fallback"] += 1
+                    generation["actionFallback"] += 1
+                    item_result["fallback"] = True
+                    item_result["fallbackFrom"] = "ReplaceBackground"
+                    item_result["fallbackMessage"] = str(replace_error)[:220]
+                assert detail is not None
                 ai_candidate, _ = ai_output_candidate(row, selected_style, quality, f"tencent-{detail['action']}")
                 ai_candidate["tencent"] = detail
+                metadata = {
+                    "status": "succeeded",
+                    "provider": "tencent-hunyuan",
+                    "action": detail["action"],
+                    "promptType": detail.get("promptType"),
+                    "reason": reason,
+                    "row": row.get("row"),
+                    "dish": row.get("name"),
+                    "sourceCandidate": {
+                        "imageId": source_candidate.get("imageId"),
+                        "dishName": source_candidate.get("dishName"),
+                        "styleId": source_candidate.get("styleId"),
+                        "source": source_candidate.get("source"),
+                    }
+                    if source_candidate
+                    else None,
+                    "tencent": detail,
+                }
+                write_ai_output_metadata(target, metadata)
+                candidate_generation_metadata(ai_candidate, metadata)
+                promote_candidate(row, ai_candidate)
                 used_tencent = True
                 generation["succeeded"] += 1
+                item_result.update({"provider": "tencent-hunyuan", "action": detail["action"], "status": "succeeded", "succeeded": True, "promptType": detail.get("promptType")})
+                bump_generation_action(generation, detail["action"])
             except Exception as exc:
                 generation["errors"].append({"dish": row.get("name"), "message": str(exc)[:220]})
+                item_result["error"] = str(exc)[:220]
         if not used_tencent:
+            if status["configured"]:
+                generation["failed"] += 1
+                generation["pending"] += 1
+                item_result.update({"provider": "tencent-hunyuan", "action": "Failed", "status": "failed"})
+                row["backgroundAction"] = "模型生成失败"
+                row["publicStatus"] = "模型生成失败"
+                row["generationStatus"] = "failed"
+                row["generation"] = item_result
+                bump_generation_action(generation, "Failed")
+                generation["items"].append(item_result)
+                continue
+            if not env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+                generation["pending"] += 1
+                item_result.update({"provider": "local", "action": "WaitingForModelConfig", "status": "pending"})
+                row["backgroundAction"] = "等待模型配置"
+                row["publicStatus"] = "等待模型配置"
+                row["generationStatus"] = "pending"
+                row["generation"] = item_result
+                bump_generation_action(generation, "WaitingForModelConfig")
+                generation["items"].append(item_result)
+                continue
             draw_demo_image(target, row["name"], selected_style)
             ai_candidate, _ = ai_output_candidate(row, selected_style, quality, "generated-local")
+            metadata = {
+                "status": "fallback",
+                "provider": "local-demo",
+                "action": "LocalFallback",
+                "reason": reason,
+                "row": row.get("row"),
+                "dish": row.get("name"),
+                "error": item_result.get("error"),
+            }
+            write_ai_output_metadata(target, metadata)
+            candidate_generation_metadata(ai_candidate, metadata)
+            promote_candidate(row, ai_candidate)
             generation["fallback"] += 1
-        row["candidates"].insert(0, ai_candidate)
+            generation["localFallback"] += 1
+            item_result.update({"provider": "local-demo", "action": "LocalFallback", "status": "fallback", "fallback": True})
+            bump_generation_action(generation, "LocalFallback")
         row["backgroundAction"] = "正式生成"
-        row["publicStatus"] = "已生成"
+        row["publicStatus"] = "已生成" if used_tencent else "本地兜底"
+        row["generationStatus"] = "succeeded" if used_tencent else "fallback"
+        row["generation"] = item_result
+        generation["items"].append(item_result)
     return generation
 
 
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    style_ids = sorted({c["styleId"] for r in results for c in r["candidates"] if c["styleId"]})
+    candidate_style_ids = {c["styleId"] for r in results for c in r["candidates"] if c["styleId"]}
+    library_style_ids = {image.style_id for image in library_images() if image.style_id}
+    style_ids = [style_id for style_id in STYLE_COLORS if style_id in candidate_style_ids or style_id in library_style_ids or style_id == "style-6"]
+    for style_id in sorted(candidate_style_ids | library_style_ids):
+        if style_id not in style_ids:
+            style_ids.append(style_id)
     for style_id in sorted({image.style_id for image in library_images() if image.style_id}):
         if style_id not in style_ids:
             style_ids.append(style_id)
@@ -741,7 +1041,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         style_ids = list(STYLE_COLORS)
     options = []
     total = max(1, len(results))
-    for idx, style_id in enumerate(style_ids[:5], start=1):
+    for idx, style_id in enumerate(style_ids[:PREVIEW_SAMPLE_COUNT], start=1):
         direct = review = bg_replace = custom = 0
         sample = None
         for row in results:
@@ -759,11 +1059,13 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 bg_replace += 1
         sample = sample or style_sample_candidate(style_id)
         style_name = style_name_for(style_id)
+        display_name = BACKGROUND_LABELS[idx - 1] if idx <= len(BACKGROUND_LABELS) else f"{idx}号背景"
         color = style_color_for(style_id)
         options.append(
             {
                 "id": style_id,
-                "name": style_name,
+                "name": display_name,
+                "rawName": style_name,
                 "count": sum(1 for r in results for c in r["candidates"] if c["styleId"] == style_id),
                 "sample": sample,
                 "color": f"rgb({color[0]},{color[1]},{color[2]})",
@@ -777,7 +1079,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "estimatedPoints": direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
             }
         )
-    return sorted(options, key=lambda x: x["direct"], reverse=True)
+    return options
 
 
 def status_for(candidates: list[dict[str, Any]]) -> str:
@@ -945,7 +1247,15 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         else:
             action = "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
-        row["publicStatus"] = "待处理" if chosen and not chosen.get("reusable", True) else ("已生成" if chosen else "待补图")
+        if not chosen:
+            public_status = "待补图"
+        elif not chosen.get("reusable", True):
+            public_status = "待处理"
+        elif chosen.get("generated") and chosen.get("generationStatus") not in {"succeeded", "cached"}:
+            public_status = "待正式生成"
+        else:
+            public_status = "已生成"
+        row["publicStatus"] = public_status
         row["points"] = points_for(row["status"], action, row["kind"], quality_info["id"])
     total_points = sum(int(row.get("points") or 0) for row in results)
     summary = {
@@ -1409,10 +1719,12 @@ def api_export():
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
     platforms = payload.get("platforms") or ["meituan"]
     quality = str(payload.get("quality", "standard"))
-    plan = build_plan(str(payload.get("style", "")), quality)
+    style = str(payload.get("style", ""))
+    plan = build_plan(style, quality)
+    export_results = prepare_results_for_export(plan["results"], style)
     return jsonify(
         export_delivery_zip(
-            plan["results"],
+            export_results,
             EXPORT_DIR,
             scope=str(payload.get("scope", "all")),
             selected_rows=selected_rows,

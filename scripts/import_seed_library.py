@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-STYLE_IDS = ("style-1", "style-2", "style-3", "style-4", "style-5")
+STYLE_IDS = ("style-1", "style-2", "style-3", "style-4", "style-5", "style-6")
 PRIORITY_TERMS = (
     "辣椒炒肉",
     "小炒黄牛肉",

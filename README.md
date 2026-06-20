@@ -246,3 +246,54 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 ```
 
 返回里的 `configured` 为 `true` 才代表 Render 已读取到密钥。
+
+## 2026-06-20 交付说明
+
+本轮把产品主流程改成更接近真实交付版本：
+
+- 上传菜单、风格预览、正式出图、充值、单张保存、打包导出都会显示运行中提示，避免用户误以为页面卡死。
+- 整店风格改为 6 张背景图，两行三列展示，并统一命名为「一号背景」到「六号背景」。
+- 免费样图预览单独成区，不再和背景风格混在一起。
+- 添加品牌水印预览改成真实图片比例画布，文字水印和 PNG Logo 直接叠在图上，不再额外套圆形底。
+- 正式出图接入腾讯云混元：有图库原图时走换背景，没有图库原图时走文生图；腾讯云已配置时不会再用本地假图冒充成功。
+- 导出接口会过滤未真实生成完成的图片；未完成、模型失败、待正式生成的图片不会混进 ZIP。
+- Render 可用种子图库已重新导入，当前内置 6 套风格、约 419 张可复用图。
+
+本地启动：
+
+```bash
+cd /Users/guiguixiaxia/Documents/Codex/2026-06-15/33-excel-excel-300-5-4/outputs/waimai-image-tool-deploy
+PYTHONPATH=.codex_deps:. python3 app.py
+```
+
+本地访问：
+
+```text
+http://127.0.0.1:8765
+```
+
+Render 部署需要的核心环境变量：
+
+```text
+TENCENT_HUNYUAN_ENABLED=true
+TENCENTCLOUD_SECRET_ID=你的 SecretId
+TENCENTCLOUD_SECRET_KEY=你的 SecretKey
+TENCENTCLOUD_REGION=ap-guangzhou
+PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
+TENCENT_HUNYUAN_MODE=auto
+TENCENT_HUNYUAN_SYNC_LIMIT=6
+ALLOW_LOCAL_IMAGE_FALLBACK=false
+```
+
+线上自检：
+
+```bash
+curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+curl https://waimai-image-tool-1.onrender.com/api/library-status
+```
+
+当前仍然保留的限制：
+
+- `TENCENT_HUNYUAN_SYNC_LIMIT=6` 表示一次网页请求最多同步真实生成 6 张，适合演示和小批量验证。正式卖给客户前，批量 100 张以上应改成后台队列异步生成。
+- 现在还没有真实登录、微信/支付宝支付、订单系统和对象存储；这些是商业化版本下一阶段要补的。
+- 如果腾讯云额度、权限或接口报错，前端会显示「模型生成失败」或「待正式生成」，不会再假装已经生成成功。

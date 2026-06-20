@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>外卖菜品图一键生成工具</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -94,8 +95,26 @@
         <p>这里先展示 6 张免费单品风格样图。确认正式生成时，才按总图片张数扣积分。</p>
       </div>
       <div class="section-main">
-        <div id="styleBox" class="style-grid"></div>
-        <div id="stylePreviewBox" class="style-preview-box empty">先选择一个图库风格，这里会展示 6 张免费单品样图</div>
+        <div class="visual-block">
+          <div class="visual-block-head">
+            <div>
+              <b>背景风格图</b>
+              <span>选择 1 张作为整店统一背景</span>
+            </div>
+            <em>6 张 · 两行三列</em>
+          </div>
+          <div id="styleBox" class="style-grid"></div>
+        </div>
+        <div class="visual-block free-sample-block">
+          <div class="visual-block-head">
+            <div>
+              <b>免费样图预览</b>
+              <span id="stylePreviewTitle">先选择背景，这里会展示 6 张免费单品样图</span>
+            </div>
+            <em>不扣积分</em>
+          </div>
+          <div id="stylePreviewBox" class="style-preview-box empty">先选择背景，这里会展示 6 张免费单品样图</div>
+        </div>
         <div class="quality-card">
           <div class="quality-head">
             <div>
@@ -274,6 +293,7 @@
     </div>
   </div>
 
+  <div id="globalBusy" class="global-busy" aria-live="polite" aria-hidden="true"></div>
   <div id="toast" class="toast"></div>
   <script src="/static/app.js"></script>
 </body>
