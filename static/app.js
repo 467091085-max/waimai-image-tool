@@ -172,7 +172,13 @@ function toast(text) {
 
 async function api(url, opt = {}) {
   const res = await fetch(url, opt);
-  const data = await res.json();
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text ? text.slice(0, 180) : "服务暂时没有返回内容" };
+  }
   if (!res.ok || data.error) throw new Error(data.error || "请求失败");
   return data;
 }
@@ -733,11 +739,17 @@ function previewPlaceholders(text = "免费样图") {
 function previewSampleCard(sample, index) {
   const name = sample?.name || `样图 ${index + 1}`;
   const image = sample?.candidate;
+  const generation = sample?.generation || {};
+  const status = generation.status === "failed"
+    ? "生成失败"
+    : generation.status === "pending"
+      ? "生成中"
+      : "待补图";
   if (!image) {
     return `<div class="preview-sample placeholder missing">
       <b>${esc(name)}</b>
       <div class="sample-frame"></div>
-      <p>待补图</p>
+      <p>${esc(status)}</p>
     </div>`;
   }
   return `<div class="preview-sample">
@@ -806,6 +818,8 @@ function renderStylePreview() {
   }
   const samples = (state.stylePreview.samples || []).slice(0, 6);
   const sampleCount = samples.filter(sample => sample?.candidate).length;
+  const failedCount = samples.filter(sample => sample?.generation?.status === "failed").length;
+  const isLoading = state.previewLoadingStyle === state.pendingStyle;
   if (title) title.textContent = `${styleName(state.pendingStyle)} · ${sampleCount}/6 张免费单品样图`;
   box.className = "style-preview-box";
   if (!samples.length) {
@@ -814,12 +828,16 @@ function renderStylePreview() {
     box.innerHTML = "当前菜单没有可预览的单品，套餐会在正式生成后展示";
     return;
   }
-  setStylePreviewStatus(
-    sampleCount === 6 ? "done" : "warning",
-    sampleCount === 6
-      ? "6 张免费样图已生成。确认风格后才会扣积分生成正式图片。"
-      : `已生成 ${sampleCount} 张免费样图，未返回的位置已标为待补图。确认风格后才会扣积分。`
-  );
+  if (isLoading) {
+    setStylePreviewStatus("loading", `正在逐张生成免费样图，已完成 ${sampleCount}/6 张${failedCount ? `，失败 ${failedCount} 张` : ""}。`);
+  } else {
+    setStylePreviewStatus(
+      sampleCount === 6 ? "done" : "warning",
+      sampleCount === 6
+        ? "6 张免费样图已生成。确认风格后才会扣积分生成正式图片。"
+        : `已生成 ${sampleCount} 张免费样图${failedCount ? `，失败 ${failedCount} 张` : ""}。确认风格后才会扣积分。`
+    );
+  }
   box.innerHTML = Array.from({ length: 6 }, (_, index) => previewSampleCard(samples[index], index)).join("");
 }
 
@@ -832,10 +850,35 @@ async function loadStylePreview(styleId) {
   const token = beginBusy("style-preview", "正在生成免费样图", `${styleName(styleId)} · 6 张免费单品样图`);
   try {
     state.stylePreview = await api(`/api/style-preview?style=${encodeURIComponent(styleId)}`);
+    state.stylePreview.samples = Array.from({ length: 6 }, (_, index) => state.stylePreview.samples?.[index] || {
+      name: `样图 ${index + 1}`,
+      candidate: null,
+      generation: { status: "pending", action: "Preview" },
+      publicStatus: "等待生成"
+    });
     renderStylePreview();
-    renderWatermarkControls();
-    setProgress(72, "6 张免费单品样图已生成，请确认风格", 3);
     scrollToPanel("#stylePreviewBox");
+    for (let index = 0; index < 6; index += 1) {
+      if (state.previewLoadingStyle !== styleId) break;
+      updateBusy(token, "style-preview", "正在生成免费样图", `${styleName(styleId)} · 第 ${index + 1}/6 张`);
+      setProgress(68 + Math.round((index / 6) * 8), `正在生成第 ${index + 1}/6 张免费样图`, 3);
+      try {
+        const payload = await api(`/api/style-preview-sample?style=${encodeURIComponent(styleId)}&index=${index}`);
+        if (state.previewLoadingStyle !== styleId) break;
+        state.stylePreview.samples[index] = payload.sample;
+      } catch (sampleError) {
+        const existing = state.stylePreview.samples[index] || {};
+        state.stylePreview.samples[index] = {
+          ...existing,
+          candidate: null,
+          generation: { status: "failed", error: sampleError.message || "生成失败" },
+          publicStatus: "样图生成失败"
+        };
+      }
+      renderStylePreview();
+    }
+    renderWatermarkControls();
+    setProgress(76, "免费样图已返回，请确认风格", 3);
   } catch (e) {
     state.stylePreviewError = { style: styleId, message: e.message || "请求失败" };
     renderStylePreview();

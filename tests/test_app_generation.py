@@ -239,7 +239,7 @@ class AppGenerationTests(unittest.TestCase):
             def fake_style_background(style_id: str, target: Path) -> dict[str, object]:
                 calls.append(style_id)
                 save_image(target, (120, 150, 190))
-                return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "style_background", "requestId": "style-bg"}
+                return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": "style_background", "requestId": "style-bg"}
 
             with (
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
@@ -251,8 +251,46 @@ class AppGenerationTests(unittest.TestCase):
 
             self.assertEqual(calls, ["style-6"])
             self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
-            self.assertEqual(style_candidate["generationAction"], "TextToImageLite")
+            self.assertEqual(style_candidate["generationAction"], "ReplaceBackground")
             draw_demo.assert_not_called()
+
+    def test_style_background_generation_uses_replace_background_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "seed.jpg"
+            save_image(source)
+            target = root / "style.jpg"
+            payloads: list[tuple[str, dict[str, object]]] = []
+
+            def fake_api(action: str, payload: dict[str, object], timeout: int = app_module.TENCENT_REQUEST_TIMEOUT) -> dict[str, object]:
+                payloads.append((action, payload))
+                return {"ResultImage": "https://cdn.example.test/style.jpg", "RequestId": "style-rb"}
+
+            with (
+                mock.patch.object(app_module, "style_background_seed_candidate", return_value=candidate(source, "辣椒炒肉", "style-1")),
+                mock.patch.object(app_module, "candidate_public_url", return_value="https://cdn.example.test/seed.jpg"),
+                mock.patch.object(app_module, "tencent_api_request", side_effect=fake_api),
+                mock.patch.object(app_module, "save_result_image"),
+            ):
+                detail = app_module.tencent_style_background("style-2", target)
+
+            self.assertEqual(detail["action"], "ReplaceBackground")
+            self.assertEqual(payloads[0][0], "ReplaceBackground")
+            self.assertEqual(payloads[0][1]["ProductUrl"], "https://cdn.example.test/seed.jpg")
+            self.assertIn("背景风格样图", str(payloads[0][1]["Prompt"]))
+
+    def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
+        with (
+            mock.patch.object(app_module, "parse_menu", return_value={"items": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}),
+            mock.patch.object(app_module, "library_images", return_value=[]),
+            mock.patch.object(app_module, "materialize_preview_candidate") as materialize,
+            mock.patch.object(app_module, "generated_preview_candidate", return_value=None),
+        ):
+            manifest = app_module.preview_samples("style-1", generate=False)
+
+        materialize.assert_not_called()
+        self.assertEqual(manifest["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertEqual(manifest["samples"][0]["generation"]["status"], "pending")
 
 
 if __name__ == "__main__":

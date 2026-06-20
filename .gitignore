@@ -11,6 +11,7 @@ data/library/uploaded_*
 data/library/demo_store/
 data/library/_ai_outputs/
 data/library/_generated_previews/
+data/library/_style_backgrounds/
 data/library/_style_samples/
 data/library/.demo_ready
 data/library_index/*

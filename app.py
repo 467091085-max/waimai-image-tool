@@ -62,6 +62,7 @@ TENCENT_AIART_VERSION = "2022-12-29"
 TENCENT_HUNYUAN_HOST = "hunyuan.tencentcloudapi.com"
 TENCENT_HUNYUAN_SERVICE = "hunyuan"
 TENCENT_HUNYUAN_VERSION = "2023-09-01"
+TENCENT_REQUEST_TIMEOUT = int(os.environ.get("TENCENT_REQUEST_TIMEOUT", "55"))
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
@@ -265,7 +266,7 @@ def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, service: str, version: str, timeout: int = 70) -> dict[str, Any]:
+def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, service: str, version: str, timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     cfg = tencent_config()
     if not tencent_ready():
         raise RuntimeError("腾讯云生图环境变量未配置完整")
@@ -310,7 +311,7 @@ def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, s
     return response
 
 
-def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = 70) -> dict[str, Any]:
+def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     if action == "TextToImageLite":
         endpoints = [
             (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
@@ -479,11 +480,16 @@ def prompt_for_style_background(style_id: str) -> str:
 
 
 def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
+    source_candidate = style_background_seed_candidate()
+    product_url = candidate_public_url(source_candidate) if source_candidate else ""
+    if not product_url:
+        raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
     response = tencent_api_request(
-        "TextToImageLite",
+        "ReplaceBackground",
         {
+            "ProductUrl": product_url,
             "Prompt": prompt_for_style_background(style_id),
-            "NegativePrompt": NEGATIVE_IMAGE_PROMPT,
+            "Product": "招牌菜品",
             "Resolution": default_delivery_resolution(),
             "RspImgType": "url",
             "LogoAdd": 0,
@@ -492,7 +498,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     save_result_image(str(response.get("ResultImage") or ""), target)
     return {
         "provider": "tencent-hunyuan",
-        "action": "TextToImageLite",
+        "action": "ReplaceBackground",
         "promptType": "style_background",
         "requestId": response.get("RequestId"),
         "seed": response.get("Seed"),
@@ -811,6 +817,17 @@ def candidate_from_path(path: Path, dish: str, style_id: str, source: str, score
         "path": str(path),
         "generated": source.startswith("generated"),
     }
+
+
+def style_background_seed_candidate() -> dict[str, Any] | None:
+    preferred_names = ("辣椒炒肉", "黄牛肉", "红烧肉", "盖码饭", "招牌")
+    images = [image for image in library_images() if image.reusable]
+    images.sort(key=lambda image: (not any(word in image.dish for word in preferred_names), image.store, image.dish))
+    for image in images:
+        candidate = candidate_from_path(image.path, image.dish, image.style_id, image.source, 100.0)
+        if candidate_public_url(candidate):
+            return candidate
+    return None
 
 
 def style_background_target(style_id: str) -> Path:
@@ -1409,10 +1426,9 @@ def pipeline_payload() -> dict[str, Any]:
     }
 
 
-def preview_samples(selected_style: str) -> dict[str, Any]:
+def preview_sample_entries() -> list[dict[str, Any]]:
     menu = parse_menu()
     library = library_images()
-    samples = []
     single_items = [item for item in menu["items"] if item.get("kind") == "单品"]
     seen_norms = {item.get("norm") for item in single_items}
     if len(single_items) < PREVIEW_SAMPLE_COUNT:
@@ -1423,16 +1439,48 @@ def preview_samples(selected_style: str) -> dict[str, Any]:
             seen_norms.add(item.get("norm"))
             if len(single_items) >= PREVIEW_SAMPLE_COUNT:
                 break
+    entries = []
     for item in single_items[:PREVIEW_SAMPLE_COUNT]:
+        if not item.get("norm"):
+            item = {**item, "norm": normalize(str(item.get("name") or ""))}
         candidates = top_candidates(item, library)
-        preview_item = {**item, "candidates": candidates}
+        entries.append({"item": item, "candidates": candidates})
+    return entries
+
+
+def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any], generate: bool = True) -> dict[str, Any]:
+    item = entry["item"]
+    candidates = entry["candidates"]
+    preview_item = {**item, "candidates": candidates}
+    candidate = None
+    generation: dict[str, Any]
+    if generate:
         candidate, generation = materialize_preview_candidate(preview_item, selected_style, "standard")
-        public_status = "免费样图"
-        if generation.get("status") == "failed":
-            public_status = "样图生成失败"
-        elif generation.get("status") == "pending":
-            public_status = "等待模型配置"
-        samples.append({**item, "candidate": candidate, "sourceCandidates": candidates[:3], "generation": generation, "points": 0, "publicStatus": public_status})
+    else:
+        candidate = generated_preview_candidate(preview_item, selected_style)
+        generation = (
+            {"status": "cached", "provider": candidate.get("aiProvider") or "tencent-hunyuan", "action": candidate.get("generationAction") or "Cached"}
+            if candidate
+            else {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
+        )
+    public_status = "免费样图"
+    if generation.get("status") == "failed":
+        public_status = "样图生成失败"
+    elif generation.get("status") in {"pending", "limited"}:
+        public_status = "等待生成"
+    return {**item, "candidate": candidate, "sourceCandidates": candidates[:3], "generation": generation, "points": 0, "publicStatus": public_status}
+
+
+def preview_sample_payload(selected_style: str, index: int, generate: bool = True) -> dict[str, Any]:
+    entries = preview_sample_entries()
+    if index < 0 or index >= len(entries):
+        raise IndexError("样图序号不存在")
+    return preview_sample_payload_from_entry(selected_style, entries[index], generate=generate)
+
+
+def preview_samples(selected_style: str, generate: bool = False) -> dict[str, Any]:
+    entries = preview_sample_entries()
+    samples = [preview_sample_payload_from_entry(selected_style, entry, generate=generate) for entry in entries]
     return {
         "style": selected_style,
         "styleName": STYLE_COLORS.get(selected_style, ("上传风格", None, None))[0],
@@ -1767,7 +1815,19 @@ def api_style_preview():
     style = request.args.get("style", "")
     if not style:
         return jsonify({"error": "请先选择风格"}), 400
-    return jsonify(preview_samples(style))
+    return jsonify(preview_samples(style, generate=False))
+
+
+@app.get("/api/style-preview-sample")
+def api_style_preview_sample():
+    style = request.args.get("style", "")
+    if not style:
+        return jsonify({"error": "请先选择风格"}), 400
+    try:
+        index = int(request.args.get("index", "0"))
+        return jsonify({"style": style, "index": index, "sample": preview_sample_payload(style, index, generate=True)})
+    except IndexError:
+        return jsonify({"error": "样图序号不存在"}), 404
 
 
 @app.get("/api/menu-status")
