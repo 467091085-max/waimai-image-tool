@@ -147,6 +147,17 @@ class AppGenerationTests(unittest.TestCase):
 
             def fake_api(action: str, payload: dict[str, object], timeout: int = 70) -> dict[str, object]:
                 payloads.append((action, payload))
+                if action == "SubmitTextToImageJob":
+                    return {"JobId": "job-image3", "RequestId": "req-submit", "_Endpoint": app_module.TENCENT_AIART_HOST}
+                if action == "QueryTextToImageJob":
+                    return {
+                        "JobStatusCode": "5",
+                        "JobStatusMsg": "处理完成",
+                        "ResultImage": ["https://cdn.example.test/result.jpg"],
+                        "ResultDetails": ["Success"],
+                        "RequestId": "req-query",
+                        "_Endpoint": app_module.TENCENT_AIART_HOST,
+                    }
                 return {"ResultImage": "https://cdn.example.test/result.jpg", "RequestId": f"req-{action}", "Seed": 123}
 
             single = menu_row(1, "招牌牛肉饭", "单品", [])
@@ -160,16 +171,45 @@ class AppGenerationTests(unittest.TestCase):
                 text_detail = app_module.tencent_text_to_image(single, "style-4", "premium", target)
                 combo_detail = app_module.tencent_replace_background(combo, source, "style-4", target)
 
-            self.assertEqual(text_detail["action"], "TextToImageLite")
+            self.assertEqual(text_detail["action"], "SubmitTextToImageJob")
+            self.assertEqual(text_detail["queryAction"], "QueryTextToImageJob")
+            self.assertEqual(text_detail["jobId"], "job-image3")
             self.assertEqual(combo_detail["action"], "ReplaceBackground")
             text_prompt = str(payloads[0][1]["Prompt"])
-            combo_prompt = str(payloads[1][1]["Prompt"])
+            combo_prompt = str(payloads[2][1]["Prompt"])
             for required in ["纯文生图", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
                 self.assertIn(required, text_prompt)
             for required in ["套餐组合外卖主图", "牛肉饭", "鸡腿", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
                 self.assertIn(required, combo_prompt)
-            self.assertEqual(payloads[0][1]["NegativePrompt"], app_module.NEGATIVE_IMAGE_PROMPT)
-            self.assertEqual(payloads[1][1]["ProductUrl"], source["url"])
+            self.assertEqual(payloads[0][0], "SubmitTextToImageJob")
+            self.assertEqual(payloads[1][0], "QueryTextToImageJob")
+            self.assertEqual(payloads[0][1]["LogoAdd"], 0)
+            self.assertEqual(payloads[0][1]["Revise"], 1)
+            self.assertNotIn("NegativePrompt", payloads[0][1])
+            self.assertEqual(payloads[2][1]["ProductUrl"], source["url"])
+
+    def test_text_to_image3_can_fallback_to_lite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "out.jpg"
+            calls: list[str] = []
+
+            def fake_api(action: str, payload: dict[str, object], timeout: int = 70) -> dict[str, object]:
+                calls.append(action)
+                if action == "SubmitTextToImageJob":
+                    raise RuntimeError("3.0 quota not ready")
+                if action == "TextToImageLite":
+                    return {"ResultImage": "https://cdn.example.test/result.jpg", "RequestId": "req-lite", "Seed": 456}
+                raise AssertionError(action)
+
+            with (
+                mock.patch.object(app_module, "tencent_api_request", side_effect=fake_api),
+                mock.patch.object(app_module, "save_result_image"),
+            ):
+                detail = app_module.tencent_text_to_image(menu_row(1, "招牌牛肉饭", "单品", []), "style-4", "standard", target)
+
+            self.assertEqual(calls, ["SubmitTextToImageJob", "TextToImageLite"])
+            self.assertEqual(detail["action"], "TextToImageLite")
+            self.assertEqual(detail["fallbackFrom"], "SubmitTextToImageJob")
 
     def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
         calls: list[str] = []

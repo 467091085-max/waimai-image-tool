@@ -215,9 +215,10 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 
 ## 腾讯云生图配置
 
-当前版本已经预留并接入腾讯云混元生图 API 3.0：
+当前版本已经接入腾讯云混元生图 API：
 
-- `TextToImageLite`：用于没有可复用图库图时的普通文生图。
+- `SubmitTextToImageJob` + `QueryTextToImageJob`：混元生图 3.0，用于没有可复用图库图时的正式文生图。
+- `TextToImageLite`：只作为 3.0 失败时的临时降级兜底。
 - `ReplaceBackground`：用于已有菜品图可公网访问时，按所选风格替换背景。
 
 Render 环境变量：
@@ -230,6 +231,10 @@ TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
+TENCENT_IMAGE3_ENABLED=true
+TENCENT_IMAGE3_POLL_TIMEOUT=150
+TENCENT_IMAGE3_POLL_INTERVAL=3
+TENCENT_IMAGE3_FALLBACK_TO_LITE=true
 TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
 TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
@@ -243,8 +248,10 @@ TENCENT_COS_PREFIX=waimai-model-inputs
 - 如果 COS bucket 是私有读，程序会上传临时 JPG 后生成 1 小时有效的签名 URL 给商品背景接口使用。
 
 - `PUBLIC_BASE_URL` 用于把图库图片地址拼成腾讯云可下载的公网 URL。
-- `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走文生图。
+- `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走混元生图 3.0 文生图。
 - `TENCENT_HUNYUAN_SYNC_LIMIT` 是同步请求内最多真实调用腾讯云的图片数，默认 6。正式商用时不要在 Web 请求里一次生成 100 多张，应改成后台任务队列。
+- `TENCENT_IMAGE3_ENABLED=true` 表示缺图文生图优先使用混元生图 3.0。
+- `TENCENT_IMAGE3_FALLBACK_TO_LITE=true` 表示 3.0 失败时可临时降级到极速版，避免整单中断；正式商用可改成 `false`，让失败直接暴露并重试。
 - 本地未配置腾讯云密钥时，系统会自动使用本地演示图兜底，保证上传、预览、导出流程不断。
 
 检查环境变量是否生效：

@@ -66,6 +66,10 @@ TENCENT_HUNYUAN_HOST = "hunyuan.tencentcloudapi.com"
 TENCENT_HUNYUAN_SERVICE = "hunyuan"
 TENCENT_HUNYUAN_VERSION = "2023-09-01"
 TENCENT_REQUEST_TIMEOUT = int(os.environ.get("TENCENT_REQUEST_TIMEOUT", "55"))
+TENCENT_IMAGE3_POLL_TIMEOUT = int(os.environ.get("TENCENT_IMAGE3_POLL_TIMEOUT", "150"))
+TENCENT_IMAGE3_POLL_INTERVAL = max(1, int(os.environ.get("TENCENT_IMAGE3_POLL_INTERVAL", "3")))
+TENCENT_IMAGE3_ENABLED = os.environ.get("TENCENT_IMAGE3_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
+TENCENT_IMAGE3_FALLBACK_TO_LITE = os.environ.get("TENCENT_IMAGE3_FALLBACK_TO_LITE", "true").lower() not in {"0", "false", "no", "off"}
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 GENERATION_JOB_SYNC_BATCH_SIZE = int(os.environ.get("GENERATION_JOB_SYNC_BATCH_SIZE", str(max(1, TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT > 0 else 6))))
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
@@ -303,6 +307,9 @@ def tencent_status_payload() -> dict[str, Any]:
         "region": cfg["region"],
         "mode": cfg["mode"],
         "syncLimit": TENCENT_SYNC_LIMIT,
+        "image3Enabled": TENCENT_IMAGE3_ENABLED,
+        "image3FallbackToLite": TENCENT_IMAGE3_FALLBACK_TO_LITE,
+        "image3PollTimeout": TENCENT_IMAGE3_POLL_TIMEOUT,
         "styleBackgroundsLive": tencent_style_backgrounds_enabled(),
         "cosReady": cos["ready"],
         "cosBucket": cos["bucket"] if cos["ready"] else "",
@@ -565,7 +572,7 @@ def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | Non
     )[:250]
 
 
-def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
+def tencent_text_to_image_lite(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "text_to_image"
     response = tencent_api_request(
         "TextToImageLite",
@@ -586,6 +593,73 @@ def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | Non
         "seed": response.get("Seed"),
         "endpoint": response.get("_Endpoint"),
     }
+
+
+def tencent_submit_text_to_image3(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
+    prompt_type = "combo" if row.get("kind") == "套餐/组合" else "text_to_image"
+    submitted = tencent_api_request(
+        "SubmitTextToImageJob",
+        {
+            "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
+            "Resolution": output_resolution_for_style(style_id),
+            "LogoAdd": 0,
+            "Revise": 1,
+        },
+    )
+    job_id = str(submitted.get("JobId") or "")
+    if not job_id:
+        raise RuntimeError("混元生图3.0未返回任务ID")
+
+    deadline = time.monotonic() + max(1, TENCENT_IMAGE3_POLL_TIMEOUT)
+    while True:
+        latest = tencent_api_request("QueryTextToImageJob", {"JobId": job_id})
+        status_code = str(latest.get("JobStatusCode") or "")
+        status_msg = str(latest.get("JobStatusMsg") or "")
+        if status_code == "5":
+            images = latest.get("ResultImage") or []
+            if not images:
+                raise RuntimeError(f"混元生图3.0任务完成但没有返回图片：{job_id}")
+            save_result_image(str(images[0]), target)
+            return {
+                "provider": "tencent-hunyuan",
+                "action": "SubmitTextToImageJob",
+                "queryAction": "QueryTextToImageJob",
+                "promptType": prompt_type,
+                "requestId": latest.get("RequestId") or submitted.get("RequestId"),
+                "submitRequestId": submitted.get("RequestId"),
+                "queryRequestId": latest.get("RequestId"),
+                "jobId": job_id,
+                "jobStatusCode": status_code,
+                "jobStatusMsg": status_msg,
+                "resultDetails": latest.get("ResultDetails"),
+                "revisedPrompt": latest.get("RevisedPrompt"),
+                "endpoint": latest.get("_Endpoint") or submitted.get("_Endpoint"),
+            }
+        if status_code == "4":
+            err_code = latest.get("JobErrorCode") or "Image3JobFailed"
+            err_msg = latest.get("JobErrorMsg") or status_msg or "处理失败"
+            raise RuntimeError(f"混元生图3.0任务失败 {err_code}: {err_msg}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"混元生图3.0任务超时：{job_id}，当前状态 {status_code or 'unknown'} {status_msg}")
+        time.sleep(TENCENT_IMAGE3_POLL_INTERVAL)
+
+
+def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
+    if TENCENT_IMAGE3_ENABLED:
+        try:
+            return tencent_submit_text_to_image3(row, style_id, quality, target)
+        except Exception as image3_error:
+            if not TENCENT_IMAGE3_FALLBACK_TO_LITE:
+                raise
+            try:
+                detail = tencent_text_to_image_lite(row, style_id, quality, target)
+                detail["fallback"] = True
+                detail["fallbackFrom"] = "SubmitTextToImageJob"
+                detail["fallbackMessage"] = str(image3_error)[:220]
+                return detail
+            except Exception as lite_error:
+                raise combined_generation_error("混元生图3.0", image3_error, "极速版文生图", lite_error) from lite_error
+    return tencent_text_to_image_lite(row, style_id, quality, target)
 
 
 def prompt_for_style_background(style_id: str) -> str:
