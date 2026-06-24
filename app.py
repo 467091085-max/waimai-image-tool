@@ -1161,22 +1161,63 @@ def ordered_style_ids(results: list[dict[str, Any]]) -> list[str]:
             ordered.append(style_id)
 
     index = 1
-    while len(ordered) < PREVIEW_SAMPLE_COUNT:
+    minimum_candidates = PREVIEW_SAMPLE_COUNT * 3
+    while len(ordered) < minimum_candidates:
         style_id = f"generated-style-{index}"
         if style_id not in ordered:
             ordered.append(style_id)
         index += 1
-    return ordered[:PREVIEW_SAMPLE_COUNT]
+    return ordered
 
 
 def style_background_target(style_id: str) -> Path:
     return LIBRARY_DIR / "_style_backgrounds" / style_id / "背景风格样图.jpg"
 
 
-def style_sample_candidate(style_id: str) -> dict[str, Any]:
-    library_sample = style_representative_candidate(style_id)
-    if library_sample:
-        return library_sample
+@lru_cache(maxsize=512)
+def background_signature_for_path(path_text: str) -> str:
+    path = Path(path_text)
+    try:
+        with Image.open(path) as raw:
+            image = ImageOps.exif_transpose(raw).convert("RGB")
+            image.thumbnail((96, 96), Image.Resampling.BILINEAR)
+            width, height = image.size
+            strip = max(2, min(width, height) // 8)
+            pixels = []
+            regions = (
+                (0, 0, width, strip),
+                (0, max(0, height - strip), width, height),
+                (0, 0, strip, height),
+                (max(0, width - strip), 0, width, height),
+            )
+            for box in regions:
+                crop = image.crop(box)
+                pixels.extend(crop.getdata())
+            if not pixels:
+                return ""
+            count = len(pixels)
+            red = sum(pixel[0] for pixel in pixels) // count
+            green = sum(pixel[1] for pixel in pixels) // count
+            blue = sum(pixel[2] for pixel in pixels) // count
+            return f"{red // 32}-{green // 32}-{blue // 32}"
+    except Exception:
+        return ""
+
+
+def candidate_background_signature(candidate: dict[str, Any] | None) -> str:
+    if not candidate:
+        return ""
+    path = str(candidate.get("path") or "")
+    if path:
+        signature = background_signature_for_path(path)
+        if signature:
+            return signature
+    color = str(candidate.get("color") or "")
+    style_id = str(candidate.get("styleId") or "")
+    return color or style_id
+
+
+def style_background_candidate(style_id: str) -> dict[str, Any]:
     target = style_background_target(style_id)
     metadata = load_ai_output_metadata(target) if target.exists() else None
     if target.exists() and not tencent_style_backgrounds_enabled():
@@ -1212,6 +1253,13 @@ def style_sample_candidate(style_id: str) -> dict[str, Any]:
             candidate["error"] = str(exc)[:220]
             return candidate
     return candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
+
+
+def style_sample_candidate(style_id: str) -> dict[str, Any]:
+    library_sample = style_representative_candidate(style_id)
+    if library_sample:
+        return library_sample
+    return style_background_candidate(style_id)
 
 
 def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str, Any] | None:
@@ -1645,8 +1693,14 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = ordered_style_ids(results)
     options = []
+    seen_signatures: set[str] = set()
+    used_style_ids: set[str] = set()
     total = max(1, len(results))
-    for idx, style_id in enumerate(style_ids, start=1):
+    for style_id in style_ids:
+        if len(options) >= PREVIEW_SAMPLE_COUNT:
+            break
+        if style_id in used_style_ids:
+            continue
         direct = review = bg_replace = custom = 0
         sample = None
         for row in results:
@@ -1656,15 +1710,25 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             same = next((c for c in candidates if c["styleId"] == style_id), None)
             sample = sample or same
-            if same and same.get("reusable", True) and row["status"] == "直接可用":
+            if same and same.get("reusable", True) and row.get("status") == "直接可用":
                 direct += 1
             elif same:
                 review += 1
             else:
                 bg_replace += 1
         sample = sample or style_sample_candidate(style_id)
+        signature = candidate_background_signature(sample)
+        if signature and signature in seen_signatures:
+            fallback_sample = style_background_candidate(style_id)
+            fallback_signature = candidate_background_signature(fallback_sample)
+            if fallback_signature and fallback_signature not in seen_signatures:
+                sample = fallback_sample
+                signature = fallback_signature
+            else:
+                continue
         style_name = style_name_for(style_id)
-        display_name = BACKGROUND_LABELS[idx - 1] if idx <= len(BACKGROUND_LABELS) else f"{idx}号背景"
+        display_index = len(options) + 1
+        display_name = BACKGROUND_LABELS[display_index - 1] if display_index <= len(BACKGROUND_LABELS) else f"{display_index}号背景"
         color = style_color_for(style_id)
         options.append(
             {
@@ -1684,6 +1748,42 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "estimatedPoints": direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
             }
         )
+        used_style_ids.add(style_id)
+        if signature:
+            seen_signatures.add(signature)
+    fallback_index = 1
+    while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= 80:
+        style_id = f"generated-style-fallback-{fallback_index}"
+        fallback_index += 1
+        if style_id in used_style_ids:
+            continue
+        sample = style_background_candidate(style_id)
+        signature = candidate_background_signature(sample)
+        if signature and signature in seen_signatures:
+            continue
+        color = style_color_for(style_id)
+        display_index = len(options) + 1
+        options.append(
+            {
+                "id": style_id,
+                "name": BACKGROUND_LABELS[display_index - 1] if display_index <= len(BACKGROUND_LABELS) else f"{display_index}号背景",
+                "rawName": style_name_for(style_id),
+                "count": 0,
+                "sample": sample,
+                "color": f"rgb({color[0]},{color[1]},{color[2]})",
+                "direct": 0,
+                "review": 0,
+                "bgReplace": total,
+                "custom": 0,
+                "directRate": 0,
+                "processingRate": 100.0,
+                "customRate": 0,
+                "estimatedPoints": total * 18,
+            }
+        )
+        used_style_ids.add(style_id)
+        if signature:
+            seen_signatures.add(signature)
     return options
 
 

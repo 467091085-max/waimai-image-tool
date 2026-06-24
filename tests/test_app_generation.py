@@ -383,6 +383,38 @@ class AppGenerationTests(unittest.TestCase):
             self.assertNotEqual(styles[0]["sample"]["source"], "generated-style-sample")
             self.assertNotEqual(styles[1]["sample"]["source"], "generated-style-sample")
 
+    def test_style_options_replace_duplicate_background_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "真店A" / "style-a" / "辣椒炒肉盖码饭.jpg"
+            second = root / "真店B" / "style-b" / "小炒黄牛肉盖码饭.jpg"
+            save_image(first, (190, 120, 80))
+            save_image(second, (190, 120, 80))
+            library = [
+                app_module.LibraryImage("real-a", first, "真店A", "辣椒炒肉盖码饭", app_module.normalize("辣椒炒肉盖码饭"), app_module.grams(app_module.normalize("辣椒炒肉盖码饭")), "real-style-a", "clean", True),
+                app_module.LibraryImage("real-b", second, "真店B", "小炒黄牛肉盖码饭", app_module.normalize("小炒黄牛肉盖码饭"), app_module.grams(app_module.normalize("小炒黄牛肉盖码饭")), "real-style-b", "clean", True),
+            ]
+            rows = [
+                menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(first, "辣椒炒肉盖码饭", "real-style-a")]),
+                menu_row(2, "小炒黄牛肉盖码饭", "单品", [candidate(second, "小炒黄牛肉盖码饭", "real-style-b")]),
+            ]
+
+            app_module.background_signature_for_path.cache_clear()
+            try:
+                with (
+                    mock.patch.object(app_module, "LIBRARY_DIR", root),
+                    mock.patch.object(app_module, "library_images", return_value=library),
+                    mock.patch.object(app_module, "tencent_ready", return_value=False),
+                ):
+                    styles = app_module.style_options(rows)
+            finally:
+                app_module.background_signature_for_path.cache_clear()
+
+            signatures = [app_module.candidate_background_signature(style["sample"]) for style in styles]
+            self.assertEqual(len(styles), app_module.PREVIEW_SAMPLE_COUNT)
+            self.assertEqual(len(signatures), len(set(signatures)))
+            self.assertIn("generated-style-sample", {style["sample"]["source"] for style in styles})
+
     def test_style_background_sample_can_use_tencent_when_explicitly_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
