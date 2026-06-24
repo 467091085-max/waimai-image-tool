@@ -181,6 +181,10 @@ STYLE_SAMPLE_PREFERRED_WORDS = (
     "辣椒炒肉",
     "小炒黄牛肉",
     "黄牛肉",
+    "螺蛳粉",
+    "桂林米粉",
+    "米粉",
+    "米线",
     "红烧肉",
     "回锅肉",
     "番茄炒蛋",
@@ -191,6 +195,35 @@ STYLE_SAMPLE_PREFERRED_WORDS = (
     "木桶饭",
     "牛肉",
     "鸡",
+)
+STYLE_SAMPLE_SIDE_WORDS = (
+    "辣椒包",
+    "陈醋",
+    "生抽",
+    "白糖",
+    "蒜粒",
+    "大蒜头",
+    "香菜沫",
+    "蘸碟",
+    "蘸料",
+    "料汁",
+    "酱汁",
+    "海带丝",
+    "鸭爪",
+    "鸭头",
+    "鸭肾",
+    "兰花干",
+    "鱼豆腐",
+    "牛丸",
+    "撒尿牛丸",
+    "小丸子",
+    "汤圆",
+    "茶叶蛋",
+    "卤蛋",
+    "泡萝卜",
+    "泡黄瓜",
+    "饮料",
+    "饮品",
 )
 STYLE_SAMPLE_BAD_WORDS = tuple(
     sorted(
@@ -204,16 +237,59 @@ STYLE_SAMPLE_BAD_WORDS = tuple(
             "提示",
             "收藏",
             "宠粉",
+            "福利",
             "起点",
+            "加购",
+            "加料",
+            "加粉",
+            "加汤",
+            "加饭",
+            "蘸碟",
+            "蘸料",
+            "料汁",
+            "酱汁",
+            "酱料",
+            "调料",
+            "陈醋",
+            "生抽",
+            "白糖",
+            "辣椒包",
+            "蒜粒",
+            "大蒜头",
+            "香菜沫",
+            "辣椒油",
+            "餐具",
+            "发票",
+            "部分肉",
+            "绳子",
             "可乐",
             "雪碧",
             "王老吉",
             "矿泉水",
             "冰红茶",
+            "加多宝",
+            "北冰洋",
+            "豆奶",
+            "美年达",
+            "豆浆",
+            "饮料",
+            "饮品",
         },
         key=len,
         reverse=True,
     )
+)
+
+PREVIEW_SAMPLE_BAD_WORDS = STYLE_SAMPLE_BAD_WORDS + (
+    "盛夏",
+    "冰沙",
+    "汤圆",
+    "茶叶蛋",
+    "卤蛋",
+    "泡萝卜",
+    "泡黄瓜",
+    "小食",
+    "单点",
 )
 
 
@@ -294,7 +370,7 @@ def tencent_ready() -> bool:
 
 
 def tencent_style_backgrounds_enabled() -> bool:
-    return env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=False)
+    return env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=tencent_ready())
 
 
 def allow_local_image_fallback() -> bool:
@@ -752,6 +828,20 @@ def has_any_word(text: str, words: tuple[str, ...]) -> bool:
     return any(word in text for word in words)
 
 
+def has_sample_bad_word(text: str, words: tuple[str, ...]) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    for word in words:
+        if not word:
+            continue
+        if len(word) <= 1:
+            if compact == word:
+                return True
+            continue
+        if word in compact:
+            return True
+    return False
+
+
 def semantic_family(name: str, norm: str) -> str:
     text = f"{name}{norm}"
     if has_any_word(text, BEVERAGE_WORDS):
@@ -1079,8 +1169,10 @@ def style_sample_rank(image: LibraryImage) -> tuple[int, str, str]:
         score += 16
     else:
         score -= 18
-    if any(word and word in text for word in STYLE_SAMPLE_BAD_WORDS):
+    if has_sample_bad_word(text, STYLE_SAMPLE_BAD_WORDS):
         score -= 120
+    if has_sample_bad_word(text, STYLE_SAMPLE_SIDE_WORDS):
+        score -= 42
     for index, word in enumerate(STYLE_SAMPLE_PREFERRED_WORDS):
         if word in text:
             score += max(8, 36 - index * 2)
@@ -1101,6 +1193,8 @@ def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
     if not images:
         return None
     images.sort(key=style_sample_rank, reverse=True)
+    if style_sample_rank(images[0])[0] < 30:
+        return None
     candidate = candidate_from_library_image(images[0], 100.0)
     candidate["styleSampleSource"] = "library"
     return candidate
@@ -1392,13 +1486,16 @@ def existing_ai_output_candidate(item: dict[str, Any], style_id: str, quality: s
     if not target.exists():
         return None
     metadata = load_ai_output_metadata(target)
-    if not successful_model_metadata(metadata):
+    if not usable_ai_output_metadata(metadata):
         return None
     assert metadata is not None
-    candidate["aiProvider"] = "tencent-hunyuan"
+    provider = str(metadata.get("provider") or candidate.get("aiProvider") or "")
+    action = str(metadata.get("action") or "")
+    candidate["aiProvider"] = provider
     candidate["generationStatus"] = "cached"
-    candidate["generationAction"] = str(metadata.get("action") or "")
-    candidate["generationProvider"] = "tencent-hunyuan"
+    candidate["generationAction"] = action
+    candidate["generationProvider"] = provider
+    candidate["source"] = f"tencent-{action}" if provider == "tencent-hunyuan" else "generated-final"
     if isinstance(metadata.get("tencent"), dict):
         candidate["tencent"] = metadata["tencent"]
     return candidate
@@ -1457,8 +1554,22 @@ def successful_model_metadata(metadata: dict[str, Any] | None) -> bool:
     return bool(metadata and metadata.get("status") == "succeeded" and metadata.get("provider") == "tencent-hunyuan")
 
 
+def usable_ai_output_metadata(metadata: dict[str, Any] | None) -> bool:
+    if successful_model_metadata(metadata):
+        return True
+    return bool(
+        metadata
+        and metadata.get("status") == "fallback"
+        and metadata.get("provider") == "local-demo"
+        and not tencent_ready()
+        and allow_local_image_fallback()
+    )
+
+
 def final_ready_candidate(candidate: dict[str, Any], selected_style: str, action: str) -> bool:
     if candidate.get("aiProvider") == "tencent-hunyuan" or str(candidate.get("source") or "").startswith("tencent"):
+        return True
+    if candidate.get("aiProvider") == "local-demo" and not tencent_ready() and allow_local_image_fallback():
         return True
     return action == "背景一致，直接复用" and candidate.get("styleId") == selected_style and not candidate.get("generated")
 
@@ -1716,7 +1827,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 review += 1
             else:
                 bg_replace += 1
-        sample = sample or style_sample_candidate(style_id)
+        sample = style_sample_candidate(style_id) or sample
         signature = candidate_background_signature(sample)
         if signature and signature in seen_signatures:
             fallback_sample = style_background_candidate(style_id)
@@ -1973,25 +2084,69 @@ def pipeline_payload() -> dict[str, Any]:
     }
 
 
+def preview_sample_rank(item: dict[str, Any], candidates: list[dict[str, Any]]) -> int:
+    name = str(item.get("name") or "")
+    norm = str(item.get("norm") or normalize(name))
+    score = 0
+    if item.get("kind") == "单品":
+        score += 20
+    if semantic_family(name, norm) == "food":
+        score += 24
+    else:
+        score -= 60
+    if detect_kind(name, "") != "单品":
+        score -= 24
+    if has_sample_bad_word(name, PREVIEW_SAMPLE_BAD_WORDS):
+        score -= 110
+    if has_sample_bad_word(name, STYLE_SAMPLE_SIDE_WORDS):
+        score -= 36
+    for index, word in enumerate(STYLE_SAMPLE_PREFERRED_WORDS):
+        if word in name:
+            score += max(8, 34 - index * 2)
+    if any(word in name for word in ("螺蛳粉", "米粉", "米线", "盖码饭", "盖浇饭", "炒菜", "小炒", "套餐")):
+        score += 12
+    if 4 <= len(norm) <= 20:
+        score += 8
+    if candidates:
+        top = candidates[0]
+        score += min(32, int(float(top.get("score") or 0) // 3))
+        if top.get("reusable", True):
+            score += 10
+    else:
+        score -= 18
+    return score
+
+
 def preview_sample_entries() -> list[dict[str, Any]]:
     menu = parse_menu()
     library = library_images()
-    single_items = [item for item in menu["items"] if item.get("kind") == "单品"]
-    seen_norms = {item.get("norm") for item in single_items}
-    if len(single_items) < PREVIEW_SAMPLE_COUNT:
-        for item in demo_menu_items():
-            if item.get("kind") != "单品" or item.get("norm") in seen_norms:
-                continue
-            single_items.append({**item, "category": "风格样图"})
-            seen_norms.add(item.get("norm"))
-            if len(single_items) >= PREVIEW_SAMPLE_COUNT:
-                break
-    entries = []
-    for item in single_items[:PREVIEW_SAMPLE_COUNT]:
+    scored_entries: list[tuple[int, int, dict[str, Any], list[dict[str, Any]]]] = []
+    seen_norms: set[str] = set()
+    for order, raw_item in enumerate(menu["items"]):
+        if raw_item.get("kind") != "单品":
+            continue
+        item = dict(raw_item)
         if not item.get("norm"):
-            item = {**item, "norm": normalize(str(item.get("name") or ""))}
+            item["norm"] = normalize(str(item.get("name") or ""))
+        norm = str(item.get("norm") or "")
+        if not norm or norm in seen_norms:
+            continue
+        seen_norms.add(norm)
         candidates = top_candidates(item, library)
-        entries.append({"item": item, "candidates": candidates})
+        scored_entries.append((preview_sample_rank(item, candidates), -order, item, candidates))
+    scored_entries.sort(reverse=True)
+    entries = [{"item": item, "candidates": candidates} for score, _, item, candidates in scored_entries[:PREVIEW_SAMPLE_COUNT]]
+    if len(entries) < PREVIEW_SAMPLE_COUNT:
+        existing_norms = {entry["item"].get("norm") for entry in entries}
+        for item in demo_menu_items():
+            if item.get("kind") != "单品" or item.get("norm") in existing_norms:
+                continue
+            demo_item = {**item, "category": "风格样图"}
+            existing_norms.add(demo_item.get("norm"))
+            candidates = top_candidates(demo_item, library)
+            entries.append({"item": demo_item, "candidates": candidates})
+            if len(entries) >= PREVIEW_SAMPLE_COUNT:
+                break
     return entries
 
 

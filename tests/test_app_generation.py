@@ -314,19 +314,24 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(preview_candidate["aiProvider"], "tencent-hunyuan")
             draw_demo.assert_not_called()
 
-    def test_style_background_sample_does_not_block_on_tencent_by_default(self) -> None:
+    def test_style_background_sample_uses_tencent_when_ready_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+
+            def fake_style(style_id: str, target: Path) -> dict:
+                save_image(target, (80, 120, 160))
+                return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": "style_background", "requestId": "style-bg"}
 
             with (
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "tencent_ready", return_value=True),
-                mock.patch.object(app_module, "tencent_style_background") as tencent_style,
+                mock.patch.object(app_module, "tencent_style_background", side_effect=fake_style) as tencent_style,
             ):
                 style_candidate = app_module.style_sample_candidate("style-6")
 
-            tencent_style.assert_not_called()
-            self.assertEqual(style_candidate["source"], "generated-style-sample")
+            tencent_style.assert_called_once()
+            self.assertEqual(style_candidate["source"], "tencent-style-sample")
+            self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
             self.assertTrue((root / "_style_backgrounds" / "style-6" / "背景风格样图.jpg").exists())
 
     def test_style_background_sample_prefers_real_library_image(self) -> None:
