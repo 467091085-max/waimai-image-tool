@@ -334,6 +334,32 @@ class AppGenerationTests(unittest.TestCase):
             tencent_style.assert_not_called()
             draw_demo.assert_not_called()
 
+    def test_style_options_prioritize_real_library_styles_over_builtin_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "真店A" / "辣椒炒肉盖码饭.jpg"
+            second = root / "真店B" / "小炒黄牛肉盖码饭.jpg"
+            save_image(first, (210, 88, 60))
+            save_image(second, (80, 150, 95))
+            library = [
+                app_module.LibraryImage("real-a", first, "真店A", "辣椒炒肉盖码饭", app_module.normalize("辣椒炒肉盖码饭"), app_module.grams(app_module.normalize("辣椒炒肉盖码饭")), "real-style-a", "clean", True),
+                app_module.LibraryImage("real-b", second, "真店B", "小炒黄牛肉盖码饭", app_module.normalize("小炒黄牛肉盖码饭"), app_module.grams(app_module.normalize("小炒黄牛肉盖码饭")), "real-style-b", "clean", True),
+            ]
+            rows = [
+                menu_row(1, "完全未匹配菜品A", "单品", []),
+                menu_row(2, "完全未匹配菜品B", "单品", []),
+            ]
+
+            with mock.patch.object(app_module, "library_images", return_value=library):
+                styles = app_module.style_options(rows)
+
+            self.assertEqual(len(styles), app_module.PREVIEW_SAMPLE_COUNT)
+            self.assertEqual({styles[0]["id"], styles[1]["id"]}, {"real-style-a", "real-style-b"})
+            self.assertEqual(styles[0]["sample"]["styleSampleSource"], "library")
+            self.assertEqual(styles[1]["sample"]["styleSampleSource"], "library")
+            self.assertNotEqual(styles[0]["sample"]["source"], "generated-style-sample")
+            self.assertNotEqual(styles[1]["sample"]["source"], "generated-style-sample")
+
     def test_style_background_sample_can_use_tencent_when_explicitly_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

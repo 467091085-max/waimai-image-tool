@@ -265,6 +265,13 @@ def style_color_for(style_id: str) -> tuple[int, int, int]:
     return (225 - digest[0] % 42, 228 - digest[1] % 38, 232 - digest[2] % 34)
 
 
+def style_accent_for(style_id: str) -> tuple[int, int, int]:
+    if style_id in STYLE_COLORS:
+        return STYLE_COLORS[style_id][2]
+    digest = hashlib.sha1(f"accent:{style_id}".encode("utf-8")).digest()
+    return (58 + digest[0] % 156, 54 + digest[1] % 150, 48 + digest[2] % 145)
+
+
 def env_truthy(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -791,24 +798,36 @@ def safe_filename(name: str) -> str:
 
 
 def draw_demo_image(path: Path, dish: str, style_id: str) -> None:
-    style_name, bg, accent = STYLE_COLORS.get(style_id, ("统一出图风格", (232, 235, 238), (85, 103, 120)))
+    style_name = STYLE_COLORS.get(style_id, ("统一出图风格", None, None))[0]
+    bg = style_color_for(style_id)
+    accent = style_accent_for(style_id)
     img = Image.new("RGB", (900, 720), bg)
     draw = ImageDraw.Draw(img)
-    draw.ellipse((190, 100, 710, 620), fill=(248, 248, 244), outline=accent, width=14)
-    draw.ellipse((245, 155, 655, 565), fill=(250, 244, 225))
-    for idx, color in enumerate([(190, 68, 42), (70, 145, 68), (228, 170, 60), (125, 77, 44), (230, 230, 210)]):
-        x0 = 300 + (idx % 3) * 78
-        y0 = 225 + (idx // 3) * 95
-        draw.rounded_rectangle((x0, y0, x0 + 180, y0 + 76), radius=28, fill=color)
+    shadow = tuple(max(0, c - 34) for c in bg)
+    highlight = tuple(min(255, c + 28) for c in bg)
+    draw.rectangle((0, 0, 900, 720), fill=bg)
+    draw.polygon([(0, 0), (900, 0), (900, 190), (0, 330)], fill=highlight)
+    draw.polygon([(0, 520), (900, 390), (900, 720), (0, 720)], fill=shadow)
+    draw.ellipse((170, 108, 730, 628), fill=(248, 248, 244), outline=accent, width=14)
+    draw.ellipse((238, 168, 662, 568), fill=(250, 244, 225))
+    food_colors = [
+        (190, 68, 42),
+        (70, 145, 68),
+        (228, 170, 60),
+        (125, 77, 44),
+        (230, 230, 210),
+        accent,
+    ]
+    for idx, color in enumerate(food_colors):
+        x0 = 282 + (idx % 3) * 92
+        y0 = 235 + (idx // 3) * 104
+        draw.rounded_rectangle((x0, y0, x0 + 175, y0 + 78), radius=30, fill=color)
     try:
-        font_big = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 42)
         font_small = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 24)
     except Exception:
-        font_big = ImageFont.load_default()
         font_small = ImageFont.load_default()
-    draw.rounded_rectangle((40, 42, 860, 118), radius=24, fill=(255, 255, 255))
-    draw.text((70, 58), dish, fill=(33, 38, 45), font=font_big)
-    draw.text((60, 650), style_name, fill=(33, 38, 45), font=font_small)
+    if "背景风格样图" in dish:
+        draw.text((60, 650), style_name, fill=(33, 38, 45), font=font_small)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, "JPEG", quality=88)
 
@@ -1080,6 +1099,69 @@ def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
     candidate = candidate_from_library_image(images[0], 100.0)
     candidate["styleSampleSource"] = "library"
     return candidate
+
+
+def library_style_scores() -> dict[str, dict[str, Any]]:
+    scores: dict[str, dict[str, Any]] = {}
+    for image in library_images():
+        if not image.reusable or image.store == "demo_store" or not image.path.exists():
+            continue
+        sample_rank = style_sample_rank(image)[0]
+        if sample_rank < -80:
+            continue
+        data = scores.setdefault(
+            image.style_id,
+            {
+                "styleId": image.style_id,
+                "count": 0,
+                "bestRank": -9999,
+                "sourceScore": 0,
+            },
+        )
+        data["count"] += 1
+        data["bestRank"] = max(int(data["bestRank"]), sample_rank)
+        if image.source == "internal":
+            data["sourceScore"] = max(int(data["sourceScore"]), 3)
+        elif image.source == "clean":
+            data["sourceScore"] = max(int(data["sourceScore"]), 2)
+        else:
+            data["sourceScore"] = max(int(data["sourceScore"]), 1)
+    return scores
+
+
+def ordered_style_ids(results: list[dict[str, Any]]) -> list[str]:
+    candidate_counts: dict[str, int] = {}
+    for row in results:
+        for candidate in row.get("candidates") or []:
+            style_id = str(candidate.get("styleId") or "")
+            if style_id:
+                candidate_counts[style_id] = candidate_counts.get(style_id, 0) + 1
+
+    library_scores = library_style_scores()
+    ids = set(candidate_counts) | set(library_scores)
+    ordered = sorted(
+        ids,
+        key=lambda style_id: (
+            candidate_counts.get(style_id, 0),
+            int(library_scores.get(style_id, {}).get("sourceScore") or 0),
+            int(library_scores.get(style_id, {}).get("bestRank") or -9999),
+            int(library_scores.get(style_id, {}).get("count") or 0),
+            style_id,
+        ),
+        reverse=True,
+    )
+
+    for style_id in STYLE_COLORS:
+        if style_id not in ordered:
+            ordered.append(style_id)
+
+    index = 1
+    while len(ordered) < PREVIEW_SAMPLE_COUNT:
+        style_id = f"generated-style-{index}"
+        if style_id not in ordered:
+            ordered.append(style_id)
+        index += 1
+    return ordered[:PREVIEW_SAMPLE_COUNT]
 
 
 def style_background_target(style_id: str) -> Path:
@@ -1556,20 +1638,10 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
 
 
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    candidate_style_ids = {c["styleId"] for r in results for c in r["candidates"] if c["styleId"]}
-    library_style_ids = {image.style_id for image in library_images() if image.style_id}
-    style_ids = list(STYLE_COLORS)
-    for style_id in sorted(candidate_style_ids | library_style_ids):
-        if style_id not in style_ids:
-            style_ids.append(style_id)
-    for style_id in sorted({image.style_id for image in library_images() if image.style_id}):
-        if style_id not in style_ids:
-            style_ids.append(style_id)
-    if not style_ids:
-        style_ids = list(STYLE_COLORS)
+    style_ids = ordered_style_ids(results)
     options = []
     total = max(1, len(results))
-    for idx, style_id in enumerate(style_ids[:PREVIEW_SAMPLE_COUNT], start=1):
+    for idx, style_id in enumerate(style_ids, start=1):
         direct = review = bg_replace = custom = 0
         sample = None
         for row in results:
@@ -1585,10 +1657,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 review += 1
             else:
                 bg_replace += 1
-        if style_id in STYLE_COLORS:
-            sample = style_sample_candidate(style_id)
-        else:
-            sample = sample or style_sample_candidate(style_id)
+        sample = sample or style_sample_candidate(style_id)
         style_name = style_name_for(style_id)
         display_name = BACKGROUND_LABELS[idx - 1] if idx <= len(BACKGROUND_LABELS) else f"{idx}号背景"
         color = style_color_for(style_id)
