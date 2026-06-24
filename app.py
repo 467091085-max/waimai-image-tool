@@ -297,6 +297,11 @@ def tencent_style_backgrounds_enabled() -> bool:
     return env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=False)
 
 
+def allow_local_image_fallback() -> bool:
+    """Use local drawn images only for development when no model is configured."""
+    return env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=not tencent_ready())
+
+
 def tencent_status_payload() -> dict[str, Any]:
     cfg = tencent_config()
     cos = tencent_cos_config()
@@ -1272,7 +1277,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
             return candidate, {"status": "succeeded", "provider": "tencent-hunyuan", "action": detail["action"]}
         except Exception as exc:
             result.update({"status": "failed", "action": "Failed", "error": str(exc)[:220]})
-            if env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+            if allow_local_image_fallback():
                 draw_demo_image(target, item["name"], selected_style)
                 metadata = {
                     "status": "fallback",
@@ -1293,7 +1298,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                     "fallbackFrom": "tencent-hunyuan",
                 }
             return None, result
-    if env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+    if allow_local_image_fallback():
         draw_demo_image(target, item["name"], selected_style)
         metadata = {"status": "fallback", "provider": "local-demo", "action": "LocalFallback", "reason": "free_style_preview"}
         write_ai_output_metadata(target, metadata)
@@ -1590,7 +1595,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                 generation["errors"].append({"dish": row.get("name"), "message": str(exc)[:220]})
                 item_result["error"] = str(exc)[:220]
         if not used_tencent:
-            if status["configured"] and not env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+            if status["configured"] and not allow_local_image_fallback():
                 generation["failed"] += 1
                 generation["pending"] += 1
                 item_result.update({"provider": "tencent-hunyuan", "action": "Failed", "status": "failed"})
@@ -1601,7 +1606,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                 bump_generation_action(generation, "Failed")
                 generation["items"].append(item_result)
                 continue
-            if not env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=True):
+            if not allow_local_image_fallback():
                 generation["pending"] += 1
                 item_result.update({"provider": "local", "action": "WaitingForModelConfig", "status": "pending"})
                 row["backgroundAction"] = "等待模型配置"

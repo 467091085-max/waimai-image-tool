@@ -224,7 +224,7 @@ class AppGenerationTests(unittest.TestCase):
 
         self.assertEqual(calls, [app_module.TENCENT_AIART_HOST, app_module.TENCENT_HUNYUAN_HOST])
 
-    def test_preview_keeps_replace_background_error_when_text_fallback_also_fails(self) -> None:
+    def test_preview_keeps_replace_background_error_when_local_fallback_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.jpg"
@@ -232,6 +232,7 @@ class AppGenerationTests(unittest.TestCase):
             row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
 
             with (
+                mock.patch.dict("os.environ", {"ALLOW_LOCAL_IMAGE_FALLBACK": "true"}),
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "tencent_ready", return_value=True),
                 mock.patch.object(app_module, "tencent_replace_background", side_effect=RuntimeError("aiart not open")),
@@ -244,6 +245,28 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(generation["fallbackFrom"], "tencent-hunyuan")
             self.assertIn("商品背景生成失败", generation["error"])
             self.assertIn("文生图兜底失败", generation["error"])
+
+    def test_preview_model_failure_does_not_use_local_fake_image_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            save_image(source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
+
+            with (
+                mock.patch.dict("os.environ", {}, clear=True),
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background", side_effect=RuntimeError("aiart not open")),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")),
+                mock.patch.object(app_module, "draw_demo_image") as draw_demo,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            self.assertIsNone(preview_candidate)
+            self.assertEqual(generation["status"], "failed")
+            self.assertIn("商品背景生成失败", generation["error"])
+            draw_demo.assert_not_called()
 
     def test_preview_reuses_same_style_candidate_without_tencent_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
