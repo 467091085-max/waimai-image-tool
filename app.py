@@ -2544,19 +2544,22 @@ def api_export():
     platforms = payload.get("platforms") or ["meituan"]
     quality = str(payload.get("quality", "standard"))
     style = str(payload.get("style", ""))
+    if not style:
+        return jsonify({"error": "请先选择风格并生成正式图片"}), 400
     plan = build_plan(style, quality)
     export_results = prepare_results_for_export(plan["results"], style)
-    return jsonify(
-        export_delivery_zip(
-            export_results,
-            EXPORT_DIR,
-            scope=str(payload.get("scope", "all")),
-            selected_rows=selected_rows,
-            image_format=str(payload.get("format", "jpg")),
-            watermark=watermark,
-            platforms=platforms,
-        )
+    result = export_delivery_zip(
+        export_results,
+        EXPORT_DIR,
+        scope=str(payload.get("scope", "all")),
+        selected_rows=selected_rows,
+        image_format=str(payload.get("format", "jpg")),
+        watermark=watermark,
+        platforms=platforms,
     )
+    if int(result.get("images") or 0) <= 0:
+        return jsonify({"error": "没有可导出的成图，请先完成正式生图，或只勾选已生成的图片", "export": result}), 400
+    return jsonify(result)
 
 
 @app.get("/media/<path:name>")

@@ -452,6 +452,52 @@ class AppGenerationTests(unittest.TestCase):
             self.assertRegex(url, r"^https://waimai\.example\.test/model-inputs/[a-f0-9]{24}\.jpg$")
             self.assertTrue((root / "model_inputs").exists())
 
+    def test_export_api_rejects_missing_style_and_empty_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app_module.app.config["TESTING"] = True
+            client = app_module.app.test_client()
+
+            missing_style = client.post("/api/export", json={"platforms": ["meituan"]})
+            self.assertEqual(missing_style.status_code, 400)
+            self.assertIn("请先选择风格", missing_style.get_json()["error"])
+
+            plan = {"results": [menu_row(1, "待生成菜品", "单品", [])]}
+            with (
+                mock.patch.object(app_module, "EXPORT_DIR", root / "exports"),
+                mock.patch.object(app_module, "build_plan", return_value=plan),
+            ):
+                empty = client.post("/api/export", json={"style": "style-1", "platforms": ["meituan"]})
+
+            self.assertEqual(empty.status_code, 400)
+            body = empty.get_json()
+            self.assertIn("没有可导出的成图", body["error"])
+            self.assertEqual(body["export"]["images"], 0)
+
+    def test_export_api_returns_zip_when_images_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            save_image(source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉盖码饭", "style-1")])
+            row["backgroundAction"] = "背景一致，直接复用"
+            row["publicStatus"] = "已生成"
+            plan = {"results": [row]}
+            app_module.app.config["TESTING"] = True
+            client = app_module.app.test_client()
+
+            with (
+                mock.patch.object(app_module, "EXPORT_DIR", root / "exports"),
+                mock.patch.object(app_module, "build_plan", return_value=plan),
+            ):
+                response = client.post("/api/export", json={"style": "style-1", "platforms": ["meituan", "jd"], "format": "jpg"})
+
+            self.assertEqual(response.status_code, 200)
+            body = response.get_json()
+            self.assertEqual(body["images"], 2)
+            self.assertEqual(body["platforms"], ["meituan", "jd"])
+            self.assertRegex(body["download"], r"^/download/export_.*?/result\.zip$")
+
     def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
         with (
             mock.patch.object(app_module, "parse_menu", return_value={"items": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}),
