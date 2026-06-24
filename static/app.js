@@ -1135,6 +1135,7 @@ function renderPreview() {
   const redrawLabel = state.freeReworkRemaining > 0
     ? `换一版（免费剩 ${state.freeReworkRemaining}）`
     : `换一版 ${imagePoints()}积分`;
+  const refineLabel = `自定义修改 ${state.plan?.pricing?.customEditPoints || 15}积分`;
   const card = (row, index) => {
     const rowNo = index + 1;
     const candidate = isPendingGeneration(row) ? null : row.candidates[0];
@@ -1149,7 +1150,7 @@ function renderPreview() {
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill ${generationStatusPillClass(row)}">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
         ${failure ? `<p class="result-error">${esc(failure)}</p>` : ""}
-        ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
+        ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">${refineLabel}</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">${refineLabel}</button>`}
       </div>
     </div>`;
   };

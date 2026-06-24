@@ -41,6 +41,14 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(result["points"], 210)
         self.assertEqual(result["balance"], 830)
 
+    def test_product_custom_edit_price_is_fifteen_points(self) -> None:
+        import app as app_module
+
+        pricing = app_module.pricing_payload(total=10)
+
+        self.assertEqual(pricing["customEditPoints"], 15)
+        self.assertEqual(pricing["customEditCash"], 1.5)
+
     def test_debit_rejects_insufficient_balance_without_negative_balance(self) -> None:
         billing.credit_recharge("u1", "recharge-49", 49, db_path=self.db_path)
 
