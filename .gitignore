@@ -4,6 +4,8 @@ __pycache__/
 *.pid
 .DS_Store
 .env
+.env.*
+!.env.cos.example
 .codex_deps/
 .deploy_keys/
 data/uploads/*

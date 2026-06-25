@@ -4,6 +4,7 @@ import builtins
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ from PIL import Image
 from scripts.sync_gallery_to_cos import (
     SyncConfig,
     cos_key_for_record,
+    load_env_file,
     main,
     prepare_jpeg,
     summary_path_for,
@@ -73,6 +75,8 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertEqual(summary["skippedImages"], 2)
             self.assertEqual(summary["errorImages"], 0)
             self.assertEqual(summary["sync"]["uploadSkipped"], 2)
+            self.assertEqual(summary["renderEnv"]["COS_LIBRARY_INDEX_URL"], "https://demo-gallery-1250000000.cos.ap-guangzhou.myqcloud.com/waimai-gallery/index/library_index.jsonl")
+            self.assertEqual(summary["renderEnv"]["TENCENT_COS_BUCKET"], "demo-gallery-1250000000")
             self.assertTrue(output.exists())
             self.assertTrue(summary_path_for(output).exists())
 
@@ -81,6 +85,7 @@ class CosGallerySyncTest(unittest.TestCase):
                 "id",
                 "canonical",
                 "canonical_dish",
+                "canonical_norm",
                 "dish",
                 "name",
                 "norm",
@@ -92,9 +97,14 @@ class CosGallerySyncTest(unittest.TestCase):
                 "reusable",
                 "reference_only",
                 "style_id",
+                "match_category",
+                "match_family",
+                "match_kind",
                 "local_path",
                 "relative_path",
                 "cos_key",
+                "cos_bucket",
+                "cos_region",
                 "url",
                 "public_url",
                 "watermark",
@@ -127,6 +137,30 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertFalse(watermark["reusable"])
             self.assertTrue(watermark["has_brand_watermark"])
             self.assertEqual(watermark["watermark"], "brand_watermark")
+
+    def test_env_file_is_loaded_without_overriding_existing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.cos"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "TENCENT_COS_BUCKET=from-file-bucket",
+                        "TENCENT_COS_REGION=ap-guangzhou",
+                        "export TENCENTCLOUD_SECRET_ID=file-secret-id",
+                        "TENCENTCLOUD_SECRET_KEY='file-secret-key'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict("os.environ", {"TENCENT_COS_BUCKET": "already-set"}, clear=True):
+                loaded = load_env_file(env_path)
+
+                self.assertEqual(os.environ["TENCENT_COS_BUCKET"], "already-set")
+                self.assertEqual(os.environ["TENCENT_COS_REGION"], "ap-guangzhou")
+                self.assertEqual(os.environ["TENCENTCLOUD_SECRET_ID"], "file-secret-id")
+                self.assertEqual(os.environ["TENCENTCLOUD_SECRET_KEY"], "file-secret-key")
+                self.assertNotIn("TENCENT_COS_BUCKET", loaded)
 
     def test_no_dry_run_missing_cos_env_returns_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

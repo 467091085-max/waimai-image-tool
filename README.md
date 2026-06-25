@@ -117,6 +117,13 @@ PYTHONPATH=.codex_deps:. python3 -m library_index --no-thumbs --output data/libr
 
 真实图库同步到腾讯 COS（默认 dry-run，不会上传）：
 
+先复制本地密钥模板，填入腾讯云 COS 密钥。`.env.cos` 已被 `.gitignore` 忽略，不会提交到 GitHub：
+
+```bash
+cp .env.cos.example .env.cos
+open .env.cos
+```
+
 ```bash
 PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
   --clean-dir /Users/guiguixiaxia/Documents/cleanpic \
@@ -127,23 +134,20 @@ PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
   --output data/library_index/cos_library_index.jsonl
 ```
 
-dry-run 会扫描、转 RGB JPG、按 `--max-side` 和 `--quality` 生成完整本地 JSONL 与 `*.summary.json`，但不会加载 COS SDK 或上传对象。远程 JSONL 每行至少包含 `canonical`、`dish`、`name`、`category`、`style`、`background`、`source`、`local_path`、`cos_key`、`url`、`reusable`、`reference_only`、`watermark`/`watermark_state`。图片对象 key 固定为 `waimai-gallery/clean/<store>/<sha1>.jpg` 和 `waimai-gallery/watermark/<store>/<sha1>.jpg`；线上索引 key 固定为 `waimai-gallery/index/library_index.jsonl`。
+dry-run 会扫描、转 RGB JPG、按 `--max-side` 和 `--quality` 生成完整本地 JSONL 与 `*.summary.json`，但不会上传对象。脚本会自动读取 `.env.cos`，也可用 `--env-file /path/to/.env.cos` 指定。远程 JSONL 每行至少包含 `canonical`、`canonical_norm`、`dish`、`name`、`category`、`style`、`background`、`match_family`、`match_kind`、`match_category`、`source`、`local_path`、`cos_bucket`、`cos_region`、`cos_key`、`url`、`reusable`、`reference_only`、`watermark`/`watermark_state`。图片对象 key 固定为 `waimai-gallery/clean/<store>/<sha1>.jpg` 和 `waimai-gallery/watermark/<store>/<sha1>.jpg`；线上索引 key 固定为 `waimai-gallery/index/library_index.jsonl`。
 
-summary 会输出 `totalImages`、`reusableImages`、`watermarkedReferenceImages`、`uploadedSuccess`、`skippedImages`、`errorImages`，并在 `sync` 下保留同名明细。缺少腾讯云 bucket、region 或 Secret 时，`--no-dry-run` 会返回清晰 JSON 错误，不会打印密钥或 Python traceback。
+summary 会输出 `totalImages`、`reusableImages`、`watermarkedReferenceImages`、`uploadedSuccess`、`skippedImages`、`errorImages`，并在 `sync` 下保留同名明细。`renderEnv.COS_LIBRARY_INDEX_URL` 是上传成功后要填到 Render 环境变量里的线上索引地址。缺少腾讯云 bucket、region 或 Secret 时，`--no-dry-run` 会返回清晰 JSON 错误，不会打印密钥或 Python traceback。
 
 确认 summary 后，显式加 `--no-dry-run` 才会上传图片和索引。首次 live check 请限制 3 张以内：
 
 ```bash
-TENCENTCLOUD_SECRET_ID=... TENCENTCLOUD_SECRET_KEY=... \
 PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
-  --bucket waimai-image-tool-inputs-1311836560 \
-  --region ap-guangzhou \
   --prefix waimai-gallery \
   --limit 3 \
   --no-dry-run
 ```
 
-脚本不会打印 SecretId/SecretKey；正式全量上传前先检查 `*.summary.json`，COS 桶如果是私有读，线上读取索引后还需要按业务侧策略生成签名 URL 或通过后端代理读取。
+小批量成功后，把 summary 里的 `renderEnv.COS_LIBRARY_INDEX_URL` 填到 Render，然后重启服务或等待自动部署；线上 `/api/library-status` 应显示 `remoteIndex=true` 且 `remoteImages/indexImages` 大于 0。正式全量上传前先检查 `*.summary.json`，脚本不会打印 SecretId/SecretKey。COS 桶如果是私有读，线上读取索引后还需要按业务侧策略生成签名 URL 或通过后端代理读取。
 
 从 Mac 的 `cleanpic` 生成线上真实种子图库：
 

@@ -26,6 +26,7 @@ from library_index import (
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_ENV_FILE = BASE_DIR / ".env.cos"
 DEFAULT_PREFIX = "waimai-gallery"
 DEFAULT_OUTPUT = BASE_DIR / "data" / "library_index" / "cos_library_index.jsonl"
 DEFAULT_MAX_SIDE = 1200
@@ -59,6 +60,34 @@ class PreparedJpeg:
     height: int
     size: int
     sha1: str
+
+
+def load_env_file(path: str | Path | None, *, override: bool = False) -> dict[str, str]:
+    if not path:
+        return {}
+    env_path = Path(path).expanduser()
+    if not env_path.exists():
+        return {}
+    loaded: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if not key:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
+            loaded[key] = value
+    return loaded
+
+
+def load_default_env_file() -> dict[str, str]:
+    return load_env_file(DEFAULT_ENV_FILE)
 
 
 def first_env(*names: str, default: str = "") -> str:
@@ -203,6 +232,7 @@ def build_index_record(
         "id": record.get("id"),
         "canonical": canonical,
         "canonical_dish": canonical,
+        "canonical_norm": record.get("canonical_norm") or record.get("norm") or canonical,
         "dish": dish,
         "name": dish,
         "norm": record.get("norm"),
@@ -218,9 +248,14 @@ def build_index_record(
         "reference_only": bool(record.get("reference_only")),
         "direct_delivery_allowed": bool(record.get("direct_delivery_allowed")),
         "style_id": style_id,
+        "match_family": record.get("match_family"),
+        "match_kind": record.get("match_kind"),
+        "match_category": record.get("match_category"),
         "local_path": str(record.get("local_path") or record.get("path") or ""),
         "relative_path": record.get("relative_path"),
         "cos_key": key,
+        "cos_bucket": bucket,
+        "cos_region": region,
         "url": public_url,
         "public_url": public_url,
         "watermark": watermark,
@@ -376,6 +411,11 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
         "prefix": prefix,
         "indexKey": index_key(prefix),
         "indexUrl": public_url_for_key(bucket, region, index_key(prefix)),
+        "renderEnv": {
+            "COS_LIBRARY_INDEX_URL": public_url_for_key(bucket, region, index_key(prefix)),
+            "TENCENT_COS_BUCKET": bucket,
+            "TENCENT_COS_REGION": region,
+        },
         "output": str(index_path),
         "maxSide": max(0, int(config.max_side)),
         "quality": max(45, min(95, int(config.quality))),
@@ -403,7 +443,13 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    env_parser = argparse.ArgumentParser(add_help=False)
+    env_parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help=argparse.SUPPRESS)
+    env_args, _remaining = env_parser.parse_known_args(argv)
+    load_env_file(env_args.env_file)
+
     parser = argparse.ArgumentParser(description="Sync cleanpic/watermarkpic gallery images to Tencent COS and emit JSONL index.")
+    parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help="local env file to load before reading COS settings; default .env.cos")
     parser.add_argument("--clean-dir", default=str(DEFAULT_CLEAN_DIR), help="local cleanpic directory")
     parser.add_argument("--watermark-dir", default=str(DEFAULT_WATERMARK_DIR), help="local watermarkpic directory")
     parser.add_argument("--bucket", default=default_bucket(), help="Tencent COS bucket, e.g. waimai-image-tool-125xxxx")
