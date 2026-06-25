@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import signal
 import tempfile
 import unittest
 import zipfile
@@ -74,6 +75,8 @@ class ImagePipelineTest(unittest.TestCase):
     def test_format_normalization_defaults_and_jpeg_alias(self) -> None:
         self.assertEqual(normalize_image_format(None, "meituan"), ("jpg", ".jpg", "JPEG"))
         self.assertEqual(normalize_image_format("png", "taobao"), ("png", ".png", "PNG"))
+        self.assertEqual(normalize_image_format("image/png", "meituan"), ("png", ".png", "PNG"))
+        self.assertEqual(normalize_image_format("image/jpeg", "jd"), ("jpeg", ".jpeg", "JPEG"))
         self.assertEqual(normalize_image_format("jpeg", "jd"), ("jpeg", ".jpeg", "JPEG"))
         self.assertEqual(normalize_image_format("jpeg", "meituan"), ("jpg", ".jpg", "JPEG"))
         self.assertEqual(normalize_image_format("webp", "jd"), ("jpg", ".jpg", "JPEG"))
@@ -143,6 +146,31 @@ class ImagePipelineTest(unittest.TestCase):
                     self.assertLess(top, base.height // 2)
                 if "bottom" in edges:
                     self.assertGreater(bottom, base.height // 2)
+
+    @unittest.skipUnless(hasattr(signal, "SIGALRM"), "requires SIGALRM")
+    def test_tiled_text_watermark_completes_and_stays_inside_safe_area(self) -> None:
+        base = Image.new("RGBA", (800, 600), (214, 220, 224, 255))
+        margin = max(24, base.width // 34)
+
+        def raise_timeout(_signum: int, _frame: object) -> None:
+            raise TimeoutError("tiled watermark did not finish")
+
+        previous_handler = signal.signal(signal.SIGALRM, raise_timeout)
+        signal.alarm(2)
+        try:
+            out = apply_watermark(base, {"enabled": True, "type": "text", "text": "测试品牌", "color": "black", "pattern": "tile"})
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+        bbox = ImageChops.difference(base.convert("RGB"), out.convert("RGB")).getbbox()
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        left, top, right, bottom = bbox
+        self.assertGreaterEqual(left, margin)
+        self.assertGreaterEqual(top, margin)
+        self.assertLessEqual(right, base.width - margin)
+        self.assertLessEqual(bottom, base.height - margin)
 
     def test_export_zip_outputs_rgb_jpgs_under_limits_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,7 +309,7 @@ class ImagePipelineTest(unittest.TestCase):
                 scope="selected",
                 selected_ids=["dish-single", "dish-combo"],
                 platforms=["jd"],
-                image_format="png",
+                image_format="image/png",
                 run_name="selected_ids",
             )
             self.assertEqual(selected["images"], 2)
