@@ -3398,7 +3398,7 @@ def api_style_preview():
     style = request.args.get("style", "")
     if not style:
         return jsonify({"error": "请先选择风格"}), 400
-    return jsonify(preview_samples(style, generate=True))
+    return jsonify(preview_samples(style, generate=False))
 
 
 @app.get("/api/style-preview-sample")

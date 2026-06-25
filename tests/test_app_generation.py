@@ -747,6 +747,24 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(manifest["samples"][0]["generation"]["status"], "queued")
         self.assertIn("waiting_for_provider", manifest["samples"][0]["error"])
 
+    def test_style_preview_api_returns_manifest_without_sync_generation(self) -> None:
+        app_module.app.config["TESTING"] = True
+        client = app_module.app.test_client()
+        with (
+            mock.patch.object(app_module, "parse_menu", return_value={"items": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}),
+            mock.patch.object(app_module, "library_images", return_value=[]),
+            mock.patch.object(app_module, "materialize_preview_candidate") as materialize,
+            mock.patch.object(app_module, "generated_preview_candidate", return_value=None),
+        ):
+            response = client.get("/api/style-preview?style=style-1")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertEqual(len(body["samples"]), app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertIn(body["samples"][0]["generation"]["status"], {"pending", "queued"})
+        materialize.assert_not_called()
+
     def test_preview_sample_entries_filter_drinks_sides_rice_prompts_and_combos(self) -> None:
         items = [
             menu_row(1, "百事可乐", "单品", []),
