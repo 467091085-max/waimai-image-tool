@@ -193,7 +193,11 @@ class GenerationEngineRoutingTests(unittest.TestCase):
         self.assertEqual(reuse_request.kind, generation_engine.KIND_SINGLE)
         self.assertEqual(reuse_request.quality, generation_engine.QUALITY_NORMAL)
         self.assertEqual(reuse_request.platforms, ("meituan",))
-        self.assertEqual(generation_engine.select_generation_request(reuse_request).source_strategy, generation_engine.STRATEGY_REUSE)
+        self.assertEqual(generation_engine.select_generation_request(reuse_request).source_strategy, generation_engine.STRATEGY_REPLACE_BACKGROUND)
+
+        cached_same_style = {**same_style, "generated": True, "aiProvider": "tencent-hunyuan", "generationStatus": "succeeded"}
+        cached_request = generation_engine.request_from_row({**menu_item(10, "红烧肉"), "candidates": [cached_same_style]}, style="style-1")
+        self.assertEqual(generation_engine.select_generation_request(cached_request).source_strategy, generation_engine.STRATEGY_REUSE)
 
         replace_request = generation_engine.request_from_row({**menu_item(2, "红烧肉"), "candidates": [diff_style]}, style="style-1")
         self.assertEqual(generation_engine.select_generation_request(replace_request).source_strategy, generation_engine.STRATEGY_REPLACE_BACKGROUND)

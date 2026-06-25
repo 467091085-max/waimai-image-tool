@@ -193,6 +193,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "status": summary["status"],
             "providerStatus": summary["providerStatus"],
             "configured": bool(status_body.get("configured")),
+            "missing": status_body.get("missing") if isinstance(status_body.get("missing"), list) else [],
             "error": summary["error"],
             "provider_error": summary["provider_error"],
             "retryable": summary["retryable"],
@@ -219,6 +220,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "live": True,
             "limit": args.limit,
             "configured": bool(status_body.get("configured")),
+            "willRunProvider": bool(status_body.get("configured")),
+            "missing": status_body.get("missing") if isinstance(status_body.get("missing"), list) else [],
             "fixedDish": args.dish,
             "promptContract": SMOKE_PROMPT_NOTE,
         }
