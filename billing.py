@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -38,6 +39,9 @@ RECHARGE_PACKAGES = {
 }
 CUSTOM_RECHARGE_MIN_POINTS = 100
 CUSTOM_RECHARGE_MIN_CASH = CUSTOM_RECHARGE_MIN_POINTS // POINT_RATE
+PAYMENT_ORDER_STATUSES = ("pending", "paid", "expired", "refunded", "failed")
+PAYMENT_PROVIDERS = ("mock", "wechat", "alipay")
+MOCK_PAYMENT_PROVIDER = "mock"
 
 
 class BillingError(Exception):
@@ -112,6 +116,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     direction TEXT NOT NULL CHECK (direction IN ('credit', 'debit')),
     points INTEGER NOT NULL CHECK (points > 0),
     balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
+    event_type TEXT NOT NULL DEFAULT 'ledger_entry',
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}',
@@ -154,6 +159,46 @@ CREATE TABLE IF NOT EXISTS billing_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_refunds_user_created ON refunds(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_billing_tasks_user_updated ON billing_tasks(user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS payment_orders (
+    payment_order_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'mock',
+    status TEXT NOT NULL CHECK (status IN ('pending', 'paid', 'expired', 'refunded', 'failed')),
+    cash_cents INTEGER NOT NULL CHECK (cash_cents > 0),
+    points INTEGER NOT NULL CHECK (points > 0),
+    billing_order_id TEXT UNIQUE,
+    provider_trade_id TEXT,
+    checkout_url TEXT NOT NULL DEFAULT '',
+    expires_at TEXT,
+    paid_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (billing_order_id) REFERENCES orders(order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_orders_user_created ON payment_orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_status ON payment_orders(status);
+
+CREATE TABLE IF NOT EXISTS payment_webhook_events (
+    event_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    payment_order_id TEXT,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    signature_valid INTEGER NOT NULL CHECK (signature_valid IN (0, 1)),
+    processed INTEGER NOT NULL CHECK (processed IN (0, 1)),
+    idempotent INTEGER NOT NULL CHECK (idempotent IN (0, 1)),
+    message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (payment_order_id) REFERENCES payment_orders(payment_order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_webhook_events_order_created
+    ON payment_webhook_events(payment_order_id, created_at);
 """
 
 
@@ -217,6 +262,7 @@ def credit_account(
     db_path: str | os.PathLike[str] | None = None,
     description: str = "credit",
     metadata: dict[str, Any] | None = None,
+    event_type: str = "manual_credit",
 ) -> dict[str, Any]:
     return _apply_entry(
         user_id=user_id,
@@ -226,6 +272,7 @@ def credit_account(
         db_path=db_path,
         description=description,
         metadata=metadata,
+        event_type=event_type,
     )
 
 
@@ -237,6 +284,7 @@ def debit_account(
     db_path: str | os.PathLike[str] | None = None,
     description: str = "debit",
     metadata: dict[str, Any] | None = None,
+    event_type: str = "manual_debit",
 ) -> dict[str, Any]:
     return _apply_entry(
         user_id=user_id,
@@ -246,6 +294,7 @@ def debit_account(
         db_path=db_path,
         description=description,
         metadata=metadata,
+        event_type=event_type,
     )
 
 
@@ -272,6 +321,7 @@ def credit_recharge(
         db_path=db_path,
         description=f"recharge:{cash}",
         metadata=order_metadata,
+        event_type="recharge_credit",
     )
 
 
@@ -302,6 +352,7 @@ def credit_custom_recharge(
             "cash": round(recharge_points / POINT_RATE, 2),
             **(metadata or {}),
         },
+        event_type="custom_recharge_credit",
     )
 
 
@@ -335,6 +386,11 @@ def debit_image_charge(
         fixed_fee_points=fixed_fee_points,
     )
     points = int(breakdown["total"])
+    ledger_event_type = (
+        "generation_retry_charge"
+        if int(breakdown.get("chargeableReworks", 0) or 0) > 0 or bool((metadata or {}).get("retry"))
+        else "generation_output_charge"
+    )
     if points == 0:
         return {
             "ok": True,
@@ -347,6 +403,7 @@ def debit_image_charge(
             "balance": get_account(user_id, db_path=db_path)["balance"],
             "balanceAfter": get_account(user_id, db_path=db_path)["balance"],
             "ledgerId": None,
+            "eventType": ledger_event_type,
             "createdAt": _now(),
             "breakdown": breakdown,
         }
@@ -358,6 +415,7 @@ def debit_image_charge(
         description="image-generation-confirmed",
         metadata={
             "type": "generation_charge",
+            "eventType": ledger_event_type,
             "imageCount": image_count,
             "quality": quality,
             "watermark": bool(watermark),
@@ -371,6 +429,7 @@ def debit_image_charge(
             "breakdown": breakdown,
             **(metadata or {}),
         },
+        event_type=ledger_event_type,
     )
 
 
@@ -532,6 +591,340 @@ def account_payload(
             "rate": POINT_RATE,
         },
         "pricing": pricing_payload(),
+    }
+
+
+def create_payment_order(
+    user_id: str,
+    payment_order_id: str | None = None,
+    *,
+    cash_amount: int | str | Decimal | None = None,
+    points: int | None = None,
+    provider: str = MOCK_PAYMENT_PROVIDER,
+    expires_in_seconds: int = 30 * 60,
+    db_path: str | os.PathLike[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_user_id = _clean_id(user_id, "user_id")
+    clean_provider = _payment_provider(provider)
+    clean_order_id = _clean_id(payment_order_id or f"pay_{uuid.uuid4().hex[:20]}", "payment_order_id")
+    recharge_points, cash_cents, package_cash = _payment_recharge_amounts(
+        cash_amount=cash_amount,
+        points=points,
+    )
+    provider_configured = payment_provider_configured(clean_provider)
+    now = _now()
+    expires_at = _now_plus_seconds(_non_negative_int(expires_in_seconds, "expires_in_seconds"))
+    meta = {
+        "type": "payment_order",
+        "recharge": True,
+        "package": package_cash in RECHARGE_PACKAGES if package_cash is not None else False,
+        "custom": package_cash is None or package_cash not in RECHARGE_PACKAGES,
+        "providerConfigured": provider_configured,
+        **(metadata or {}),
+    }
+    checkout_url = _payment_checkout_url(clean_provider, clean_order_id, configured=provider_configured)
+
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_account(conn, clean_user_id)
+            existing = _payment_order_row(conn, clean_order_id)
+            if existing:
+                if (
+                    existing["user_id"] != clean_user_id
+                    or existing["provider"] != clean_provider
+                    or int(existing["cash_cents"]) != cash_cents
+                    or int(existing["points"]) != recharge_points
+                ):
+                    raise OrderConflict(
+                        "Payment order id already belongs to a different payment operation",
+                        paymentOrderId=clean_order_id,
+                        existingUserId=existing["user_id"],
+                        existingProvider=existing["provider"],
+                        existingCashCents=int(existing["cash_cents"]),
+                        existingPoints=int(existing["points"]),
+                    )
+                conn.commit()
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "paymentOrder": _payment_order_payload(existing),
+                    "readiness": payment_readiness_payload(),
+                }
+
+            conn.execute(
+                """
+                INSERT INTO payment_orders (
+                    payment_order_id,
+                    user_id,
+                    provider,
+                    status,
+                    cash_cents,
+                    points,
+                    checkout_url,
+                    expires_at,
+                    created_at,
+                    updated_at,
+                    metadata
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_order_id,
+                    clean_user_id,
+                    clean_provider,
+                    cash_cents,
+                    recharge_points,
+                    checkout_url,
+                    expires_at,
+                    now,
+                    now,
+                    _json(meta),
+                ),
+            )
+            row = _payment_order_row(conn, clean_order_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "ok": True,
+        "idempotent": False,
+        "paymentOrder": _payment_order_payload(row),
+        "readiness": payment_readiness_payload(),
+    }
+
+
+def create_payment_order_api_payload(
+    payload: dict[str, Any],
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    db_path: str | os.PathLike[str] | None = None,
+) -> tuple[dict[str, Any], int]:
+    try:
+        result = create_payment_order(
+            str(payload.get("userId") or payload.get("user_id") or user_id),
+            str(payload.get("paymentOrderId") or payload.get("payment_order_id") or "") or None,
+            cash_amount=payload.get("cash", payload.get("cashAmount", payload.get("amount"))),
+            points=payload.get("points"),
+            provider=str(payload.get("provider") or MOCK_PAYMENT_PROVIDER),
+            db_path=db_path,
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+        )
+        return result, 200
+    except BillingError as exc:
+        return billing_error_response(exc)
+
+
+def process_payment_webhook_event(
+    *,
+    event_id: str,
+    payment_order_id: str,
+    status: str,
+    provider: str = MOCK_PAYMENT_PROVIDER,
+    signature_valid: bool = True,
+    provider_trade_id: str | None = None,
+    db_path: str | os.PathLike[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_event_id = _clean_id(event_id, "event_id")
+    clean_order_id = _clean_id(payment_order_id, "payment_order_id")
+    clean_provider = _payment_provider(provider)
+    clean_status = _payment_status(status)
+    trade_id = str(provider_trade_id or "").strip() or None
+    now = _now()
+    meta = dict(metadata or {})
+
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing_event = _payment_webhook_event_row(conn, clean_event_id)
+            if existing_event:
+                order = _payment_order_row(conn, clean_order_id)
+                conn.commit()
+                return {
+                    "ok": bool(existing_event["processed"]),
+                    "idempotent": True,
+                    "event": _payment_webhook_event_payload(existing_event),
+                    "paymentOrder": _payment_order_payload(order) if order else None,
+                }
+
+            order = _payment_order_row(conn, clean_order_id)
+            if order is None:
+                event = _insert_payment_webhook_event(
+                    conn=conn,
+                    event_id=clean_event_id,
+                    provider=clean_provider,
+                    payment_order_id=None,
+                    event_type="payment_order_missing",
+                    status=clean_status,
+                    signature_valid=bool(signature_valid),
+                    processed=False,
+                    idempotent=False,
+                    message="Payment order not found",
+                    metadata=meta,
+                    created_at=now,
+                )
+                conn.commit()
+                return {
+                    "ok": False,
+                    "code": "payment_order_not_found",
+                    "error": "Payment order not found",
+                    "idempotent": False,
+                    "event": _payment_webhook_event_payload(event),
+                }
+
+            if order["provider"] != clean_provider:
+                event = _insert_payment_webhook_event(
+                    conn=conn,
+                    event_id=clean_event_id,
+                    provider=clean_provider,
+                    payment_order_id=clean_order_id,
+                    event_type="payment_provider_mismatch",
+                    status=clean_status,
+                    signature_valid=bool(signature_valid),
+                    processed=False,
+                    idempotent=False,
+                    message="Webhook provider does not match payment order provider",
+                    metadata=meta,
+                    created_at=now,
+                )
+                conn.commit()
+                return {
+                    "ok": False,
+                    "code": "payment_provider_mismatch",
+                    "error": "Webhook provider does not match payment order provider",
+                    "idempotent": False,
+                    "event": _payment_webhook_event_payload(event),
+                    "paymentOrder": _payment_order_payload(order),
+                }
+
+            if not signature_valid:
+                event = _insert_payment_webhook_event(
+                    conn=conn,
+                    event_id=clean_event_id,
+                    provider=clean_provider,
+                    payment_order_id=clean_order_id,
+                    event_type="payment_signature_invalid",
+                    status=clean_status,
+                    signature_valid=False,
+                    processed=False,
+                    idempotent=False,
+                    message="Webhook signature verification failed",
+                    metadata=meta,
+                    created_at=now,
+                )
+                conn.commit()
+                return {
+                    "ok": False,
+                    "code": "payment_signature_invalid",
+                    "error": "Webhook signature verification failed",
+                    "idempotent": False,
+                    "event": _payment_webhook_event_payload(event),
+                    "paymentOrder": _payment_order_payload(order),
+                }
+
+            if clean_status == "paid":
+                result = _mark_payment_order_paid(
+                    conn=conn,
+                    order=order,
+                    event_id=clean_event_id,
+                    provider_trade_id=trade_id,
+                    now=now,
+                    metadata=meta,
+                )
+            else:
+                result = _mark_payment_order_terminal(
+                    conn=conn,
+                    order=order,
+                    status=clean_status,
+                    provider_trade_id=trade_id,
+                    now=now,
+                    metadata=meta,
+                )
+
+            event = _insert_payment_webhook_event(
+                conn=conn,
+                event_id=clean_event_id,
+                provider=clean_provider,
+                payment_order_id=clean_order_id,
+                event_type=result["eventType"],
+                status=clean_status,
+                signature_valid=True,
+                processed=bool(result["processed"]),
+                idempotent=bool(result["idempotent"]),
+                message=str(result.get("message") or ""),
+                metadata={**meta, "transaction": result.get("transaction")},
+                created_at=now,
+            )
+            updated_order = _payment_order_row(conn, clean_order_id)
+            account = _account_row(conn, order["user_id"])
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "ok": bool(result["processed"]),
+        "idempotent": bool(result["idempotent"]),
+        "event": _payment_webhook_event_payload(event),
+        "paymentOrder": _payment_order_payload(updated_order),
+        "transaction": result.get("transaction"),
+        "account": {
+            "userId": account["user_id"],
+            "balance": int(account["balance"]),
+            "updatedAt": account["updated_at"],
+        },
+    }
+
+
+def payment_provider_configured(provider: str) -> bool:
+    clean_provider = _payment_provider(provider)
+    if clean_provider == MOCK_PAYMENT_PROVIDER:
+        return True
+    if clean_provider == "wechat":
+        return all(
+            os.environ.get(name)
+            for name in (
+                "WECHAT_PAY_MCH_ID",
+                "WECHAT_PAY_CERT_SERIAL_NO",
+                "WECHAT_PAY_PRIVATE_KEY",
+                "WECHAT_PAY_API_V3_KEY",
+            )
+        )
+    if clean_provider == "alipay":
+        return all(
+            os.environ.get(name)
+            for name in (
+                "ALIPAY_APP_ID",
+                "ALIPAY_PRIVATE_KEY",
+                "ALIPAY_PUBLIC_KEY",
+            )
+        )
+    return False
+
+
+def payment_readiness_payload() -> dict[str, Any]:
+    configured = {provider: payment_provider_configured(provider) for provider in PAYMENT_PROVIDERS}
+    real_configured = any(configured[provider] for provider in ("wechat", "alipay"))
+    return {
+        "mode": "mock" if not real_configured else "configured",
+        "realPaymentConfigured": real_configured,
+        "mockProviderEnabled": configured[MOCK_PAYMENT_PROVIDER],
+        "supportedProviders": list(PAYMENT_PROVIDERS),
+        "providerConfigured": configured,
+        "statuses": list(PAYMENT_ORDER_STATUSES),
+        "webhookSignature": "mock-stub",
+        "message": (
+            "Real WeChat/Alipay credentials are configured."
+            if real_configured
+            else "Real WeChat/Alipay credentials are not configured; mock payment orders and stub webhooks are available."
+        ),
     }
 
 
@@ -766,6 +1159,7 @@ def record_generation_failure(
     ledger_order_id = f"refund:{clean_refund_id}"
     meta = {
         "type": "refund",
+        "eventType": "generation_failure_refund",
         "failure": True,
         "sourceOrderId": clean_source_order_id,
         "failedImages": failed,
@@ -779,6 +1173,7 @@ def record_generation_failure(
         db_path=db_path,
         description="generation-failure-refund",
         metadata=meta,
+        event_type="generation_failure_refund",
     )
     now = transaction["createdAt"]
     with open_db(db_path) as conn:
@@ -875,6 +1270,9 @@ def admin_billing_payload(
             "ledger": [],
             "refunds": [],
             "tasks": [],
+            "paymentOrders": [],
+            "paymentWebhooks": [],
+            "paymentReadiness": payment_readiness_payload(),
         }
 
 
@@ -947,17 +1345,44 @@ def _admin_billing_payload(
                 (capped_limit,),
             ).fetchall()
         ]
+        payment_orders = [
+            _payment_order_payload(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM payment_orders
+                ORDER BY updated_at DESC, created_at DESC, payment_order_id DESC
+                LIMIT ?
+                """,
+                (capped_limit,),
+            ).fetchall()
+        ]
+        payment_webhooks = [
+            _payment_webhook_event_payload(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM payment_webhook_events
+                ORDER BY created_at DESC, event_id DESC
+                LIMIT ?
+                """,
+                (capped_limit,),
+            ).fetchall()
+        ]
         summary = _billing_summary(conn)
     return {
         "ok": True,
         "summary": summary,
         "pricing": pricing_payload(),
         "packages": recharge_packages_payload(),
+        "paymentReadiness": payment_readiness_payload(),
         "accounts": accounts,
         "orders": orders,
         "ledger": ledger,
         "refunds": refunds,
         "tasks": tasks,
+        "paymentOrders": payment_orders,
+        "paymentWebhooks": payment_webhooks,
     }
 
 
@@ -990,6 +1415,13 @@ def _billing_summary(conn: sqlite3.Connection) -> dict[str, Any]:
             "SELECT status, COUNT(*) AS count FROM billing_tasks GROUP BY status"
         ).fetchall()
     }
+    payment_counts = {
+        str(row["status"]): int(row["count"])
+        for row in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM payment_orders GROUP BY status"
+        ).fetchall()
+    }
+    webhook_count = int(conn.execute("SELECT COUNT(*) FROM payment_webhook_events").fetchone()[0])
     return {
         "accountCount": int(account_row["count"]),
         "totalBalance": int(account_row["balance"]),
@@ -1004,6 +1436,14 @@ def _billing_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "failedImagesRefunded": int(refund_row["failed_images"]),
         "taskCount": sum(task_counts.values()),
         "taskStatusCounts": task_counts,
+        "paymentOrderCount": sum(payment_counts.values()),
+        "paymentStatusCounts": payment_counts,
+        "pendingPaymentOrders": payment_counts.get("pending", 0),
+        "paidPaymentOrders": payment_counts.get("paid", 0),
+        "expiredPaymentOrders": payment_counts.get("expired", 0),
+        "refundedPaymentOrders": payment_counts.get("refunded", 0),
+        "failedPaymentOrders": payment_counts.get("failed", 0),
+        "paymentWebhookEventCount": webhook_count,
     }
 
 
@@ -1022,6 +1462,14 @@ def _empty_admin_summary() -> dict[str, Any]:
         "failedImagesRefunded": 0,
         "taskCount": 0,
         "taskStatusCounts": {},
+        "paymentOrderCount": 0,
+        "paymentStatusCounts": {},
+        "pendingPaymentOrders": 0,
+        "paidPaymentOrders": 0,
+        "expiredPaymentOrders": 0,
+        "refundedPaymentOrders": 0,
+        "failedPaymentOrders": 0,
+        "paymentWebhookEventCount": 0,
     }
 
 
@@ -1057,6 +1505,7 @@ def _ledger_payload(row: sqlite3.Row) -> dict[str, Any]:
         "points": points,
         "signedPoints": points if direction == "credit" else -points,
         "balanceAfter": int(row["balance_after"]),
+        "eventType": row["event_type"],
         "description": row["description"],
         "createdAt": row["created_at"],
         "metadata": _json_loads(row["metadata"], {}),
@@ -1094,6 +1543,313 @@ def _billing_task_payload(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _payment_recharge_amounts(
+    *,
+    cash_amount: int | str | Decimal | None,
+    points: int | None,
+) -> tuple[int, int, int | None]:
+    if points is not None:
+        recharge_points = _positive_int(points, "points")
+        if recharge_points < CUSTOM_RECHARGE_MIN_POINTS:
+            raise InvalidRechargePackage(
+                "Custom recharge points below minimum",
+                points=recharge_points,
+                customMinPoints=CUSTOM_RECHARGE_MIN_POINTS,
+            )
+        cash_cents = (recharge_points * 100) // POINT_RATE
+        if cash_amount is not None:
+            cash = _cash_to_int(cash_amount)
+            if cash * POINT_RATE != recharge_points:
+                raise InvalidRechargePackage(
+                    "Recharge cash amount does not match custom points",
+                    cash=cash,
+                    points=recharge_points,
+                )
+            return recharge_points, cash * 100, cash
+        return recharge_points, cash_cents, None
+
+    cash = _cash_to_int(cash_amount)
+    return points_for_recharge(cash), cash * 100, cash
+
+
+def _payment_provider(provider: str) -> str:
+    clean = str(provider or MOCK_PAYMENT_PROVIDER).strip().lower()
+    if clean not in PAYMENT_PROVIDERS:
+        raise InvalidBillingInput("Unsupported payment provider", provider=provider, supported=list(PAYMENT_PROVIDERS))
+    return clean
+
+
+def _payment_status(status: str) -> str:
+    clean = str(status or "").strip().lower()
+    if clean not in PAYMENT_ORDER_STATUSES:
+        raise InvalidBillingInput("Unsupported payment order status", status=status, supported=list(PAYMENT_ORDER_STATUSES))
+    return clean
+
+
+def _payment_checkout_url(provider: str, payment_order_id: str, *, configured: bool) -> str:
+    if provider == MOCK_PAYMENT_PROVIDER:
+        return f"mock://payment/{payment_order_id}"
+    if configured:
+        return f"{provider}://payment/{payment_order_id}"
+    return f"{provider}://not-configured/{payment_order_id}"
+
+
+def _payment_order_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    cash_cents = int(row["cash_cents"])
+    metadata = _json_loads(row["metadata"], {})
+    return {
+        "paymentOrderId": row["payment_order_id"],
+        "userId": row["user_id"],
+        "provider": row["provider"],
+        "providerConfigured": payment_provider_configured(row["provider"]),
+        "status": row["status"],
+        "cashCents": cash_cents,
+        "cashAmount": round(cash_cents / 100, 2),
+        "cash": cash_cents // 100 if cash_cents % 100 == 0 else round(cash_cents / 100, 2),
+        "points": int(row["points"]),
+        "billingOrderId": row["billing_order_id"],
+        "providerTradeId": row["provider_trade_id"],
+        "checkoutUrl": row["checkout_url"],
+        "expiresAt": row["expires_at"],
+        "paidAt": row["paid_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "metadata": metadata,
+    }
+
+
+def _payment_webhook_event_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "eventId": row["event_id"],
+        "provider": row["provider"],
+        "paymentOrderId": row["payment_order_id"],
+        "eventType": row["event_type"],
+        "status": row["status"],
+        "signatureValid": bool(row["signature_valid"]),
+        "processed": bool(row["processed"]),
+        "idempotent": bool(row["idempotent"]),
+        "message": row["message"],
+        "createdAt": row["created_at"],
+        "metadata": _json_loads(row["metadata"], {}),
+    }
+
+
+def _mark_payment_order_paid(
+    *,
+    conn: sqlite3.Connection,
+    order: sqlite3.Row,
+    event_id: str,
+    provider_trade_id: str | None,
+    now: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    current_status = str(order["status"])
+    if current_status == "paid":
+        return {
+            "processed": True,
+            "idempotent": True,
+            "eventType": "payment_paid_duplicate",
+            "message": "Payment order already paid",
+            "transaction": None,
+        }
+    if current_status != "pending":
+        return {
+            "processed": False,
+            "idempotent": False,
+            "eventType": "payment_paid_invalid_transition",
+            "message": f"Cannot mark {current_status} payment order as paid",
+            "transaction": None,
+        }
+
+    payment_order_id = order["payment_order_id"]
+    billing_order_id = order["billing_order_id"] or f"payment:{payment_order_id}"
+    order_metadata = _json_loads(order["metadata"], {})
+    ledger_meta = {
+        **order_metadata,
+        **metadata,
+        "type": "recharge",
+        "eventType": "payment_recharge_credit",
+        "paymentOrderId": payment_order_id,
+        "provider": order["provider"],
+        "providerTradeId": provider_trade_id,
+        "webhookEventId": event_id,
+        "cashCents": int(order["cash_cents"]),
+    }
+    transaction = _apply_entry_in_conn(
+        conn=conn,
+        user_id=order["user_id"],
+        order_id=billing_order_id,
+        kind="credit",
+        points=int(order["points"]),
+        description="payment-recharge-paid",
+        metadata=ledger_meta,
+        event_type="payment_recharge_credit",
+    )
+    updated_meta = {
+        **order_metadata,
+        **metadata,
+        "paidByWebhookEventId": event_id,
+        "providerTradeId": provider_trade_id,
+    }
+    conn.execute(
+        """
+        UPDATE payment_orders
+        SET status = 'paid',
+            billing_order_id = ?,
+            provider_trade_id = COALESCE(?, provider_trade_id),
+            paid_at = ?,
+            updated_at = ?,
+            metadata = ?
+        WHERE payment_order_id = ?
+        """,
+        (billing_order_id, provider_trade_id, now, now, _json(updated_meta), payment_order_id),
+    )
+    return {
+        "processed": True,
+        "idempotent": bool(transaction["idempotent"]),
+        "eventType": "payment_paid",
+        "message": "Payment order settled and points credited",
+        "transaction": transaction,
+    }
+
+
+def _mark_payment_order_terminal(
+    *,
+    conn: sqlite3.Connection,
+    order: sqlite3.Row,
+    status: str,
+    provider_trade_id: str | None,
+    now: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if status == "pending":
+        return {
+            "processed": False,
+            "idempotent": False,
+            "eventType": "payment_pending_ignored",
+            "message": "Pending webhook does not settle a payment order",
+            "transaction": None,
+        }
+
+    current_status = str(order["status"])
+    if current_status == status:
+        return {
+            "processed": True,
+            "idempotent": True,
+            "eventType": f"payment_{status}_duplicate",
+            "message": f"Payment order already {status}",
+            "transaction": None,
+        }
+    if current_status == "paid" and status in {"failed", "expired"}:
+        return {
+            "processed": False,
+            "idempotent": False,
+            "eventType": f"payment_{status}_invalid_transition",
+            "message": f"Cannot mark paid payment order as {status}",
+            "transaction": None,
+        }
+    if current_status in {"failed", "expired", "refunded"} and current_status != status:
+        return {
+            "processed": False,
+            "idempotent": False,
+            "eventType": f"payment_{status}_invalid_transition",
+            "message": f"Cannot mark {current_status} payment order as {status}",
+            "transaction": None,
+        }
+
+    order_metadata = _json_loads(order["metadata"], {})
+    updated_meta = {
+        **order_metadata,
+        **metadata,
+        "terminalWebhookStatus": status,
+        "providerTradeId": provider_trade_id,
+    }
+    conn.execute(
+        """
+        UPDATE payment_orders
+        SET status = ?,
+            provider_trade_id = COALESCE(?, provider_trade_id),
+            updated_at = ?,
+            metadata = ?
+        WHERE payment_order_id = ?
+        """,
+        (status, provider_trade_id, now, _json(updated_meta), order["payment_order_id"]),
+    )
+    return {
+        "processed": True,
+        "idempotent": False,
+        "eventType": f"payment_{status}",
+        "message": f"Payment order marked {status}",
+        "transaction": None,
+    }
+
+
+def _insert_payment_webhook_event(
+    *,
+    conn: sqlite3.Connection,
+    event_id: str,
+    provider: str,
+    payment_order_id: str | None,
+    event_type: str,
+    status: str,
+    signature_valid: bool,
+    processed: bool,
+    idempotent: bool,
+    message: str,
+    metadata: dict[str, Any],
+    created_at: str,
+) -> sqlite3.Row:
+    conn.execute(
+        """
+        INSERT INTO payment_webhook_events (
+            event_id,
+            provider,
+            payment_order_id,
+            event_type,
+            status,
+            signature_valid,
+            processed,
+            idempotent,
+            message,
+            created_at,
+            metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            provider,
+            payment_order_id,
+            event_type,
+            status,
+            1 if signature_valid else 0,
+            1 if processed else 0,
+            1 if idempotent else 0,
+            str(message or ""),
+            created_at,
+            _json(metadata),
+        ),
+    )
+    return _payment_webhook_event_row(conn, event_id)
+
+
+def _payment_order_row(conn: sqlite3.Connection, payment_order_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM payment_orders WHERE payment_order_id = ?",
+        (payment_order_id,),
+    ).fetchone()
+
+
+def _payment_webhook_event_row(conn: sqlite3.Connection, event_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM payment_webhook_events WHERE event_id = ?",
+        (event_id,),
+    ).fetchone()
+
+
 def _apply_entry(
     *,
     user_id: str,
@@ -1103,6 +1859,7 @@ def _apply_entry(
     db_path: str | os.PathLike[str] | None,
     description: str,
     metadata: dict[str, Any] | None,
+    event_type: str,
 ) -> dict[str, Any]:
     user_id = _clean_id(user_id, "user_id")
     order_id = _clean_id(order_id, "order_id")
@@ -1111,54 +1868,89 @@ def _apply_entry(
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _ensure_account(conn, user_id)
-            existing = _order_row(conn, order_id)
-            if existing:
-                result = _idempotent_result(conn, existing, user_id, kind, points)
-                conn.commit()
-                return result
-
-            balance = int(_account_row(conn, user_id)["balance"])
-            if kind == "debit" and balance < points:
-                raise InsufficientBalance(required=points, available=balance)
-
-            balance_after = balance + points if kind == "credit" else balance - points
-            now = _now()
-            meta_json = _json(metadata or {})
-            conn.execute(
-                "UPDATE accounts SET balance = ?, updated_at = ? WHERE user_id = ?",
-                (balance_after, now, user_id),
-            )
-            conn.execute(
-                """
-                INSERT INTO orders (order_id, user_id, kind, points, status, created_at, metadata)
-                VALUES (?, ?, ?, ?, 'succeeded', ?, ?)
-                """,
-                (order_id, user_id, kind, points, now, meta_json),
-            )
-            cursor = conn.execute(
-                """
-                INSERT INTO ledger (order_id, user_id, direction, points, balance_after, description, created_at, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (order_id, user_id, kind, points, balance_after, str(description or ""), now, meta_json),
+            result = _apply_entry_in_conn(
+                conn=conn,
+                user_id=user_id,
+                order_id=order_id,
+                kind=kind,
+                points=points,
+                description=description,
+                metadata=metadata,
+                event_type=event_type,
             )
             conn.commit()
-            return {
-                "ok": True,
-                "idempotent": False,
-                "userId": user_id,
-                "orderId": order_id,
-                "direction": kind,
-                "points": points,
-                "balance": balance_after,
-                "balanceAfter": balance_after,
-                "ledgerId": cursor.lastrowid,
-                "createdAt": now,
-            }
+            return result
         except Exception:
             conn.rollback()
             raise
+
+
+def _apply_entry_in_conn(
+    *,
+    conn: sqlite3.Connection,
+    user_id: str,
+    order_id: str,
+    kind: str,
+    points: int,
+    description: str,
+    metadata: dict[str, Any] | None,
+    event_type: str,
+) -> dict[str, Any]:
+    event_type = str(event_type or "").strip() or "ledger_entry"
+    _ensure_account(conn, user_id)
+    existing = _order_row(conn, order_id)
+    if existing:
+        return _idempotent_result(conn, existing, user_id, kind, points)
+
+    balance = int(_account_row(conn, user_id)["balance"])
+    if kind == "debit" and balance < points:
+        raise InsufficientBalance(required=points, available=balance)
+
+    balance_after = balance + points if kind == "credit" else balance - points
+    now = _now()
+    meta = dict(metadata or {})
+    meta.setdefault("eventType", event_type)
+    meta_json = _json(meta)
+    conn.execute(
+        "UPDATE accounts SET balance = ?, updated_at = ? WHERE user_id = ?",
+        (balance_after, now, user_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO orders (order_id, user_id, kind, points, status, created_at, metadata)
+        VALUES (?, ?, ?, ?, 'succeeded', ?, ?)
+        """,
+        (order_id, user_id, kind, points, now, meta_json),
+    )
+    cursor = conn.execute(
+        """
+        INSERT INTO ledger (
+            order_id,
+            user_id,
+            direction,
+            points,
+            balance_after,
+            event_type,
+            description,
+            created_at,
+            metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (order_id, user_id, kind, points, balance_after, event_type, str(description or ""), now, meta_json),
+    )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "userId": user_id,
+        "orderId": order_id,
+        "direction": kind,
+        "points": points,
+        "balance": balance_after,
+        "balanceAfter": balance_after,
+        "ledgerId": cursor.lastrowid,
+        "eventType": event_type,
+        "createdAt": now,
+    }
 
 
 def _idempotent_result(
@@ -1190,12 +1982,20 @@ def _idempotent_result(
         "balance": int(account["balance"]),
         "balanceAfter": int(ledger["balance_after"]),
         "ledgerId": int(ledger["id"]),
+        "eventType": ledger["event_type"],
         "createdAt": ledger["created_at"],
     }
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "ledger", "event_type", "TEXT NOT NULL DEFAULT 'ledger_entry'")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _ensure_account(conn: sqlite3.Connection, user_id: str) -> None:
@@ -1293,3 +2093,7 @@ def _json_loads(value: str | bytes | None, default: Any) -> Any:
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _now_plus_seconds(seconds: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + seconds))

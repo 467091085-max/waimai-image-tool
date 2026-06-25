@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import billing
+import payment_webhook
 
 
 class BillingTests(unittest.TestCase):
@@ -57,6 +58,63 @@ class BillingTests(unittest.TestCase):
 
         self.assertEqual(result["points"], 100)
         self.assertEqual(result["balance"], 100)
+
+    def test_create_payment_order_preserves_recharge_rules(self) -> None:
+        package = billing.create_payment_order("u1", "pay-49", cash_amount=49, db_path=self.db_path)
+        custom = billing.create_payment_order("u1", "pay-custom", points=100, db_path=self.db_path)
+
+        self.assertEqual(package["paymentOrder"]["status"], "pending")
+        self.assertEqual(package["paymentOrder"]["points"], 500)
+        self.assertEqual(package["paymentOrder"]["cashCents"], 4900)
+        self.assertEqual(custom["paymentOrder"]["points"], 100)
+        self.assertEqual(custom["paymentOrder"]["cashCents"], 1000)
+        self.assertEqual(
+            {item["cash"]: item["points"] for item in billing.recharge_packages_payload()},
+            {49: 500, 99: 1040, 299: 3190},
+        )
+
+        duplicate = billing.create_payment_order("u1", "pay-49", cash_amount=49, db_path=self.db_path)
+        self.assertTrue(duplicate["idempotent"])
+        with self.assertRaises(billing.InvalidRechargePackage):
+            billing.create_payment_order("u1", "pay-too-small", points=99, db_path=self.db_path)
+
+    def test_mock_payment_webhook_success_credits_account_once(self) -> None:
+        billing.create_payment_order("u1", "pay-99", cash_amount=99, db_path=self.db_path)
+        payload = {
+            "eventId": "evt-paid-1",
+            "paymentOrderId": "pay-99",
+            "provider": "mock",
+            "status": "paid",
+            "providerTradeId": "mock-trade-1",
+        }
+
+        result, status = payment_webhook.handle_payment_webhook(
+            payload,
+            headers={"X-Mock-Signature": payment_webhook.MOCK_SIGNATURE},
+            db_path=self.db_path,
+        )
+        duplicate, duplicate_status = payment_webhook.handle_payment_webhook(
+            payload,
+            headers={"X-Mock-Signature": payment_webhook.MOCK_SIGNATURE},
+            db_path=self.db_path,
+        )
+        later_duplicate, later_status = payment_webhook.handle_payment_webhook(
+            {**payload, "eventId": "evt-paid-2"},
+            headers={"X-Mock-Signature": payment_webhook.MOCK_SIGNATURE},
+            db_path=self.db_path,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transaction"]["points"], 1040)
+        self.assertEqual(result["transaction"]["eventType"], "payment_recharge_credit")
+        self.assertEqual(result["paymentOrder"]["status"], "paid")
+        self.assertEqual(billing.get_account("u1", db_path=self.db_path)["balance"], 1040)
+        self.assertEqual(duplicate_status, 200)
+        self.assertTrue(duplicate["idempotent"])
+        self.assertEqual(later_status, 200)
+        self.assertTrue(later_duplicate["idempotent"])
+        self.assertEqual(billing.get_account("u1", db_path=self.db_path)["balance"], 1040)
 
     def test_charge_breakdown_supports_free_samples_reworks_and_fixed_fees(self) -> None:
         breakdown = billing.calculate_image_charge_breakdown(
@@ -116,6 +174,26 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(admin["summary"]["refundPoints"], 200)
         self.assertEqual(admin["summary"]["failedImagesRefunded"], 1)
         self.assertEqual(admin["tasks"][0]["status"], "failed_refunded")
+        self.assertIn("generation_output_charge", {entry["eventType"] for entry in admin["ledger"]})
+        self.assertIn("generation_failure_refund", {entry["eventType"] for entry in admin["ledger"]})
+
+    def test_retry_charge_has_dedicated_ledger_event_type(self) -> None:
+        billing.credit_recharge("u1", "recharge-49", 49, db_path=self.db_path)
+        result = billing.confirm_generation_charge(
+            "u1",
+            "retry-order-1",
+            image_count=0,
+            quality="standard",
+            rework_count=2,
+            free_rework_quota=1,
+            metadata={"retry": True},
+            db_path=self.db_path,
+        )
+        admin = billing.admin_billing_payload(self.db_path)
+
+        self.assertEqual(result["points"], 100)
+        self.assertEqual(result["eventType"], "generation_retry_charge")
+        self.assertEqual(admin["ledger"][0]["eventType"], "generation_retry_charge")
 
     def test_debit_rejects_insufficient_balance_without_negative_balance(self) -> None:
         billing.credit_recharge("u1", "recharge-49", 49, db_path=self.db_path)
@@ -127,6 +205,23 @@ class BillingTests(unittest.TestCase):
         with sqlite3.connect(self.db_path) as conn:
             ledger_count = conn.execute("SELECT COUNT(*) FROM ledger WHERE direction = 'debit'").fetchone()[0]
         self.assertEqual(ledger_count, 0)
+
+    def test_insufficient_balance_cannot_confirm_generation_charge(self) -> None:
+        with self.assertRaises(billing.InsufficientBalance):
+            billing.confirm_generation_charge(
+                "u1",
+                "generation-expensive",
+                image_count=2,
+                quality="premium",
+                db_path=self.db_path,
+            )
+
+        self.assertEqual(billing.get_account("u1", db_path=self.db_path)["balance"], 0)
+        with sqlite3.connect(self.db_path) as conn:
+            debit_count = conn.execute("SELECT COUNT(*) FROM ledger WHERE direction = 'debit'").fetchone()[0]
+            task_count = conn.execute("SELECT COUNT(*) FROM billing_tasks").fetchone()[0]
+        self.assertEqual(debit_count, 0)
+        self.assertEqual(task_count, 0)
 
     def test_credit_and_debit_are_idempotent_by_order_id(self) -> None:
         first_credit = billing.credit_recharge("u1", "recharge-49", 49, db_path=self.db_path)
