@@ -36,6 +36,32 @@ current base: 1e64c37 Use Hunyuan image 3 for text generation
 
 旧的 `worktrees/*` 是上一阶段分支，保留作参考，不再作为 v2 主开发入口。
 
+## V3 Parallel Build
+
+V3 是当前正式并行开发入口。所有 worktree 都从最新 `main` 分出，主仓库只负责集成、测试、部署。
+
+```text
+base commit: a5cbb84 Improve style preview selection and local export fallback
+root: /Users/guiguixiaxia/Documents/Codex/2026-06-15/33-excel-excel-300-5-4/worktrees-v3
+```
+
+| 子任务 | Branch | Worktree | 写入边界 |
+|---|---|---|---|
+| 图库资产层 | `feature/v3-asset-library` | `worktrees-v3/asset-library` | `library_index.py`, `scripts/scan_library.py`, `scripts/import_seed_library.py`, `tests/test_library_index.py`, `README.md` 图库说明 |
+| 菜单解析和匹配 | `feature/v3-menu-matching` | `worktrees-v3/menu-matching` | `menu_parser.py`, `matching_engine.py`, `tests/test_menu_parser.py`, `tests/test_strict_matching.py` |
+| 风格预览 | `feature/v3-style-preview` | `worktrees-v3/style-preview` | 风格选择/样图相关逻辑和测试；优先写独立 helper，必要时小范围修改 `app.py` 的风格接口 |
+| 生成引擎 | `feature/v3-generation-engine` | `worktrees-v3/generation-engine` | `generation_jobs.py`, 新增/拆分腾讯生图 helper, `tests/test_generation_jobs.py`, `tests/test_app_generation.py` |
+| 客户端 UI | `feature/v3-customer-ui` | `worktrees-v3/customer-ui` | `templates/index.html`, `static/app.js`, `static/styles.css` |
+| 导出交付 | `feature/v3-export-delivery` | `worktrees-v3/export-delivery` | `image_pipeline.py`, 导出接口相关测试, `tests/test_image_pipeline.py` |
+| 积分和后台 | `feature/v3-billing-admin` | `worktrees-v3/billing-admin` | `billing.py`, `admin_panel.py`, `templates/admin.html`, `static/admin.js`, billing/admin 测试 |
+
+集成策略：
+
+1. 每个 worker 在自己的 worktree 内完成代码和测试，不直接推送。
+2. worker 完成后提交本地 commit，并在结果里列出变更文件、测试命令、遗留问题。
+3. 主线按“模块先行、`app.py` 最后”的顺序合并，解决冲突后统一跑全量测试。
+4. 合并通过后推送 `main`，Render 自动部署，再做线上烟测。
+
 ## 子任务细分
 
 ### 1. 图库资产层
