@@ -20,7 +20,14 @@ const state = {
   deliveryPlatforms: [],
   quality: "standard",
   busy: null,
-  previewLoadingStyle: ""
+  previewLoadingStyle: "",
+  activeJobId: "",
+  lastDebitOrderId: "",
+  libraryStatus: {
+    label: "图库状态读取中",
+    detail: "正在检查图库索引和可复用图片",
+    tone: "loading"
+  }
 };
 
 const $ = s => document.querySelector(s);
@@ -89,9 +96,17 @@ function customEditPoints() {
 
 function cleanCustomerStatus(value) {
   return String(value || "")
-    .replace(/模型|图库|混元|腾讯云|Tencent|Hunyuan|Gemini|API|api/g, "")
+    .replace(/模型|混元|腾讯云|Tencent|Hunyuan|Gemini|local-demo|tencent-hunyuan|generation-jobs|API|api/g, "")
     .replace(/复用/g, "沿用")
     .trim();
+}
+
+function cleanErrorText(value, fallback = "生成失败，请稍后重试") {
+  const text = cleanCustomerStatus(value || fallback)
+    .replace(/\s+/g, " ")
+    .replace(/^[：:，,。.\s]+/, "")
+    .trim();
+  return text || fallback;
 }
 
 function setPreviewAspect() {
@@ -111,36 +126,6 @@ function platformSpecText(meta) {
 
 function styleDisplayName(index) {
   return styleDisplayNames[index] || `${index + 1}号背景`;
-}
-
-function styleFallbackImage(index) {
-  const palettes = [
-    ["#f2c58d", "#fff7e7", "#9a622e"],
-    ["#50545d", "#d8bd7a", "#ffffff"],
-    ["#e6eaee", "#ffffff", "#5f7483"],
-    ["#c84943", "#ffe3a0", "#7e241f"],
-    ["#d4bd81", "#f8ffe9", "#5a8a5b"],
-    ["#b7d7e8", "#fff2d4", "#336b87"]
-  ];
-  const [bg, soft, accent] = palettes[index % palettes.length];
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="${soft}"/>
-          <stop offset="1" stop-color="${bg}"/>
-        </linearGradient>
-      </defs>
-      <rect width="800" height="600" fill="url(#bg)"/>
-      <ellipse cx="400" cy="350" rx="255" ry="132" fill="#fff" opacity=".94"/>
-      <ellipse cx="400" cy="350" rx="205" ry="96" fill="${accent}" opacity=".18"/>
-      <circle cx="330" cy="325" r="58" fill="${accent}" opacity=".78"/>
-      <circle cx="438" cy="346" r="74" fill="${accent}" opacity=".58"/>
-      <circle cx="506" cy="314" r="44" fill="${accent}" opacity=".42"/>
-      <path d="M210 438c108 42 278 51 394 5" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" opacity=".54"/>
-    </svg>
-  `;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function styleChoices(plan = state.plan) {
@@ -181,11 +166,20 @@ function watermarkDemoImage() {
   const selected = choices.find(style => style.id === state.pendingStyle) || choices[0];
   if (selected?.sample?.url) return selected.sample.url;
   const resultImage = state.plan?.results?.find(row => row.candidates?.[0]?.url)?.candidates?.[0]?.url;
-  return resultImage || styleFallbackImage(0);
+  return resultImage || "";
 }
 
-function imageFallbackAttr(index = 0) {
-  return `onerror="this.onerror=null;this.src='${styleFallbackImage(index)}'"`;
+function imageFallbackAttr() {
+  return `onerror="this.closest('[data-image-shell]')?.classList.add('image-load-failed');this.remove();"`;
+}
+
+function imageUrlFromCandidate(candidate = {}) {
+  return String(candidate?.url || candidate?.imageUrl || candidate?.image_url || "").trim();
+}
+
+function validImageCandidate(candidate = {}) {
+  const url = imageUrlFromCandidate(candidate);
+  return url ? { ...candidate, url } : null;
 }
 
 function baseImageCharge() {
@@ -216,6 +210,59 @@ async function api(url, opt = {}) {
     throw error;
   }
   return data;
+}
+
+function libraryStatusFromData(data = {}) {
+  const sources = data?.sources && typeof data.sources === "object" ? data.sources : {};
+  const total = Number(data.total || 0);
+  const reusable = Number(data.reusable || 0);
+  const stores = Number(data.stores || 0);
+  const realSourceCount = ["clean", "external", "watermark"].reduce((sum, key) => sum + Number(sources[key] || 0), 0);
+  const likelyDemoOnly = total > 0 && realSourceCount === 0 && stores <= 1 && total <= 64;
+  if (!total || likelyDemoOnly) {
+    return {
+      label: "仅演示图库",
+      detail: total ? `当前可用 ${total} 张演示图，正式图库未接入` : "没有读取到可用真实图库，当前只能演示流程",
+      tone: "warning"
+    };
+  }
+  return {
+    label: "已接入真实图库",
+    detail: `${total} 张图库图，${reusable || total} 张可复用，${stores || 1} 个门店来源`,
+    tone: "good"
+  };
+}
+
+function libraryStatusError(error) {
+  return {
+    label: "COS 索引读取失败",
+    detail: cleanErrorText(error?.message, "图库索引暂时不可用，请稍后重试"),
+    tone: "error"
+  };
+}
+
+function renderLibraryStatus() {
+  const box = $("#libraryStatus");
+  if (!box) return;
+  const status = state.libraryStatus || {};
+  box.className = `library-status ${status.tone || ""}`;
+  $("#libraryStatusTitle").textContent = status.label || "图库状态读取中";
+  $("#libraryStatusDetail").textContent = status.detail || "正在检查图库索引和可复用图片";
+}
+
+async function refreshLibraryStatus() {
+  state.libraryStatus = {
+    label: "图库状态读取中",
+    detail: "正在检查图库索引和可复用图片",
+    tone: "loading"
+  };
+  renderLibraryStatus();
+  try {
+    state.libraryStatus = libraryStatusFromData(await api("/api/library-status"));
+  } catch (error) {
+    state.libraryStatus = libraryStatusError(error);
+  }
+  renderLibraryStatus();
 }
 
 function isBusy(...keys) {
@@ -405,37 +452,73 @@ function unlockPanels() {
   $("#exportView").classList.toggle("locked", !state.confirmed);
 }
 
+const waitingGenerationStatuses = new Set(["created", "pending", "queued", "running", "limited", "waiting"]);
+const failedGenerationStatuses = new Set(["failed", "failure", "error", "cancelled"]);
+
 function estimatedFormalPoints() {
   return (state.menu?.count || 0) * imagePoints();
 }
 
+function generationStatusValue(row) {
+  return String(row?.generation?.status || row?.generationStatus || row?.status || "").toLowerCase();
+}
+
+function rowProviderError(row) {
+  const generation = row?.generation || {};
+  return generation.provider_error || generation.providerError || generation.error || row?.provider_error || row?.providerError || row?.error || "";
+}
+
+function rowRetryable(row) {
+  const generation = row?.generation || {};
+  return Boolean(generation.retryable || row?.retryable);
+}
+
+function rowRefundRequired(row) {
+  const generation = row?.generation || {};
+  return Boolean(generation.refund_required || generation.refundRequired || row?.refund_required || row?.refundRequired);
+}
+
+function primaryCandidate(row) {
+  return validImageCandidate((row?.candidates || [])[0] || row?.generation?.candidate || {});
+}
+
 function publicStatus(row) {
-  if (row.publicStatus) return cleanCustomerStatus(row.publicStatus);
-  if (!row.candidates?.length) return "待补图";
+  const status = generationStatusValue(row);
+  const providerError = rowProviderError(row);
+  if (failedGenerationStatuses.has(status) || providerError || rowRefundRequired(row)) {
+    return rowRetryable(row) ? "生成失败，可重试" : "生成失败";
+  }
+  if (waitingGenerationStatuses.has(status)) return "等待生成";
+  const candidate = primaryCandidate(row);
+  const raw = cleanCustomerStatus(row.publicStatus);
+  if (state.confirmed && !candidate && (!raw || ["待补图", "待处理", "已生成"].includes(raw))) return "等待生成";
+  if (raw && raw !== "已生成") return raw;
+  if (!candidate) return state.confirmed ? "等待生成" : "待补图";
   return "已生成";
 }
 
 function isPendingGeneration(row) {
   const status = publicStatus(row);
-  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
-  return ["待正式生成", "生成失败", "等待配置"].includes(status)
-    || ["pending", "limited", "failed", "error"].includes(generationStatus);
+  const generationStatus = generationStatusValue(row);
+  return ["待正式生成", "生成失败", "生成失败，可重试", "等待配置", "等待生成"].includes(status)
+    || waitingGenerationStatuses.has(generationStatus)
+    || failedGenerationStatuses.has(generationStatus);
 }
 
 function isFailedGeneration(row) {
   const status = publicStatus(row);
-  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
-  return Boolean(row?.generation?.provider_error || row?.generation?.providerError || row?.generation?.refund_required || row?.generation?.refundRequired)
+  const generationStatus = generationStatusValue(row);
+  return Boolean(rowProviderError(row) || rowRefundRequired(row))
     || status.includes("失败")
-    || ["failed", "error"].includes(generationStatus);
+    || failedGenerationStatuses.has(generationStatus);
 }
 
 function isWaitingGeneration(row) {
   const status = publicStatus(row);
-  const generationStatus = String(row?.generation?.status || row?.generationStatus || "").toLowerCase();
+  const generationStatus = generationStatusValue(row);
   return !isFailedGeneration(row) && (
-    ["待正式生成", "等待配置", "待补图", "待处理"].includes(status)
-    || ["pending", "limited", "queued", "running"].includes(generationStatus)
+    ["待正式生成", "等待配置", "待补图", "待处理", "等待生成"].includes(status)
+    || waitingGenerationStatuses.has(generationStatus)
   );
 }
 
@@ -448,13 +531,29 @@ function generationStatusPillClass(row) {
 function generationFailureMessage(row) {
   if (!isFailedGeneration(row)) return "";
   const generation = row?.generation || {};
-  const reason = generation.provider_error || generation.providerError || generation.error || generation.reason || "生成失败，请稍后重试";
-  const suffix = generation.refund_required || generation.refundRequired
+  const reason = rowProviderError(row) || generation.reason || "生成失败，请稍后重试";
+  const suffix = rowRefundRequired(row)
     ? "，需要退回本张积分"
-    : generation.retryable
+    : rowRetryable(row)
       ? "，可重试"
       : "";
-  return cleanCustomerStatus(`${reason}${suffix}`);
+  return cleanErrorText(`${reason}${suffix}`);
+}
+
+function exportableRows(scope = "all", selectedRows = []) {
+  const rows = Array.isArray(state.plan?.results) ? state.plan.results : [];
+  const selected = new Set(selectedRows.map(Number).filter(Boolean));
+  return rows.filter((row, index) => {
+    const rowNo = index + 1;
+    if (selected.size && !selected.has(rowNo)) return false;
+    if (scope === "single" && row.kind !== "单品") return false;
+    if (scope === "combo" && row.kind !== "套餐/组合") return false;
+    return Boolean(primaryCandidate(row)) && !isPendingGeneration(row) && !isFailedGeneration(row);
+  });
+}
+
+function hasExportableRows(scope = "all", selectedRows = []) {
+  return exportableRows(scope, selectedRows).length > 0;
 }
 
 function formalPlanStats(plan = state.plan) {
@@ -562,6 +661,14 @@ async function runGenerationJob(jobId, payload = {}) {
   });
 }
 
+async function retryGenerationJob(jobId, payload = {}) {
+  return api(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run: true, ...payload })
+  });
+}
+
 async function getGenerationJob(jobId) {
   return api(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
@@ -626,6 +733,8 @@ function generationRowFromJobItem(item, fallbackRow = {}) {
     row.generationStatus = "failed";
     row.generation = {
       ...generation,
+      jobId: item?.jobId,
+      itemIndex: Number(item?.index || item?.itemIndex || 0) || undefined,
       status: "failed",
       error: providerError || result.error || "生成失败",
       provider_error: providerError || "",
@@ -638,12 +747,22 @@ function generationRowFromJobItem(item, fallbackRow = {}) {
     row.publicStatus = row.publicStatus || "待正式生成";
     row.backgroundAction = row.backgroundAction || "待正式生成";
     row.generationStatus = row.generationStatus || status || "pending";
-    row.generation = { ...generation, status: status || generation.status || "pending" };
+    row.generation = {
+      ...generation,
+      jobId: item?.jobId,
+      itemIndex: Number(item?.index || item?.itemIndex || 0) || undefined,
+      status: status || generation.status || "pending"
+    };
     return row;
   }
   row.publicStatus = row.publicStatus || "已生成";
   row.generationStatus = row.generationStatus || "succeeded";
-  row.generation = { ...generation, status: generation.status || status || "succeeded" };
+  row.generation = {
+    ...generation,
+    jobId: item?.jobId,
+    itemIndex: Number(item?.index || item?.itemIndex || 0) || undefined,
+    status: generation.status || status || "succeeded"
+  };
   return row;
 }
 
@@ -687,14 +806,6 @@ function generationPlanFromJob(job, fallbackPlan = state.plan) {
   };
 }
 
-async function generateFinalPlan() {
-  return api("/api/generate-final", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ style: state.pendingStyle, quality: state.quality, watermark: watermarkPayload() })
-  });
-}
-
 function setControls() {
   const menuFile = state.menu?.file || "菜单";
   const menuCount = state.menu?.count ?? 0;
@@ -712,6 +823,7 @@ function setControls() {
   const exportEm = $("#exportShortcutBtn")?.querySelector("em");
   const readyPreview = hasStylePreviewReady();
   const hasPreviewAttempt = Boolean(state.pendingStyle && state.stylePreview?.style === state.pendingStyle);
+  const hasExportable = state.confirmed && hasExportableRows();
   $("#chooseMenuBtn").disabled = state.running || busy;
   $("#chooseMenuBtn").classList.toggle("is-loading", uploadBusy);
   if (chooseEm) chooseEm.textContent = uploadBusy ? "上传中" : "点击上传";
@@ -742,15 +854,16 @@ function setControls() {
   $("#confirmStyleBtn").classList.toggle("is-loading", confirmBusy);
   $("#confirmStyleBtn").textContent = confirmBusy
     ? (isBusy("confirm-charge") ? "扣费中" : "生成中")
-    : (state.plan && readyPreview ? `确认扣 ${totalCharge()} 积分，生成正式图` : "先生成6张免费样图");
+    : (state.plan && readyPreview ? `将扣 ${totalCharge()} 积分，生成正式图` : "先生成6张免费样图");
   $("#exportShortcutBtn").disabled = !state.confirmed || busy;
-  if (exportEm) exportEm.textContent = exportBusy ? "打包中" : state.confirmed ? "去导出" : "生成后可用";
+  if (exportEm) exportEm.textContent = exportBusy ? "打包中" : state.confirmed ? (hasExportable ? "去导出" : "暂无成图") : "生成后可用";
   $("#exportZipBtn").disabled = !state.confirmed || busy;
   $("#exportZipBtn").classList.toggle("is-loading", exportBusy);
-  $("#exportZipBtn").textContent = exportBusy ? "打包中" : "打包导出 ZIP";
+  $("#exportZipBtn").textContent = exportBusy ? "打包中" : hasExportable ? "打包导出 ZIP" : "暂无可导出成图";
   $("#menuStatus").textContent = state.uploaded ? `菜单已就绪：${menuFile} · ${menuCount} 个菜` : "等待选择菜单";
   $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
   $("#pointsBalance").textContent = `${state.account.balance || 0}`;
+  renderLibraryStatus();
   updateChargeText();
   renderQualityControls();
   renderPlatformControls();
@@ -772,7 +885,7 @@ function updateChargeText() {
     hint.textContent = !hasStylePreviewReady()
       ? "先生成 6 张免费样图，满意后再确认扣积分。"
       : state.deliveryPlatforms.length
-        ? `${parts.join(" + ")}，确认后一次性扣除。`
+        ? `${parts.join(" + ")}，点击后将扣 ${base + wm + platform} 积分并创建正式生图任务。`
         : "请先选择至少一个交付平台，首个平台不加积分。";
   }
 }
@@ -811,9 +924,9 @@ function renderRecharge() {
   $("#rateText").textContent = "选择积分包，充值后即可生成正式图片";
   $("#rechargePackages").innerHTML = rechargePackages().map(pkg => (
     `<button class="recharge-card" data-cash="${pkg.cash}" type="button">
-      <b>${esc(pkg.cash)}元=${esc(pkg.points)}+${esc(pkg.bonus)}积分</b>
-      <span>到账 ${esc(pkg.points + pkg.bonus)} 积分</span>
-      <em>${esc(pkg.name)}</em>
+      <b>${esc(pkg.points + pkg.bonus)} 积分</b>
+      <span>${pkg.bonus ? `含赠送 ${esc(pkg.bonus)} 积分` : "积分包"}</span>
+      <em>${esc(pkg.name)} · 充值后到账</em>
     </button>`
   )).join("");
   $$(".recharge-card").forEach(button => {
@@ -1031,12 +1144,12 @@ function renderWatermarkControls() {
   });
   const demo = $("#watermarkDemo");
   const text = state.watermark.text || state.menu?.store || "品牌名";
+  const demoImage = watermarkDemoImage();
   demo.className = `watermark-demo ${state.watermark.enabled ? "enabled" : ""} ${state.watermark.pattern} ${state.watermark.position}`;
   demo.innerHTML = `
     <span>${locked ? "水印已锁定" : `水印预览 · ${meta.name} ${meta.size}，${meta.ratio}`}</span>
-    <div class="watermark-preview-canvas">
-      <img class="watermark-demo-image" src="${watermarkDemoImage()}" alt="水印示意图" ${imageFallbackAttr(0)}>
-      ${watermarkOverlay(text)}
+    <div class="watermark-preview-canvas ${demoImage ? "" : "empty-preview"}" data-image-shell>
+      ${demoImage ? `<img class="watermark-demo-image" src="${demoImage}" alt="水印示意图" ${imageFallbackAttr()}>${watermarkOverlay(text)}<span class="image-error-note">图片加载失败，暂不能预览水印</span>` : `<span class="watermark-empty">生成免费样图后可预览水印</span>`}
     </div>
   `;
   updateChargeText();
@@ -1060,6 +1173,30 @@ function renderReworkBanner() {
     if (box) box.innerHTML = "";
     return;
   }
+  const generation = state.plan.generation || {};
+  const stats = formalPlanStats(state.plan);
+  const hasFailures = stats.failed > 0;
+  const partial = generation.partial || generation.status === "partial" || generation.status === "partially_failed" || (hasFailures && stats.completed > 0);
+  if (hasFailures) {
+    const refundText = generation.refundRequired || state.plan.results?.some(rowRefundRequired)
+      ? "失败图片需要退回本张积分；"
+      : "";
+    const retryText = state.plan.results?.some(row => isFailedGeneration(row) && rowRetryable(row))
+      ? "失败项可重试。"
+      : "失败项可稍后重新生成。";
+    const title = partial ? "部分生成完成" : "生成失败";
+    box.className = "rework-banner partial";
+    box.innerHTML = `
+      <div>
+        <b>${title}：已完成 ${stats.completed}/${stats.total} 张，失败 ${stats.failed} 张</b>
+        <span>${esc(refundText)}${esc(retryText)}等待中的图片不会展示为成功图。</span>
+      </div>
+      <button class="retry-failed-btn" type="button">重试失败项</button>
+    `;
+    const retryButton = box.querySelector(".retry-failed-btn");
+    retryButton.onclick = () => retryFailedGeneration().catch(e => toast(e.message));
+    return;
+  }
   const total = state.plan.pricing.freeReworkQuota;
   const left = Math.max(0, state.freeReworkRemaining);
   const used = Math.max(0, total - left);
@@ -1069,6 +1206,41 @@ function renderReworkBanner() {
     <b>${left ? `免费换版剩余 ${left}/${total} 张` : "免费换版已用完"}</b>
     <span>${left ? `已使用 ${used} 张，用完后每次 ${price} 积分/张` : `继续换一版将扣 ${price} 积分/张`}</span>
   `;
+}
+
+async function retryFailedGeneration(itemIndexes = []) {
+  if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
+  if (state.busy) return toast("请等待当前任务完成");
+  const jobId = state.plan.generation?.jobId || state.activeJobId;
+  if (!jobId) return toast("没有可重试的正式生图任务");
+  const failedIndexes = itemIndexes.length
+    ? itemIndexes
+    : state.plan.results
+      .filter(row => isFailedGeneration(row))
+      .map(row => Number(row.generation?.itemIndex || row.row || 0))
+      .filter(Boolean);
+  if (!failedIndexes.length) return toast("当前没有失败项需要重试");
+  const token = beginBusy("confirm-generate", "正在重试失败项", `正在重试 ${failedIndexes.length} 张失败图片`);
+  try {
+    const response = await retryGenerationJob(jobId, {
+      itemIndexes: failedIndexes,
+      limit: failedIndexes.length,
+      paid: true,
+      orderId: state.lastDebitOrderId
+    });
+    updateGenerationJobProgress(response.job, token, "失败项已重新排队");
+    const completed = await pollGenerationJob(jobId, { token, initial: response, orderId: state.lastDebitOrderId });
+    state.plan = generationPlanFromJob(completed.job);
+    state.activeJobId = completed.job.id;
+    state.confirmed = true;
+    const stats = formalPlanStats(state.plan);
+    setProgress(100, formalPlanProgressText(state.plan), 5);
+    renderPlan(true);
+    toast(`重试完成：已完成 ${stats.completed}/${stats.total} 张${stats.failed ? `，仍失败 ${stats.failed} 张` : ""}`);
+  } finally {
+    endBusy(token);
+    setControls();
+  }
 }
 
 function styleName(styleId) {
@@ -1098,13 +1270,18 @@ function previewFailureStatus(status = "") {
   return value.includes("失败") || ["failed", "failure", "error", "cancelled"].includes(value);
 }
 
+function previewWaitingStatus(status = "") {
+  const value = String(status || "").toLowerCase();
+  return value.includes("等待") || waitingGenerationStatuses.has(value);
+}
+
 function normalizePreviewSample(raw = {}, index = 0, options = {}) {
   const generation = raw.generation || {};
   const status = String(raw.status || generation.status || raw.publicStatus || "").toLowerCase();
   const error = raw.error || raw.provider_error || raw.providerError || generation.error || generation.provider_error || generation.providerError || "";
   const imageUrl = raw.imageUrl || raw.image_url || raw.url || raw.candidate?.url || "";
   const completedWithoutImage = !imageUrl && ["succeeded", "success", "completed", "cached"].includes(status);
-  const failed = previewFailureStatus(status) || Boolean(error) || completedWithoutImage || (options.requireImage && !imageUrl);
+  const failed = previewFailureStatus(status) || Boolean(error) || completedWithoutImage || (options.requireImage && !imageUrl && !previewWaitingStatus(status));
   const candidate = failed || !imageUrl
     ? null
     : {
@@ -1136,11 +1313,11 @@ function previewSampleCard(sample, index) {
   const name = sample?.name || `样图 ${index + 1}`;
   const image = sample?.candidate;
   const generation = sample?.generation || {};
-  const status = generation.status === "failed"
+  const status = previewFailureStatus(generation.status)
     ? (generation.error ? `生成失败：${generation.error}` : "生成失败，可重新生成")
-    : generation.status === "pending"
-      ? "生成中"
-      : "待补图";
+    : previewWaitingStatus(generation.status)
+      ? "等待生成"
+      : "等待生成";
   if (!image) {
     return `<div class="preview-sample placeholder missing">
       <b>${esc(name)}</b>
@@ -1150,7 +1327,10 @@ function previewSampleCard(sample, index) {
   }
   return `<div class="preview-sample">
     <b>${esc(name)}</b>
-    <img src="${image.url}" alt="${esc(name)}">
+    <div class="sample-image-shell" data-image-shell>
+      <img src="${image.url}" alt="${esc(name)}" ${imageFallbackAttr()}>
+      <span class="image-error-note">样图加载失败，可重新生成</span>
+    </div>
     <p>免费样图</p>
   </div>`;
 }
@@ -1171,9 +1351,12 @@ function renderStyles() {
   $("#styleBox").innerHTML = styleChoices(p).map(s => {
     const selected = s.id === state.pendingStyle;
     const loading = state.previewLoadingStyle === s.id;
-    const sampleUrl = s.sample?.url || styleFallbackImage(s.uiIndex);
+    const sample = validImageCandidate(s.sample);
     return `<button class="style ${selected ? "active" : ""} ${loading ? "is-loading" : ""}" data-style="${s.id}" type="button">
-      <img src="${sampleUrl}" alt="${esc(s.uiName)}" ${imageFallbackAttr(s.uiIndex)}>
+      <div class="style-media ${sample ? "" : "missing"}" data-image-shell>
+        ${sample ? `<img src="${sample.url}" alt="${esc(s.uiName)}" ${imageFallbackAttr()}>` : `<span>等待背景图</span>`}
+        <span class="image-error-note">背景图加载失败</span>
+      </div>
       <span class="style-body">
         <b>${esc(s.uiName)}</b>
         <span>整店统一背景 ${s.uiIndex + 1}/6</span>
@@ -1334,20 +1517,26 @@ function renderPreview() {
   const refineLabel = `自定义修改 ${customEditPoints()}积分/张`;
   const card = (row, index) => {
     const rowNo = index + 1;
-    const candidate = isPendingGeneration(row) ? null : (row.candidates || [])[0];
+    const candidate = isPendingGeneration(row) || isFailedGeneration(row) ? null : primaryCandidate(row);
     const checked = state.selectedRows.has(rowNo) ? "checked" : "";
     const status = publicStatus(row);
     const failure = generationFailureMessage(row);
     const saveButton = candidate ? `<button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button>` : "";
+    const retryButton = !candidate && isFailedGeneration(row) && (state.plan.generation?.jobId || state.activeJobId)
+      ? `<button class="retry-row-btn" data-index="${row.generation?.itemIndex || rowNo}" type="button">重试</button>`
+      : "";
+    const editButtons = candidate
+      ? `<button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">${refineLabel}</button>`
+      : retryButton;
     return `<div class="result">
       <label class="select-line"><input type="checkbox" class="row-check" data-row="${rowNo}" ${checked}> 选择</label>
       <div class="result-title">${esc(row.name)}</div>
-      ${candidate ? `<div class="image-wrap"><img src="${candidate.url}" alt="${esc(row.name)}" ${imageFallbackAttr(0)}>${watermarkOverlay(state.menu?.store || "品牌名")}</div>` : `<div class="empty image-empty">${esc(status)}</div>`}
+      ${candidate ? `<div class="image-wrap" data-image-shell><img src="${candidate.url}" alt="${esc(row.name)}" ${imageFallbackAttr()}>${watermarkOverlay(state.menu?.store || "品牌名")}<span class="image-error-note">图片加载失败，可重试生成或稍后导出</span></div>` : `<div class="empty image-empty">${esc(status)}</div>`}
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill ${generationStatusPillClass(row)}">${esc(status)}</span><span class="pill">正式图 ${imagePoints()} 积分/张</span></div>
         ${failure ? `<p class="result-error">${esc(failure)}</p>` : ""}
-        <div class="result-actions">${saveButton}<button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">${refineLabel}</button></div>
+        <div class="result-actions">${saveButton}${editButtons}</div>
       </div>
     </div>`;
   };
@@ -1391,6 +1580,9 @@ function renderPreview() {
   $$(".single-save-btn").forEach(button => {
     button.onclick = () => exportSingle(Number(button.dataset.row), button).catch(e => toast(e.message));
   });
+  $$(".retry-row-btn").forEach(button => {
+    button.onclick = () => retryFailedGeneration([Number(button.dataset.index)]).catch(e => toast(e.message));
+  });
 }
 
 async function uploadMenu() {
@@ -1419,6 +1611,8 @@ async function uploadMenu() {
     state.confirmed = false;
     state.charged = false;
     state.chargedPoints = 0;
+    state.activeJobId = "";
+    state.lastDebitOrderId = "";
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
     state.stylePreviewError = null;
@@ -1445,6 +1639,8 @@ async function startJob(options = {}) {
   state.confirmed = false;
   state.charged = false;
   state.chargedPoints = 0;
+  state.activeJobId = "";
+  state.lastDebitOrderId = "";
   state.freeReworkRemaining = 0;
   state.stylePreview = null;
   state.stylePreviewError = null;
@@ -1475,7 +1671,7 @@ async function confirmStyle() {
   if (!state.deliveryPlatforms.length) return toast("请至少选择一个交付平台");
   if (state.running || state.busy) return toast("请等待当前任务完成");
   const charge = totalCharge();
-  let debitOrderId = "";
+  let debitOrderId = state.lastDebitOrderId || "";
   if (!state.charged && (state.account.balance || 0) < charge) {
     toast(`积分不足，本单需要 ${charge} 积分`);
     openRecharge();
@@ -1497,6 +1693,7 @@ async function confirmStyle() {
         imageCount: state.plan.summary?.total || state.menu?.count || 0
       });
       debitOrderId = debit.orderId;
+      state.lastDebitOrderId = debitOrderId;
       state.charged = true;
       state.chargedPoints = charge;
     }
@@ -1504,30 +1701,22 @@ async function confirmStyle() {
     setControls();
     setProgress(82, "已扣积分，正在创建正式生图任务", 4);
     await new Promise(resolve => setTimeout(resolve, 320));
-    let usedGenerateFinalFallback = false;
-    try {
-      const created = await createGenerationJob({
-        style: state.pendingStyle,
-        quality: state.quality,
-        watermark: watermarkPayload(),
-        platforms: state.deliveryPlatforms,
-        points: charge,
-        orderId: debitOrderId,
-        paid: true
-      });
-      updateGenerationJobProgress(created.job, token, "正式生图任务已创建");
-      const started = await runGenerationJob(created.job.id, { paid: true, orderId: debitOrderId });
-      updateGenerationJobProgress(started.job, token);
-      const completed = await pollGenerationJob(created.job.id, { token, initial: started, orderId: debitOrderId });
-      state.plan = generationPlanFromJob(completed.job);
-    } catch (jobError) {
-      usedGenerateFinalFallback = true;
-      console.warn("Generation jobs API failed, falling back to /api/generate-final", jobError);
-      updateBusy(token, "confirm-generate", "正在使用兼容生成流程", "任务接口暂不可用，已自动切换到原有正式出图流程");
-      setProgress(86, "任务接口暂不可用，正在使用兼容生成流程", 4);
-      state.plan = await generateFinalPlan();
-      state.plan.generation = { ...(state.plan.generation || {}), fallbackMode: "generate-final" };
-    }
+    const created = await createGenerationJob({
+      style: state.pendingStyle,
+      quality: state.quality,
+      watermark: watermarkPayload(),
+      platforms: state.deliveryPlatforms,
+      points: charge,
+      orderId: debitOrderId,
+      paid: true
+    });
+    state.activeJobId = created.job.id;
+    updateGenerationJobProgress(created.job, token, "正式生图任务已创建");
+    const started = await runGenerationJob(created.job.id, { paid: true, orderId: debitOrderId });
+    updateGenerationJobProgress(started.job, token);
+    const completed = await pollGenerationJob(created.job.id, { token, initial: started, orderId: debitOrderId });
+    state.plan = generationPlanFromJob(completed.job);
+    state.activeJobId = completed.job.id;
     state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
     state.pendingStyle = state.plan.selectedStyle;
@@ -1539,7 +1728,7 @@ async function confirmStyle() {
     renderPlan(true);
     scrollToPanel("#previewPanel");
     const suffix = `，已完成 ${stats.completed}/${stats.total} 张${stats.failed ? `，失败 ${stats.failed} 张` : ""}${stats.pending ? `，待正式生成 ${stats.pending} 张` : ""}`;
-    toast(`已扣 ${charge} 积分${suffix}${usedGenerateFinalFallback ? "，已切换兼容流程" : ""}`);
+    toast(`已扣 ${charge} 积分${suffix}`);
   } catch (error) {
     if (state.charged) {
       if (debitOrderId) {
@@ -1604,6 +1793,9 @@ async function exportImages() {
   const scope = $("#scopeSelect").value;
   const selectedRows = scope === "selected" ? [...state.selectedRows] : [];
   if (scope === "selected" && !selectedRows.length) return toast("请先勾选要导出的图片");
+  if (!hasExportableRows(scope, selectedRows)) {
+    return toast("没有可导出的成图，请等待正式图完成，或只勾选已生成的图片");
+  }
   const platforms = exportPlatforms();
   if (!platforms.length) return;
   const token = beginBusy("export-zip", "正在打包 ZIP", "正在按平台尺寸生成下载包，请勿重复点击");
@@ -1626,6 +1818,9 @@ async function exportSingle(rowNo, button = null) {
   const platforms = exportPlatforms();
   if (!platforms.length) return;
   const row = state.plan?.results?.[rowNo - 1];
+  if (!row || !primaryCandidate(row) || isPendingGeneration(row) || isFailedGeneration(row)) {
+    return toast("这张图片还没有可导出的成图，请等待生成完成或重试失败项");
+  }
   const token = beginBusy("export-single", "正在准备单张保存", `${row?.name || "单张图片"} · 正在生成下载文件`);
   setButtonLoading(button, true, "保存中");
   try {
@@ -1737,7 +1932,10 @@ $("#confirmStyleBtn").onclick = () => confirmStyle().catch(e => toast(e.message)
 $("#selectAllBtn").onclick = () => chooseRows("all");
 $("#selectSingleBtn").onclick = () => chooseRows("single");
 $("#selectComboBtn").onclick = () => chooseRows("combo");
-$("#exportShortcutBtn").onclick = () => scrollToPanel("#exportView");
+$("#exportShortcutBtn").onclick = () => {
+  if (state.confirmed && !hasExportableRows()) toast("暂无可导出的成图，请等待正式图完成或重试失败项");
+  scrollToPanel("#exportView");
+};
 $("#exportZipBtn").onclick = () => exportImages().catch(e => toast(e.message));
 $("#rechargeBtn").onclick = openRecharge;
 $("#closeRechargeBtn").onclick = closeRecharge;
@@ -1829,4 +2027,5 @@ $("#refineModal").onclick = event => {
   if (event.target.id === "refineModal") closeRefine();
 };
 
+refreshLibraryStatus();
 refreshMenuStatus();

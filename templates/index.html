@@ -78,6 +78,13 @@
         <a class="template-link" href="/download-menu-template">下载标准菜单模板</a>
         <span>建议按模板填写，系统会更稳定地识别菜品名、分类、套餐和备注。</span>
       </div>
+      <div id="libraryStatus" class="library-status loading" role="status" aria-live="polite">
+        <span class="library-dot"></span>
+        <div>
+          <b id="libraryStatusTitle">图库状态读取中</b>
+          <small id="libraryStatusDetail">正在检查图库索引和可复用图片</small>
+        </div>
+      </div>
       <div id="menuStatus" class="menu-status">等待选择菜单</div>
     </section>
 
@@ -232,7 +239,7 @@
             <b id="selectedStyleHint">还没有选择风格</b>
             <p id="confirmChargeHint">先生成 6 张免费样图，确认满意后再扣积分生成全部正式图。</p>
           </div>
-          <button id="confirmStyleBtn" class="primary" disabled>确认扣积分，生成正式图</button>
+          <button id="confirmStyleBtn" class="primary" disabled>将扣积分，生成正式图</button>
         </div>
       </div>
     </section>
