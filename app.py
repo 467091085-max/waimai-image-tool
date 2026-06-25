@@ -54,6 +54,16 @@ DEFAULT_LIBRARY_SOURCE_DIRS = [
     "/Users/guiguixiaxia/Documents/cleanpic",
     "/Users/guiguixiaxia/Documents/watermarkpic",
 ]
+REMOTE_LIBRARY_INDEX_ENV_VARS = ("COS_LIBRARY_INDEX_URL", "LIBRARY_INDEX_URL")
+LIBRARY_INDEX_TIMEOUT = int(os.environ.get("LIBRARY_INDEX_TIMEOUT", "12"))
+_REMOTE_MEDIA_URLS: dict[str, str] = {}
+_LIBRARY_INDEX_STATUS: dict[str, Any] = {
+    "remoteIndex": False,
+    "remoteImages": 0,
+    "indexImages": 0,
+    "indexSource": "",
+    "indexError": "",
+}
 POINT_RATE = billing.POINT_RATE
 BASE_IMAGE_POINTS = billing.QUALITY_POINTS["standard"]
 PREMIUM_IMAGE_POINTS = billing.QUALITY_POINTS["premium"]
@@ -109,6 +119,14 @@ class LibraryImage:
     style_id: str
     source: str = "internal"
     reusable: bool = True
+    remote_url: str = ""
+    cos_key: str = ""
+    index_source: str = ""
+    reference_only: bool = False
+    has_brand_watermark: bool = False
+    has_dish_text: bool = False
+    quality_score: float | None = None
+    review_reasons: tuple[str, ...] = ()
 
 
 DEMO_MENU = [
@@ -881,6 +899,237 @@ def safe_filename(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()[:90] or "file"
 
 
+def first_text_value(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def bool_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def configured_library_index_url() -> str:
+    for name in REMOTE_LIBRARY_INDEX_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def configured_library_index_path() -> Path | None:
+    value = os.environ.get("LIBRARY_INDEX_PATH", "").strip()
+    return Path(value).expanduser() if value else None
+
+
+def index_status_template() -> dict[str, Any]:
+    return {
+        "remoteIndex": False,
+        "remoteImages": 0,
+        "indexImages": 0,
+        "indexSource": "",
+        "indexError": "",
+    }
+
+
+def library_index_status_snapshot() -> dict[str, Any]:
+    return dict(_LIBRARY_INDEX_STATUS)
+
+
+def set_library_index_status(status: dict[str, Any]) -> None:
+    _LIBRARY_INDEX_STATUS.clear()
+    _LIBRARY_INDEX_STATUS.update(index_status_template())
+    _LIBRARY_INDEX_STATUS.update(status)
+
+
+def read_jsonl_records(raw: str) -> list[dict[str, Any]]:
+    records = []
+    for line_no, line in enumerate(raw.splitlines(), start=1):
+        text = line.strip()
+        if not text:
+            continue
+        record = json.loads(text)
+        if not isinstance(record, dict):
+            raise ValueError(f"index line {line_no} is not an object")
+        records.append(record)
+    return records
+
+
+def configured_library_index_records() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    status = index_status_template()
+    index_path = configured_library_index_path()
+    index_url = configured_library_index_url()
+    if index_path is not None:
+        status["indexSource"] = str(index_path)
+        try:
+            raw = index_path.read_text(encoding="utf-8")
+            records = read_jsonl_records(raw)
+            status["indexImages"] = len(records)
+            return records, status
+        except Exception as exc:
+            status["indexError"] = f"{type(exc).__name__}: {exc}"
+            return [], status
+    if index_url:
+        status["remoteIndex"] = True
+        status["indexSource"] = index_url
+        try:
+            req = urllib.request.Request(index_url, headers={"User-Agent": "waimai-image-tool/1.0"})
+            with urllib.request.urlopen(req, timeout=LIBRARY_INDEX_TIMEOUT) as resp:
+                raw = resp.read().decode("utf-8")
+            records = read_jsonl_records(raw)
+            status["indexImages"] = len(records)
+            return records, status
+        except Exception as exc:
+            status["indexError"] = f"{type(exc).__name__}: {exc}"
+            return [], status
+    return [], status
+
+
+def normalize_index_source(record: dict[str, Any]) -> str:
+    raw = first_text_value(record, "source_kind", "source", "kind", "bucket") or "external"
+    raw_text = f"{raw} {record.get('source_root') or ''} {record.get('relative_path') or ''} {record.get('path') or ''}".lower()
+    text = f"{raw_text} {normalize(raw_text).lower()}"
+    if "watermark" in text or "水印" in text:
+        return "watermark"
+    if "cleanpic" in text or "clean" in text or "可复用" in text:
+        return "clean"
+    return str(raw).strip() or "external"
+
+
+def cos_url_from_key(cos_key: str, record: dict[str, Any]) -> str:
+    if not cos_key:
+        return ""
+    base = first_text_value(record, "cos_base_url", "cdn_base_url", "base_url") or os.environ.get("COS_LIBRARY_BASE_URL", "").strip()
+    if base:
+        return f"{base.rstrip('/')}/{urllib.parse.quote(cos_key.lstrip('/'), safe='/%')}"
+    bucket = first_text_value(record, "cos_bucket", "bucket") or os.environ.get("TENCENT_COS_BUCKET", DEFAULT_TENCENT_COS_BUCKET)
+    region = first_text_value(record, "cos_region", "region") or os.environ.get("TENCENT_COS_REGION", DEFAULT_TENCENT_COS_REGION)
+    if not bucket or not region:
+        return ""
+    return f"https://{bucket}.cos.{region}.myqcloud.com/{urllib.parse.quote(cos_key.lstrip('/'), safe='/%')}"
+
+
+def remote_url_for_index_record(record: dict[str, Any]) -> str:
+    remote_url = first_text_value(record, "remote_url", "url", "public_url", "image_url", "cos_url", "object_url")
+    if remote_url.startswith(("http://", "https://")):
+        return remote_url
+    cos_key = first_text_value(record, "cos_key", "object_key", "key", "path_key")
+    return cos_url_from_key(cos_key, record)
+
+
+def index_record_local_path(record: dict[str, Any]) -> Path | None:
+    path_text = first_text_value(record, "path", "local_path")
+    if path_text:
+        return Path(path_text).expanduser()
+    source_root = first_text_value(record, "source_root", "root")
+    relative_path = first_text_value(record, "relative_path", "rel_path")
+    if source_root and relative_path:
+        return Path(source_root).expanduser() / relative_path
+    return None
+
+
+def suffix_for_index_record(record: dict[str, Any], remote_url: str, local_path: Path | None) -> str:
+    suffix = first_text_value(record, "suffix", "extension", "ext").lower()
+    if not suffix and local_path is not None:
+        suffix = local_path.suffix.lower()
+    if not suffix and remote_url:
+        suffix = Path(urllib.parse.urlsplit(remote_url).path).suffix.lower()
+    if suffix and not suffix.startswith("."):
+        suffix = f".{suffix}"
+    return suffix if suffix in IMAGE_EXTS else ".jpg"
+
+
+def remote_library_path(image_id: str, dish: str, suffix: str, cos_key: str) -> Path:
+    name_source = Path(cos_key).name if cos_key else f"{safe_filename(dish or image_id)}{suffix}"
+    name = safe_filename(Path(name_source).stem) + suffix
+    return Path("__remote_library__") / image_id / name
+
+
+def register_remote_media(path: Path, remote_url: str) -> None:
+    if remote_url:
+        _REMOTE_MEDIA_URLS[str(path)] = remote_url
+
+
+def library_image_url(image: LibraryImage) -> str:
+    if image.remote_url:
+        return image.remote_url
+    return media_url_for_path(image.path)
+
+
+def library_image_available(image: LibraryImage) -> bool:
+    return bool(image.remote_url) or image.path.exists()
+
+
+def library_image_from_index_record(record: dict[str, Any], index_source: str) -> LibraryImage | None:
+    dish = first_text_value(record, "dish", "dish_name", "dishName", "name", "title") or Path(first_text_value(record, "relative_path", "path")).stem
+    norm = first_text_value(record, "norm", "normalized", "normalized_dish") or normalize(dish)
+    if not dish or not norm:
+        return None
+    source = normalize_index_source(record)
+    store = first_text_value(record, "store", "store_name", "shop", "shop_name") or "remote"
+    style_id = first_text_value(record, "style_id", "styleId", "style") or stable_style_id(store, source)
+    remote_url = remote_url_for_index_record(record)
+    cos_key = first_text_value(record, "cos_key", "object_key", "key", "path_key")
+    local_path = index_record_local_path(record)
+    if not remote_url and (local_path is None or not local_path.exists()):
+        return None
+    suffix = suffix_for_index_record(record, remote_url, local_path)
+    image_id = first_text_value(record, "image_id", "imageId", "id")
+    if not image_id:
+        seed = remote_url or (str(local_path) if local_path is not None else f"{source}:{store}:{dish}")
+        image_id = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:18]
+    reference_only = bool_value(record.get("reference_only"), False)
+    reusable = bool_value(record.get("reusable"), not reference_only)
+    if source == "watermark":
+        reference_only = True
+        reusable = False
+    if reference_only:
+        reusable = False
+    path = remote_library_path(image_id, dish, suffix, cos_key) if remote_url else local_path
+    if path is None:
+        return None
+    register_remote_media(path, remote_url)
+    review_reasons_value = record.get("review_reasons") or record.get("reviewReasons") or []
+    review_reasons = tuple(str(item) for item in review_reasons_value) if isinstance(review_reasons_value, list) else ()
+    quality_score = record.get("quality_score")
+    try:
+        parsed_quality_score = float(quality_score) if quality_score is not None else None
+    except (TypeError, ValueError):
+        parsed_quality_score = None
+    return LibraryImage(
+        image_id=image_id,
+        path=path,
+        store=store,
+        dish=dish,
+        norm=norm,
+        grams=grams(norm),
+        style_id=style_id,
+        source=source,
+        reusable=reusable,
+        remote_url=remote_url,
+        cos_key=cos_key,
+        index_source=index_source,
+        reference_only=reference_only,
+        has_brand_watermark=bool_value(record.get("has_brand_watermark"), source == "watermark"),
+        has_dish_text=bool_value(record.get("has_dish_text"), False),
+        quality_score=parsed_quality_score,
+        review_reasons=review_reasons,
+    )
+
+
 def draw_demo_image(path: Path, dish: str, style_id: str) -> None:
     style_name = STYLE_COLORS.get(style_id, ("统一出图风格", None, None))[0]
     bg = style_color_for(style_id)
@@ -992,6 +1241,8 @@ def parse_menu(path: Path | None = None) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def library_images() -> list[LibraryImage]:
+    _REMOTE_MEDIA_URLS.clear()
+    set_library_index_status(index_status_template())
     ensure_demo_data()
     images = []
     has_seed_library = any(path.is_dir() and path.name.startswith("seed_") for path in LIBRARY_DIR.iterdir())
@@ -1029,6 +1280,15 @@ def library_images() -> list[LibraryImage]:
             style_id = stable_style_id(store, source)
             image_id = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:18]
             images.append(LibraryImage(image_id, path, store, dish, norm, grams(norm), style_id, source, reusable))
+    index_records, index_status = configured_library_index_records()
+    index_images: list[LibraryImage] = []
+    for record in index_records:
+        image = library_image_from_index_record(record, str(index_status.get("indexSource") or ""))
+        if image is not None:
+            index_images.append(image)
+    images.extend(index_images)
+    index_status["remoteImages"] = sum(1 for image in index_images if image.remote_url)
+    set_library_index_status(index_status)
     return images
 
 
@@ -1077,7 +1337,10 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
             "styleName": image_style_name(image),
             "source": image.source,
             "reusable": image.reusable,
-            "url": media_url_for_path(image.path),
+            "referenceOnly": image.reference_only,
+            "remoteUrl": image.remote_url,
+            "cosKey": image.cos_key,
+            "url": library_image_url(image),
             "path": str(image.path),
         }
         for score, image in scored[:limit]
@@ -1097,6 +1360,9 @@ def component_matches(item: dict[str, Any], library: list[LibraryImage], limit: 
 
 
 def media_url_for_path(path: Path) -> str:
+    remote_url = _REMOTE_MEDIA_URLS.get(str(path))
+    if remote_url:
+        return remote_url
     try:
         return f"/media/{path.relative_to(LIBRARY_DIR).as_posix()}"
     except ValueError:
@@ -1126,7 +1392,10 @@ def candidate_from_library_image(image: LibraryImage, score: float = 100.0) -> d
     candidate["store"] = image.store
     candidate["source"] = image.source
     candidate["reusable"] = image.reusable
-    candidate["url"] = media_url_for_path(image.path)
+    candidate["referenceOnly"] = image.reference_only
+    candidate["remoteUrl"] = image.remote_url
+    candidate["cosKey"] = image.cos_key
+    candidate["url"] = library_image_url(image)
     candidate["path"] = str(image.path)
     candidate["generated"] = False
     return candidate
@@ -1177,7 +1446,7 @@ def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
         if image.style_id == style_id
         and image.reusable
         and image.store != "demo_store"
-        and image.path.exists()
+        and library_image_available(image)
     ]
     if not images:
         return None
@@ -1194,7 +1463,7 @@ def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
 def library_style_scores() -> dict[str, dict[str, Any]]:
     scores: dict[str, dict[str, Any]] = {}
     for image in library_images():
-        if not image.reusable or image.store == "demo_store" or not image.path.exists():
+        if not image.reusable or image.store == "demo_store" or not library_image_available(image):
             continue
         sample_rank = style_sample_rank(image)[0]
         if sample_rank < -80:
@@ -3048,10 +3317,14 @@ def api_library_status():
     library = library_images()
     sources: dict[str, int] = {}
     reusable = 0
+    remote_images = 0
     for image in library:
         sources[image.source] = sources.get(image.source, 0) + 1
         if image.reusable:
             reusable += 1
+        if image.remote_url:
+            remote_images += 1
+    index_status = library_index_status_snapshot()
     return jsonify(
         {
             "total": len(library),
@@ -3060,6 +3333,11 @@ def api_library_status():
             "stores": len({image.store for image in library}),
             "styles": len({image.style_id for image in library}),
             "externalDirs": [str(path) for path in configured_library_dirs()],
+            "remoteIndex": bool(index_status.get("remoteIndex")),
+            "remoteImages": remote_images,
+            "indexImages": int(index_status.get("indexImages") or 0),
+            "indexSource": str(index_status.get("indexSource") or ""),
+            "indexError": str(index_status.get("indexError") or ""),
         }
     )
 
