@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import re
 import sys
 import tempfile
@@ -21,6 +22,7 @@ DEFAULT_PLATFORMS = ["meituan", "taobao", "jd"]
 DEFAULT_LOCAL_URL = "http://127.0.0.1:8790"
 DEFAULT_RENDER_URL = "https://waimai-image-tool-1.onrender.com"
 DEFAULT_REPORT_DIR = Path("data") / "exports" / "acceptance"
+LIVE_ENV_VAR = "WAIMAI_ACCEPTANCE_LIVE"
 MENU_ROWS = [
     ["分类", "菜品名", "价格", "类型", "套餐内容/规格", "备注"],
     ["热销", "老长沙辣椒炒肉盖码饭", "19.8", "单品", "", "smoke"],
@@ -192,6 +194,7 @@ def run_product_flow(
     limit: int = 0,
     live_generate: bool = False,
     materialize_free_samples: bool = False,
+    billing_check: bool = True,
 ) -> dict[str, Any]:
     started_at = utc_now()
     log = StepLog()
@@ -271,7 +274,22 @@ def run_product_flow(
             "library_status",
             library_ok,
             http_status=library_status["status"],
-            fields=compact_fields(library_data, ["total", "reusable", "stores", "styles", "sources", "externalDirs"]),
+            fields=compact_fields(
+                library_data,
+                [
+                    "total",
+                    "reusable",
+                    "stores",
+                    "styles",
+                    "sources",
+                    "externalDirs",
+                    "remoteIndex",
+                    "remoteImages",
+                    "indexImages",
+                    "indexSource",
+                    "indexError",
+                ],
+            ),
             reason="" if library_ok else library_status["error"] or "library has no reusable product images",
         )
 
@@ -345,6 +363,7 @@ def run_product_flow(
         plan_ok = not plan_response["error"] and isinstance(styles, list) and isinstance(results, list) and len(results) > 0
         pricing = plan.get("pricing") if isinstance(plan, dict) and isinstance(plan.get("pricing"), dict) else {}
         quote = plan.get("quote") if isinstance(plan, dict) and isinstance(plan.get("quote"), dict) else {}
+        custom_edit_points = int_or_zero(pricing.get("customEditPoints"))
         plan_fields = {
             "styleCount": len(styles) if isinstance(styles, list) else 0,
             "resultCount": len(results) if isinstance(results, list) else 0,
@@ -359,6 +378,19 @@ def run_product_flow(
             http_status=plan_response["status"],
             fields=plan_fields,
             reason="" if plan_ok else plan_response["error"] or "plan is missing styles or menu results",
+        )
+
+        single_modify_contract_ok = (
+            plan_ok
+            and custom_edit_points > 0
+            and int_or_zero(pricing.get("previewFreeImages")) >= 6
+            and "customEditCash" in pricing
+        )
+        log.add(
+            "single_modify_contract",
+            single_modify_contract_ok,
+            fields=compact_fields(pricing, ["previewFreeImages", "customEditPoints", "customEditCash", "freeReworkQuota"]),
+            reason="" if single_modify_contract_ok else "pricing must expose six free samples and a custom edit price",
         )
 
         menu_counts = kind_counts_from_results(results if isinstance(results, list) else [])
@@ -377,6 +409,22 @@ def run_product_flow(
                 "summary": (plan or {}).get("summary") if isinstance(plan, dict) else {},
             },
             reason="" if menu_summary_ok else "plan must include single items, combo items, total count, and points",
+        )
+
+        preview_contract = result_preview_contract(results if isinstance(results, list) else [])
+        preview_contract_ok = (
+            plan_ok
+            and preview_contract["total"] > 0
+            and preview_contract["single"] > 0
+            and preview_contract["combo"] > 0
+            and preview_contract["rowsWithStatus"] == preview_contract["total"]
+            and preview_contract["rowsWithAction"] == preview_contract["total"]
+        )
+        log.add(
+            "result_preview_contract",
+            preview_contract_ok,
+            fields=preview_contract,
+            reason="" if preview_contract_ok else "formal preview rows must be grouped and expose status/action fields",
         )
 
         if isinstance(styles, list):
@@ -515,6 +563,16 @@ def run_product_flow(
         else:
             log.add("job_create", False, reason="skipped because no style was selected", skipped=True)
 
+        add_billing_acceptance_steps(
+            log,
+            client,
+            enabled=billing_check,
+            points_value=points_value,
+            custom_edit_points=custom_edit_points,
+            selected_style=selected_style,
+            selected_row_details=selected_row_details,
+        )
+
         effective_limit = min(max(int_or_zero(limit), 0), max(len(selected_rows), 1), 1)
         if live_generate and job_id and effective_limit > 0:
             run_payload = {
@@ -580,6 +638,24 @@ def run_product_flow(
                 reason="not run by default; pass --live-generate --limit 1 to run one formal image",
             )
 
+        single_export_rows = single_export_row_selection(results if isinstance(results, list) else [])
+        single_export_result = run_export_check(
+            client,
+            selected_style=selected_style,
+            scope="selected",
+            selected_rows=single_export_rows,
+            live_generate=live_generate,
+        )
+        export_artifacts.append(single_export_result.get("artifact", {}))
+        log.add(
+            "single_image_export",
+            bool(single_export_result["ok"]),
+            skipped=bool(single_export_result.get("skipped")),
+            http_status=single_export_result.get("httpStatus"),
+            fields=single_export_result.get("fields"),
+            reason=str(single_export_result.get("reason") or ""),
+        )
+
         for scope in ("all", "single", "combo"):
             export_result = run_export_check(
                 client,
@@ -614,6 +690,7 @@ def run_product_flow(
             "styleFirst": style_first,
             "liveGenerate": live_generate,
             "materializeFreeSamples": materialize_free_samples,
+            "billingCheck": billing_check,
             "limit": limit,
             "effectiveLiveLimit": min(max(int_or_zero(limit), 0), 1),
             "menuFile": str(menu_file) if menu_file else "generated",
@@ -658,6 +735,10 @@ def normalize_base_url(value: str | None) -> tuple[str, str]:
     raise ValueError(
         f"Invalid --base-url {raw!r}. Use 'local', 'render', or a full URL such as {DEFAULT_LOCAL_URL}."
     )
+
+
+def env_flag_enabled(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def prepare_menu_uploads(
@@ -711,6 +792,36 @@ def kind_counts_from_results(results: list[Any]) -> dict[str, int]:
     return counts
 
 
+def result_preview_contract(results: list[Any]) -> dict[str, Any]:
+    counts = kind_counts_from_results(results)
+    rows_with_status = 0
+    rows_with_action = 0
+    rows_with_candidate = 0
+    first_image_url = ""
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("publicStatus") or row.get("status") or "").strip():
+            rows_with_status += 1
+        if str(row.get("backgroundAction") or "").strip():
+            rows_with_action += 1
+        image_url = find_url(row.get("candidates"))
+        if image_url:
+            rows_with_candidate += 1
+            if not first_image_url:
+                first_image_url = image_url
+    return {
+        "total": len([row for row in results if isinstance(row, dict)]),
+        "single": counts["single"],
+        "combo": counts["combo"],
+        "other": counts["other"],
+        "rowsWithStatus": rows_with_status,
+        "rowsWithAction": rows_with_action,
+        "rowsWithPreviewCandidate": rows_with_candidate,
+        "firstImageUrl": first_image_url,
+    }
+
+
 def points_total_from_plan(plan: dict[str, Any] | None) -> int | None:
     if not isinstance(plan, dict):
         return None
@@ -722,6 +833,154 @@ def points_total_from_plan(plan: dict[str, Any] | None) -> int | None:
     if isinstance(results, list):
         return sum(int_or_zero(row.get("points")) for row in results if isinstance(row, dict))
     return None
+
+
+def single_export_row_selection(results: list[Any]) -> list[int]:
+    for index, row in enumerate(results, start=1):
+        if isinstance(row, dict) and str(row.get("kind") or "") in {"单品", "single"}:
+            return [index]
+    return [1] if results else []
+
+
+def add_billing_acceptance_steps(
+    log: StepLog,
+    client: Any,
+    *,
+    enabled: bool,
+    points_value: int | None,
+    custom_edit_points: int,
+    selected_style: str,
+    selected_row_details: list[dict[str, Any]],
+) -> None:
+    if not enabled:
+        skipped_fields = {"billingCheck": False}
+        for step_name in ("billing_recharge", "billing_formal_debit", "single_modify_debit"):
+            log.add(step_name, True, skipped=True, fields=skipped_fields, reason="billing check disabled")
+        return
+    if points_value is None or custom_edit_points <= 0:
+        skipped_fields = {"points": points_value, "customEditPoints": custom_edit_points}
+        for step_name in ("billing_recharge", "billing_formal_debit", "single_modify_debit"):
+            log.add(step_name, True, skipped=True, fields=skipped_fields, reason="billing check skipped because pricing/points were unavailable")
+        return
+
+    user_id = f"smoke-render-qa-{uuid.uuid4().hex[:10]}"
+    run_id = uuid.uuid4().hex[:12]
+    formal_points = max(1, int_or_zero(points_value))
+    edit_points = max(1, int_or_zero(custom_edit_points))
+    recharge_points = max(100, formal_points + edit_points)
+    row_detail = selected_row_details[0] if selected_row_details else {}
+
+    recharge_payload = {
+        "userId": user_id,
+        "orderId": f"smoke-recharge-{run_id}",
+        "points": recharge_points,
+    }
+    recharge = request_json(client, "POST", "/api/recharge", payload=recharge_payload)
+    recharge_data = recharge["data"] if isinstance(recharge["data"], dict) else {}
+    recharge_balance = account_balance(recharge_data)
+    recharge_ok = not recharge["error"] and recharge_data.get("ok") is True and recharge_balance >= recharge_points
+    log.add(
+        "billing_recharge",
+        recharge_ok,
+        http_status=recharge["status"],
+        fields={
+            "userId": user_id,
+            "points": recharge_points,
+            "balance": recharge_balance,
+            **transaction_fields(recharge_data),
+        },
+        reason="" if recharge_ok else recharge["error"] or "recharge response did not credit the smoke account",
+    )
+    if not recharge_ok:
+        for step_name in ("billing_formal_debit", "single_modify_debit"):
+            log.add(step_name, True, skipped=True, fields={"userId": user_id}, reason="billing recharge failed")
+        return
+
+    formal_payload = {
+        "userId": user_id,
+        "orderId": f"smoke-formal-debit-{run_id}",
+        "points": formal_points,
+        "description": "正式出图验收扣费",
+        "metadata": {"style": selected_style, "source": "v6-render-acceptance"},
+    }
+    formal = request_json(client, "POST", "/api/debit", payload=formal_payload)
+    formal_data = formal["data"] if isinstance(formal["data"], dict) else {}
+    formal_balance = account_balance(formal_data)
+    formal_ok = (
+        not formal["error"]
+        and formal_data.get("ok") is True
+        and transaction_points(formal_data) == formal_points
+        and formal_balance == recharge_balance - formal_points
+    )
+    log.add(
+        "billing_formal_debit",
+        formal_ok,
+        http_status=formal["status"],
+        fields={
+            "userId": user_id,
+            "points": formal_points,
+            "balanceBefore": recharge_balance,
+            "balance": formal_balance,
+            **transaction_fields(formal_data),
+        },
+        reason="" if formal_ok else formal["error"] or "formal generation debit did not reduce balance by expected points",
+    )
+    if not formal_ok:
+        log.add("single_modify_debit", True, skipped=True, fields={"userId": user_id}, reason="formal debit failed")
+        return
+
+    edit_payload = {
+        "userId": user_id,
+        "orderId": f"smoke-custom-edit-{run_id}",
+        "points": edit_points,
+        "description": "自定义修改验收扣费",
+        "metadata": {
+            "style": selected_style,
+            "row": row_detail.get("row") or row_detail.get("index") or 1,
+            "dish": row_detail.get("name") or "smoke-dish",
+            "source": "v6-render-acceptance",
+        },
+    }
+    edit = request_json(client, "POST", "/api/debit", payload=edit_payload)
+    edit_data = edit["data"] if isinstance(edit["data"], dict) else {}
+    edit_balance = account_balance(edit_data)
+    edit_ok = (
+        not edit["error"]
+        and edit_data.get("ok") is True
+        and transaction_points(edit_data) == edit_points
+        and edit_balance == formal_balance - edit_points
+    )
+    log.add(
+        "single_modify_debit",
+        edit_ok,
+        http_status=edit["status"],
+        fields={
+            "userId": user_id,
+            "points": edit_points,
+            "balanceBefore": formal_balance,
+            "balance": edit_balance,
+            "row": edit_payload["metadata"]["row"],
+            "dish": edit_payload["metadata"]["dish"],
+            **transaction_fields(edit_data),
+        },
+        reason="" if edit_ok else edit["error"] or "custom edit debit did not reduce balance by expected points",
+    )
+
+
+def account_balance(data: dict[str, Any]) -> int:
+    account = data.get("account") if isinstance(data.get("account"), dict) else {}
+    transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
+    return int_or_zero(account.get("balance") if account else transaction.get("balance"))
+
+
+def transaction_points(data: dict[str, Any]) -> int:
+    transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
+    return int_or_zero(transaction.get("points"))
+
+
+def transaction_fields(data: dict[str, Any]) -> dict[str, Any]:
+    transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
+    return compact_fields(transaction, ["orderId", "eventType", "description", "idempotent"])
 
 
 def choose_generation_rows(results: list[Any], selected_style: str) -> tuple[list[int], list[dict[str, Any]]]:
@@ -1267,7 +1526,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         epilog=f"""Examples:
   python3 scripts/smoke_product_flow.py --base-url local --no-live-generate
   python3 scripts/smoke_product_flow.py --base-url render --no-live-generate
-  python3 scripts/smoke_product_flow.py --base-url https://your-render-app.onrender.com --live-generate --limit 1
+  {LIVE_ENV_VAR}=1 python3 scripts/smoke_product_flow.py --base-url https://your-render-app.onrender.com --live-generate --limit 1
 
 Base URL aliases:
   local  -> {DEFAULT_LOCAL_URL}
@@ -1282,6 +1541,7 @@ Base URL aliases:
     parser.add_argument("--live-generate", dest="live_generate", action="store_true", help="Actually run one formal image when --limit is greater than 0.")
     parser.add_argument("--no-live-generate", dest="live_generate", action="store_false", help="Dry-run only; never call /api/jobs/<id>/run.")
     parser.add_argument("--generate-free-samples", action="store_true", help="Call the six free preview sample endpoints for the selected style.")
+    parser.add_argument("--skip-billing-check", action="store_true", help="Skip smoke recharge/debit checks against the local ledger API.")
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR), help="Directory for JSON and Markdown acceptance artifacts.")
     parser.add_argument("--json-output", help="Explicit JSON report path.")
     parser.add_argument("--markdown-output", help="Explicit Markdown report path.")
@@ -1298,6 +1558,31 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
+    if args.live_generate:
+        if args.limit != 1:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "live generation requires --limit 1 to avoid accidental batch quota usage",
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        if not env_flag_enabled(LIVE_ENV_VAR):
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"set {LIVE_ENV_VAR}=1 and pass --live-generate --limit 1 to run provider-backed live checks",
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return 2
     client = UrllibProductClient(base_url, timeout=args.timeout)
     report = run_product_flow(
         client,
@@ -1308,6 +1593,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         live_generate=args.live_generate,
         materialize_free_samples=args.generate_free_samples,
+        billing_check=not args.skip_billing_check,
     )
     artifacts = write_acceptance_artifacts(
         report,
