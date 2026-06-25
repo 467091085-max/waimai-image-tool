@@ -31,8 +31,10 @@ from matching_engine import (
     classify_kind as engine_classify_kind,
     grams as engine_grams,
     normalize_dish,
+    semantic_family as engine_semantic_family,
     similarity as engine_similarity,
     split_components as engine_split_components,
+    strict_match_allowed as engine_strict_match_allowed,
 )
 from menu_parser import parse_menu as parse_excel_menu
 
@@ -843,12 +845,10 @@ def has_sample_bad_word(text: str, words: tuple[str, ...]) -> bool:
 
 
 def semantic_family(name: str, norm: str) -> str:
-    text = f"{name}{norm}"
-    if has_any_word(text, BEVERAGE_WORDS):
-        return "beverage"
-    if has_any_word(text, SOUP_WORDS):
-        return "soup"
-    return "food"
+    family = engine_semantic_family(name, norm)
+    if family in {"main_dish", "rice_noodle", "noodle", "porridge"}:
+        return "food"
+    return family
 
 
 def significant_bigrams(norm: str) -> set[str]:
@@ -867,23 +867,7 @@ def is_generic_match_name(name: str, norm: str) -> bool:
 def strict_match_allowed(menu_name: str, image_name: str, menu_norm: str, image_norm: str, score: float) -> bool:
     if score < STRICT_MATCH_MIN_SCORE:
         return False
-    if not menu_norm or not image_norm:
-        return False
-    if is_generic_match_name(image_name, image_norm):
-        return False
-    menu_family = semantic_family(menu_name, menu_norm)
-    image_family = semantic_family(image_name, image_norm)
-    if menu_family != image_family:
-        return False
-    if menu_norm == image_norm or menu_norm in image_norm or image_norm in menu_norm:
-        return True
-    menu_bigrams = significant_bigrams(menu_norm)
-    image_bigrams = significant_bigrams(image_norm)
-    if menu_bigrams & image_bigrams:
-        return True
-    common_chars = set(menu_norm) & set(image_norm)
-    char_overlap = len(common_chars) / max(1, min(len(set(menu_norm)), len(set(image_norm))))
-    return bool(score >= 0.72 and char_overlap >= 0.5)
+    return engine_strict_match_allowed(menu_name, image_name, menu_norm, image_norm, score)
 
 
 def safe_filename(name: str) -> str:

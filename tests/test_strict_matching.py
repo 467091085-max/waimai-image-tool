@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 import app as app_module
+from matching_engine import match_menu_to_library
 
 
 def make_image(path: Path) -> None:
@@ -22,7 +23,9 @@ class StrictMatchingTests(unittest.TestCase):
             wrong_rice = root / "style-1" / "一碗米饭.jpg"
             wrong_prompt = root / "style-1" / "北京炒合菜提示勿点.jpg"
             right_drink = root / "style-2" / "金桔柠檬水.jpg"
-            for path in (wrong_snack, wrong_rice, wrong_prompt, right_drink):
+            right_rice_noodle = root / "style-1" / "柳州螺蛳粉.jpg"
+            fallback_rice_noodle = root / "style-1" / "桂林米粉.jpg"
+            for path in (wrong_snack, wrong_rice, wrong_prompt, right_drink, right_rice_noodle, fallback_rice_noodle):
                 make_image(path)
             library = [
                 app_module.LibraryImage("wrong-snack", wrong_snack, "测试店", "黄乐条", app_module.normalize("黄乐条"), app_module.grams(app_module.normalize("黄乐条")), "style-1"),
@@ -37,19 +40,25 @@ class StrictMatchingTests(unittest.TestCase):
                     "style-1",
                 ),
                 app_module.LibraryImage("right-drink", right_drink, "测试店", "金桔柠檬水", app_module.normalize("金桔柠檬水"), app_module.grams(app_module.normalize("金桔柠檬水")), "style-2"),
+                app_module.LibraryImage("right-rice-noodle", right_rice_noodle, "测试店", "柳州螺蛳粉", app_module.normalize("柳州螺蛳粉"), app_module.grams(app_module.normalize("柳州螺蛳粉")), "style-1"),
+                app_module.LibraryImage("fallback-rice-noodle", fallback_rice_noodle, "测试店", "桂林米粉", app_module.normalize("桂林米粉"), app_module.grams(app_module.normalize("桂林米粉")), "style-1"),
             ]
 
             drink_item = {"row": 1, "name": "手打金桔柠檬水", "norm": app_module.normalize("手打金桔柠檬水")}
             food_item = {"row": 2, "name": "北京炒合菜", "norm": app_module.normalize("北京炒合菜")}
             crisp_item = {"row": 3, "name": "火爆双脆", "norm": app_module.normalize("火爆双脆")}
+            rice_noodle_item = {"row": 4, "name": "经典螺蛳粉", "norm": app_module.normalize("经典螺蛳粉")}
 
             drink_candidates = app_module.top_candidates(drink_item, library)
             food_candidates = app_module.top_candidates(food_item, library)
             crisp_candidates = app_module.top_candidates(crisp_item, library)
+            rice_noodle_candidates = app_module.top_candidates(rice_noodle_item, library)
 
             self.assertEqual([c["dishName"] for c in drink_candidates], ["金桔柠檬水"])
             self.assertEqual(food_candidates, [])
             self.assertEqual(crisp_candidates, [])
+            self.assertEqual(rice_noodle_candidates[0]["dishName"], "柳州螺蛳粉")
+            self.assertNotIn("一碗米饭", [c["dishName"] for c in rice_noodle_candidates])
 
     def test_close_alias_still_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +103,25 @@ class StrictMatchingTests(unittest.TestCase):
                 candidates = app_module.top_candidates(item, library)
                 self.assertEqual(candidates[0]["dishName"], image_name)
                 self.assertGreaterEqual(candidates[0]["score"], 70)
+
+    def test_low_confidence_results_return_no_match_needs_ai(self) -> None:
+        records = [
+            {"imageId": "rice", "dishName": "一碗米饭", "styleId": "style-1", "source": "sample"},
+            {"imageId": "drink", "dishName": "金桔柠檬水", "styleId": "style-1", "source": "sample"},
+            {"imageId": "addon", "dishName": "加鸡蛋", "styleId": "style-1", "source": "sample"},
+        ]
+        items = [
+            {"row": 1, "name": "火爆双脆"},
+            {"row": 2, "name": "北京炒合菜"},
+            {"row": 3, "name": "餐具"},
+        ]
+
+        results = match_menu_to_library(items, records, selected_style="style-1")
+
+        for row in results:
+            self.assertEqual(row["candidates"], [])
+            self.assertEqual(row["matchStatus"], "no_match")
+            self.assertTrue(row["needsAi"])
 
 
 if __name__ == "__main__":

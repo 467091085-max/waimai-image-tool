@@ -29,7 +29,11 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
         self.assertEqual(classify_kind("康师傅冰红茶"), "饮品/小食")
         self.assertEqual(classify_kind("手打金桔柠檬水"), "饮品/小食")
         self.assertEqual(classify_kind("香干炒肉盖码饭"), "单品")
+        self.assertEqual(classify_kind("一碗米饭"), "饮品/小食")
+        self.assertEqual(classify_kind("餐具"), "其他")
         self.assertEqual(semantic_family("一碗米饭", normalize_dish("一碗米饭")), "plain_rice")
+        self.assertEqual(semantic_family("经典螺蛳粉", normalize_dish("经典螺蛳粉")), "rice_noodle")
+        self.assertEqual(split_components("辣椒炒肉+米饭+餐具+茄子肉末套餐"), ["辣椒炒肉", "茄子肉末"])
 
     def test_similarity_scores_aliases_higher_than_unrelated_dishes(self) -> None:
         alias_score = similarity("老长沙辣椒炒肉盖码饭", "辣椒小炒肉盖饭")
@@ -46,11 +50,14 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
             {"imageId": "rice", "dishName": "一碗米饭", "styleId": "style-1", "source": "sample"},
             {"imageId": "prompt", "dishName": "北京炒合菜提示勿点", "styleId": "style-1", "source": "sample"},
             {"imageId": "beijing", "dishName": "北京炒合菜", "styleId": "style-1", "source": "sample"},
+            {"imageId": "noodle", "dishName": "柳州螺蛳粉", "styleId": "style-1", "source": "sample"},
+            {"imageId": "rice-noodle-fallback", "dishName": "桂林米粉", "styleId": "style-1", "source": "sample"},
         ]
         items = [
             {"row": 1, "name": "手打金桔柠檬水"},
             {"row": 2, "name": "火爆双脆"},
             {"row": 3, "name": "北京炒合菜"},
+            {"row": 4, "name": "经典螺蛳粉"},
         ]
 
         results = match_menu_to_library(items, records, selected_style="style-1")
@@ -58,7 +65,11 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
 
         self.assertEqual([c["dishName"] for c in by_name["手打金桔柠檬水"]["candidates"]], ["金桔柠檬水"])
         self.assertEqual(by_name["火爆双脆"]["candidates"], [])
+        self.assertEqual(by_name["火爆双脆"]["matchStatus"], "no_match")
+        self.assertTrue(by_name["火爆双脆"]["needsAi"])
         self.assertEqual([c["dishName"] for c in by_name["北京炒合菜"]["candidates"]], ["北京炒合菜"])
+        self.assertEqual(by_name["经典螺蛳粉"]["candidates"][0]["dishName"], "柳州螺蛳粉")
+        self.assertNotIn("一碗米饭", [c["dishName"] for c in by_name["经典螺蛳粉"]["candidates"]])
 
         blocked_pairs = [
             ("金桔柠檬水", "辣椒炒肉"),
@@ -66,6 +77,10 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
             ("火爆双脆", "一碗米饭"),
             ("北京炒合菜", "金桔柠檬水"),
             ("北京炒合菜", "北京炒合菜提示勿点"),
+            ("北京炒合菜", "一碗米饭"),
+            ("螺蛳粉", "一碗米饭"),
+            ("餐具", "辣椒炒肉"),
+            ("加鸡蛋", "辣椒炒肉"),
         ]
         for menu_name, image_name in blocked_pairs:
             menu_norm = normalize_dish(menu_name)

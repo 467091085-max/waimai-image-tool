@@ -16,6 +16,18 @@ DEFAULT_MENU_DIR = Path.home() / "Documents" / "menus"
 KIND_SINGLE = "单品"
 KIND_COMBO = "套餐/组合"
 KIND_SNACK = "饮品/小食"
+KIND_OTHER = "其他"
+
+BASIC_COMBO = "套餐"
+BASIC_BEVERAGE = "饮品"
+BASIC_ADDON = "小料"
+BASIC_STAPLE = "主食"
+BASIC_RICE_NOODLE = "米粉/米线"
+BASIC_NOODLE = "面食/抄手"
+BASIC_PORRIDGE = "粥/汤饭"
+BASIC_MAIN = "炒菜/盖饭"
+BASIC_SNACK = "小吃"
+BASIC_OTHER = "其他"
 
 NAME_HEADERS = {
     "菜单名",
@@ -110,6 +122,197 @@ DISCOURAGED_NAME_PARTS = {
     "配送",
 }
 
+MARKETING_WORDS = (
+    "招牌",
+    "爆款",
+    "热销",
+    "人气",
+    "福利",
+    "特惠",
+    "优惠",
+    "新品",
+    "必点",
+    "推荐",
+    "现炒",
+    "现煎",
+    "秘制",
+    "正宗",
+    "经典",
+    "老长沙",
+    "收藏",
+    "宠粉",
+    "粉丝",
+    "会员",
+    "专享",
+)
+
+PLATFORM_WORDS = (
+    "美团",
+    "饿了么",
+    "大众点评",
+    "外卖",
+    "堂食",
+    "到店",
+    "门店",
+    "下单",
+    "打包",
+    "配送",
+)
+
+SPEC_WORDS = (
+    "大份",
+    "中份",
+    "小份",
+    "超大份",
+    "标准份",
+    "一份",
+    "单份",
+    "微辣",
+    "中辣",
+    "重辣",
+    "特辣",
+    "少辣",
+    "免辣",
+    "不辣",
+    "加辣",
+    "常温",
+    "冰镇",
+    "去冰",
+    "少冰",
+    "正常冰",
+)
+
+FORMAT_WORDS = (
+    "盖码饭",
+    "盖浇饭",
+    "盖饭",
+    "木桶饭",
+    "套餐",
+    "组合",
+    "单人餐",
+    "双人餐",
+)
+
+COMBO_WORDS = (
+    "套餐",
+    "组合",
+    "双拼",
+    "三拼",
+    "四拼",
+    "多拼",
+    "拼盘",
+    "自选",
+    "任选",
+    "多人餐",
+    "单人餐",
+    "双人餐",
+    "大礼包",
+    "全家桶",
+)
+
+BEVERAGE_WORDS = (
+    "可乐",
+    "雪碧",
+    "芬达",
+    "王老吉",
+    "冰红茶",
+    "绿茶",
+    "矿泉水",
+    "纯净水",
+    "椰子水",
+    "豆浆",
+    "果汁",
+    "柠檬水",
+    "柠檬茶",
+    "金桔",
+    "酸梅汤",
+    "奶茶",
+    "咖啡",
+    "酸奶",
+    "冰沙",
+    "饮品",
+    "饮料",
+)
+
+ADDON_WORDS = (
+    "小料",
+    "加料",
+    "配料",
+    "蘸料",
+    "蘸水",
+    "蘸碟",
+    "调料",
+    "酱汁",
+    "料汁",
+    "辣椒包",
+    "生抽包",
+    "醋包",
+    "白糖包",
+    "香菜",
+    "葱花",
+    "蒜粒",
+    "泡菜",
+    "沙拉汁",
+)
+
+ADDON_EXACT_WORDS = {
+    "加鸡蛋",
+    "加煎蛋",
+    "加荷包蛋",
+    "加卤蛋",
+    "加茶叶蛋",
+    "加肠",
+    "加火腿",
+    "加肉",
+    "加粉",
+    "加面",
+}
+
+SERVICE_WORDS = (
+    "餐具",
+    "发票",
+    "纸巾",
+    "打包盒",
+    "包装费",
+    "配送费",
+    "补差价",
+    "差价",
+    "勿点",
+    "勿拍",
+    "不要点",
+    "不要拍",
+    "请勿下单",
+    "温馨提示",
+    "提示",
+    "说明",
+    "公告",
+    "收藏",
+    "福利",
+    "满减",
+    "红包",
+)
+
+PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "珍珠饭", "杂粮饭", "糙米饭", "主食")
+RICE_DISH_WORDS = ("炒饭", "盖饭", "盖码饭", "盖浇饭", "拌饭", "汤饭", "煲仔饭", "木桶饭")
+RICE_NOODLE_WORDS = ("螺蛳粉", "米粉", "米线", "酸辣粉", "河粉", "粉丝", "土豆粉")
+NOODLE_WORDS = ("面", "抄手", "馄饨", "水饺", "饺子", "包子", "烧麦", "肠粉", "云吞")
+PORRIDGE_WORDS = ("粥", "豆汤饭", "汤饭")
+SNACK_WORDS = (
+    "小食",
+    "小吃",
+    "甜品",
+    "茶叶蛋",
+    "溏心蛋",
+    "煎蛋",
+    "荷包蛋",
+    "卤蛋",
+    "锅贴",
+    "汤圆",
+    "凉菜",
+    "卤味",
+    "花生米",
+)
+
 
 @dataclass
 class TableCandidate:
@@ -143,26 +346,35 @@ def clean_header(value: Any) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")).lower())
+
+
+def _is_plain_rice_text(compact: str) -> bool:
+    if not compact:
+        return False
+    if any(word in compact for word in RICE_DISH_WORDS):
+        return False
+    return bool(re.fullmatch(r"(一碗|一份|半份|小份|大份|加|配|赠|送|另加|单点)?(白米饭|米饭|白饭|主食)", compact))
+
+
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
+    compact = re.sub(r"\s+", "", text)
+    if _is_plain_rice_text(compact):
+        return "米饭"
     text = re.sub(r"[【\[].*?[】\]]", "", text)
-    text = re.sub(r"[（(][^）)]{0,30}[）)]", "", text)
-    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|克|g|斤|个|只|份|瓶|罐|串|枚|盒|杯|碗)", "", text)
-    for word in [
-        "招牌",
-        "爆款",
-        "热销",
-        "福利",
-        "收藏",
-        "现炒",
-        "现煎",
-        "盖码饭",
-        "盖浇饭",
-        "木桶饭",
-        "套餐",
-        "单人餐",
-        "米饭",
-    ]:
+    text = re.sub(r"[（(][^）)]{0,40}[）)]", "", text)
+    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|串|枚|盒|杯|碗|两)", "", text)
+    text = re.sub(r"(买一送一|第二份半价|限时|折扣|满减|赠|送)", "", text)
+    text = text.replace("西红柿", "番茄")
+    text = text.replace("番茄炒鸡蛋", "番茄炒蛋")
+    text = text.replace("紫菜鸡蛋汤", "紫菜蛋花汤")
+    text = text.replace("爆炒黄牛肉", "小炒黄牛肉")
+    text = text.replace("辣椒小炒肉", "辣椒炒肉")
+    text = text.replace("农家小炒肉", "辣椒炒肉")
+    text = text.replace("农家一碗香", "一碗香")
+    for word in MARKETING_WORDS + PLATFORM_WORDS + SPEC_WORDS + FORMAT_WORDS:
         text = text.replace(word, "")
     return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
 
@@ -355,69 +567,81 @@ def split_components(name: str, attrs: str) -> list[str]:
         clean = re.sub(r"[（(].*?[）)]", "", clean)
         clean = re.sub(r"^[#\s:：-]+|[#\s:：-]+$", "", clean).strip()
         norm = normalize(clean)
-        if len(norm) < 2 or norm in seen:
+        if len(norm) < 2 or norm in seen or _basic_category_from_text(clean, "", "") in {BASIC_OTHER, BASIC_ADDON, BASIC_STAPLE}:
             continue
         seen.add(norm)
         out.append(clean)
     return out[:8]
 
 
-def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
-    text = unicodedata.normalize("NFKC", f"{category} {name} {attrs}")
-    name_text = unicodedata.normalize("NFKC", f"{category} {name}")
-    combo_words = [
-        "套餐",
-        "组合",
-        "双拼",
-        "三拼",
-        "四拼",
-        "多拼",
-        "自选",
-        "任选",
-        "多人餐",
-        "单人餐",
-        "大礼包",
-        "全家桶",
-        "+",
-    ]
-    if any(word in text for word in combo_words):
-        return KIND_COMBO
+def _has_combo_signal(text: str) -> bool:
+    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋&/／、,，|丨;；]", text))
 
-    snack_words = [
-        "可乐",
-        "雪碧",
-        "芬达",
-        "王老吉",
-        "冰红茶",
-        "矿泉水",
-        "椰子水",
-        "豆浆",
-        "果汁",
-        "柠檬茶",
-        "酸梅汤",
-        "饮品",
-        "饮料",
-        "小食",
-        "小吃",
-        "甜品",
-        "冰沙",
-        "酸奶",
-        "茶叶蛋",
-        "溏心蛋",
-        "煎蛋",
-        "荷包蛋",
-        "泡菜",
-        "蘸水",
-        "沙拉汁",
-    ]
-    if any(word in name_text for word in snack_words):
-        return KIND_SNACK
-    norm = normalize(name)
-    if re.search(r"(米饭|白饭|珍珠饭|杂粮饭|糙米饭)$", norm) and len(norm) <= 8:
-        return KIND_SNACK
-    if re.search(r"(酱|汁|蘸料)$", norm) and len(norm) <= 8:
-        return KIND_SNACK
-    if "汤" in text and not any(word in text for word in ["汤饭", "汤面", "汤粉", "汤锅", "汤包"]):
+
+def _is_service_text(name_text: str, text: str) -> bool:
+    if not text:
+        return False
+    if any(word in name_text for word in ("餐具", "发票", "包装费", "配送费", "打包盒", "补差价", "差价")):
+        return True
+    if any(word in name_text for word in ("勿点", "勿拍", "不要点", "不要拍", "温馨提示", "公告", "说明")):
+        return True
+    if any(word in name_text for word in ("福利", "收藏", "满减", "红包")):
+        food_signal = any(word in text for word in BEVERAGE_WORDS + RICE_NOODLE_WORDS + NOODLE_WORDS + SNACK_WORDS + ("肉", "鸡", "鸭", "鱼", "虾", "菜", "粉", "面", "饭", "汤", "粥", "蛋", "豆", "肠", "丸"))
+        return not food_signal
+    return False
+
+
+def _is_addon_text(name_text: str, text: str) -> bool:
+    if name_text in ADDON_EXACT_WORDS:
+        return True
+    if any(word in name_text for word in ADDON_WORDS):
+        return True
+    if re.fullmatch(r".{1,8}(酱|汁|蘸料|调料)", name_text):
+        return True
+    if any(word in text for word in ("小料", "加料", "配料")) and len(name_text) <= 8:
+        return True
+    return bool(re.fullmatch(r"(加|另加|单加|配)(鸡蛋|煎蛋|荷包蛋|卤蛋|茶叶蛋|火腿|香肠|肉|菜|粉|面|饭)", name_text))
+
+
+def _basic_category_from_text(name: str, attrs: str = "", category: str = "") -> str:
+    raw = unicodedata.normalize("NFKC", f"{category or ''} {name or ''} {attrs or ''}")
+    text = _compact_text(raw)
+    name_text = _compact_text(name)
+    category_text = _compact_text(category)
+    if _is_service_text(name_text, text):
+        return BASIC_OTHER
+    if _has_combo_signal(raw):
+        return BASIC_COMBO
+    if any(word in text for word in BEVERAGE_WORDS):
+        return BASIC_BEVERAGE
+    if _is_addon_text(name_text, text):
+        return BASIC_ADDON
+    if _is_plain_rice_text(name_text) or category_text == "主食":
+        return BASIC_STAPLE
+    if any(word in text for word in RICE_NOODLE_WORDS):
+        return BASIC_RICE_NOODLE
+    if any(word in text for word in PORRIDGE_WORDS):
+        return BASIC_PORRIDGE
+    if any(word in text for word in NOODLE_WORDS):
+        return BASIC_NOODLE
+    if "汤" in text and not any(word in text for word in ("汤饭", "汤面", "汤粉", "汤锅", "汤包")):
+        return BASIC_SNACK
+    if any(word in text for word in SNACK_WORDS):
+        return BASIC_SNACK
+    return BASIC_MAIN
+
+
+def classify_basic_category(name: str, attrs: str = "", category: str = "") -> str:
+    return _basic_category_from_text(name, attrs, category)
+
+
+def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
+    basic = classify_basic_category(name, attrs, category)
+    if basic == BASIC_COMBO:
+        return KIND_COMBO
+    if basic == BASIC_OTHER:
+        return KIND_OTHER
+    if basic in {BASIC_BEVERAGE, BASIC_ADDON, BASIC_STAPLE, BASIC_SNACK}:
         return KIND_SNACK
     return KIND_SINGLE
 
@@ -425,8 +649,28 @@ def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
 def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     single = sum(1 for item in items if item.get("kind") == KIND_SINGLE)
     combo = sum(1 for item in items if item.get("kind") == KIND_COMBO)
-    snack = max(0, len(items) - single - combo)
-    return {"single": single, "combo": combo, "snack": snack, "total": len(items)}
+    snack = sum(1 for item in items if item.get("kind") == KIND_SNACK)
+    other = max(0, len(items) - single - combo - snack)
+    return {"single": single, "combo": combo, "snack": snack, "other": other, "total": len(items)}
+
+
+def basic_category_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        BASIC_COMBO: 0,
+        BASIC_BEVERAGE: 0,
+        BASIC_ADDON: 0,
+        BASIC_STAPLE: 0,
+        BASIC_RICE_NOODLE: 0,
+        BASIC_NOODLE: 0,
+        BASIC_PORRIDGE: 0,
+        BASIC_MAIN: 0,
+        BASIC_SNACK: 0,
+        BASIC_OTHER: 0,
+    }
+    for item in items:
+        category = str(item.get("basicCategory") or BASIC_OTHER)
+        counts[category] = counts.get(category, 0) + 1
+    return counts
 
 
 def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[str, Any]]:
@@ -454,6 +698,7 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             price = _price_number(row[candidate.price_col])
 
         attrs = " ".join(_collect_columns(row, candidate.name_extra_cols + candidate.attribute_cols))
+        basic_category = classify_basic_category(name, attrs, category)
         item = {
             "row": row_index + 1,
             "sheet": candidate.sheet_name,
@@ -461,6 +706,7 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             "name": name,
             "price": price,
             "kind": detect_kind(name, attrs, category),
+            "basicCategory": basic_category,
             "norm": norm,
             "components": split_components(name, attrs),
         }
@@ -521,6 +767,7 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
         raise FileNotFoundError(source)
 
     errors: list[dict[str, str]] = []
+    diagnostics: list[str] = []
     all_candidates: list[tuple[TableCandidate, pd.DataFrame]] = []
     with pd.ExcelFile(source) as workbook:
         for sheet_index, sheet_name in enumerate(workbook.sheet_names):
@@ -529,7 +776,14 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
             except Exception as exc:
                 errors.append({"sheet": sheet_name, "message": str(exc)})
                 continue
-            for candidate in _find_table_candidates(df, sheet_name, sheet_index):
+            candidates = _find_table_candidates(df, sheet_name, sheet_index)
+            if not candidates:
+                non_empty = sum(1 for row in df.head(40).itertuples(index=False) if any(clean_cell(value) for value in row))
+                if non_empty:
+                    diagnostics.append(f"{sheet_name}: 前40行未找到菜品名/商品名称/菜单名等表头")
+                else:
+                    diagnostics.append(f"{sheet_name}: 空表或前40行无有效内容")
+            for candidate in candidates:
                 all_candidates.append((candidate, df))
 
     selected = _select_candidates([candidate for candidate, _ in all_candidates])
@@ -555,13 +809,19 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
     items = _dedupe_items(items)
     if not items:
         detail = "; ".join(f"{err['sheet']}: {err['message']}" for err in errors)
-        raise ValueError(f"未能从菜单中解析出菜品: {source.name}" + (f" ({detail})" if detail else ""))
+        if all_candidates and not detail:
+            selected_summary = ", ".join(f"{candidate.sheet_name}@{candidate.header_row + 1}" for candidate in selected) or "无"
+            detail = f"识别到候选表头但有效菜品为空或菜品名列为空；候选={selected_summary}"
+        elif not detail:
+            detail = "; ".join(diagnostics[:6]) or "未找到可识别的菜单表头"
+        raise ValueError(f"未能从菜单中解析出菜品: {source.name} ({detail})")
 
     return {
         "store": guess_store(source),
         "file": source.name,
         "count": len(items),
         "kindCounts": kind_counts(items),
+        "basicCategoryCounts": basic_category_counts(items),
         "items": items,
         "sheets": parsed_sheets,
         "errors": errors,
@@ -592,6 +852,7 @@ def audit_menus(directory: str | Path) -> dict[str, Any]:
                 "file": menu["file"],
                 "count": menu["count"],
                 "kindCounts": menu["kindCounts"],
+                "basicCategoryCounts": menu.get("basicCategoryCounts", {}),
                 "sheets": menu.get("sheets", []),
                 "errors": menu.get("errors", []),
             }
@@ -626,13 +887,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for menu in audit["menus"]:
         counts = menu["kindCounts"]
+        basic_counts = menu.get("basicCategoryCounts", {})
+        basic_summary = ",".join(f"{key}:{value}" for key, value in basic_counts.items() if value)
         sheet_summary = _format_sheet_summary(menu.get("sheets", []))
         suffix = ""
         if menu.get("errors"):
             suffix = f" warnings={len(menu['errors'])}"
         print(
             f"OK  {menu['file']} | count={menu['count']} "
-            f"single={counts['single']} combo={counts['combo']} snack={counts['snack']} | {sheet_summary}{suffix}"
+            f"single={counts['single']} combo={counts['combo']} snack={counts['snack']} other={counts.get('other', 0)} "
+            f"| basic={basic_summary or 'none'} | {sheet_summary}{suffix}"
         )
     for error in audit["errors"]:
         print(f"ERR {error['file']} | {error['error']}")
