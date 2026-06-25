@@ -19,6 +19,12 @@ const state = {
   watermark: defaultWatermark(),
   deliveryPlatforms: [],
   quality: "standard",
+  exportStatus: {
+    tone: "idle",
+    title: "等待打包导出",
+    detail: "正式图生成后，点击按钮会显示打包进度和结果。",
+    download: ""
+  },
   busy: null,
   previewLoadingStyle: "",
   activeJobId: "",
@@ -61,7 +67,7 @@ const qualityMeta = {
   premium: { name: "精修出图", points: 200 }
 };
 
-const styleDisplayNames = ["一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景"];
+const styleDisplayNames = ["1号背景", "2号背景", "3号背景", "4号背景", "5号背景", "6号背景"];
 const fallbackExtraPlatformPoints = 100;
 const fallbackCustomEditPoints = 150;
 let busySerial = 0;
@@ -424,14 +430,38 @@ function exportPlatforms() {
   const chosen = $("#platformSelect")?.value || "purchased";
   if (!state.deliveryPlatforms.length) {
     toast("请至少选择一个交付平台");
+    setExportStatus("error", "导出失败", "请先选择至少一个交付平台。任意一个平台不加积分。");
     return [];
   }
   if (chosen === "purchased") return [...state.deliveryPlatforms];
   if (!state.deliveryPlatforms.includes(chosen)) {
     toast(`请先在交付平台和尺寸里勾选${platformMeta[chosen]?.name || "该平台"}`);
+    setExportStatus("error", "导出失败", `请先勾选${platformMeta[chosen]?.name || "该平台"}，再打包导出。`);
     return [];
   }
   return [chosen];
+}
+
+function platformNames(platforms = state.deliveryPlatforms) {
+  return platforms.map(id => platformMeta[id]?.name || id).join("、");
+}
+
+function setExportStatus(tone = "idle", title = "", detail = "", download = "") {
+  state.exportStatus = { tone, title, detail, download };
+  renderExportStatus();
+}
+
+function renderExportStatus() {
+  const box = $("#exportStatus");
+  if (!box) return;
+  const status = state.exportStatus || {};
+  const tone = status.tone || "idle";
+  box.className = `export-status ${tone}`;
+  const link = status.download ? `<a href="${esc(status.download)}">下载 ZIP</a>` : "";
+  box.innerHTML = `
+    <b>${esc(status.title || "等待打包导出")}</b>
+    <span>${esc(status.detail || "正式图生成后，点击按钮会显示打包进度和结果。")}${link}</span>
+  `;
 }
 
 function setProgress(percent, text, stage = state.stage) {
@@ -873,6 +903,7 @@ function setControls() {
   renderQualityControls();
   renderPlatformControls();
   renderWatermarkControls();
+  renderExportStatus();
   unlockPanels();
 }
 
@@ -1084,6 +1115,7 @@ function renderPlatformControls() {
   $$(".platform-check").forEach(input => {
     input.checked = state.deliveryPlatforms.includes(input.value);
     input.disabled = locked;
+    input.closest(".platform-option")?.classList.toggle("required", input.checked && state.deliveryPlatforms.length === 1);
     const meta = platformMeta[input.value];
     const desc = input.closest(".platform-option")?.querySelector("em");
     if (desc && meta) {
@@ -1099,9 +1131,14 @@ function renderPlatformControls() {
     return `${meta?.name || id} ${platformSpecText(meta)}`;
   });
   const charge = platformCharge();
+  const nextPlatformText = state.deliveryPlatforms.length === 1
+    ? `再加选任一平台 +${extraPlatformPoints()}积分`
+    : state.deliveryPlatforms.length === 2
+      ? `加选第三个平台再 +${extraPlatformPoints()}积分`
+      : "三个平台已全选";
   $("#platformChargeHint").textContent = names.length
-    ? `当前平台附加积分：+${charge}积分；${names.join(" / ")}`
-    : "请选择至少 1 个平台";
+    ? `已选 ${state.deliveryPlatforms.length} 个平台，平台附加 +${charge}积分；${names.join(" / ")}；${nextPlatformText}`
+    : "请选择至少 1 个平台，任意 1 个平台不加积分";
   const select = $("#platformSelect");
   if (select) {
     if (select.value !== "purchased" && !state.deliveryPlatforms.includes(select.value)) {
@@ -1409,10 +1446,18 @@ function renderStylePreview() {
     return;
   }
   if (!state.stylePreview || state.stylePreview.style !== state.pendingStyle) {
-    if (title) title.textContent = `${styleName(state.pendingStyle)} · 免费样图生成中`;
-    setStylePreviewStatus("loading", "正在生成 6 张免费单品样图，请稍候。生成完成后会自动显示在下方。");
-    box.className = "style-preview-box loading";
-    box.innerHTML = previewPlaceholders("正在生成");
+    const isLoading = state.previewLoadingStyle === state.pendingStyle;
+    if (title) title.textContent = isLoading
+      ? `${styleName(state.pendingStyle)} · 免费样图生成中`
+      : `${styleName(state.pendingStyle)} · 等待生成免费样图`;
+    setStylePreviewStatus(
+      isLoading ? "loading" : "",
+      isLoading
+        ? "正在生成 6 张免费单品样图，请稍候。生成完成后会自动显示在下方。"
+        : "背景已选中。点击“生成6张免费样图”后，这里会展示两行三列的 6 张单品样图。"
+    );
+    box.className = `style-preview-box ${isLoading ? "loading" : ""}`;
+    box.innerHTML = previewPlaceholders(isLoading ? "正在生成" : "待生成");
     return;
   }
   const samples = (state.stylePreview.samples || []).slice(0, 6);
@@ -1616,6 +1661,12 @@ async function uploadMenu() {
     state.confirmed = false;
     state.charged = false;
     state.chargedPoints = 0;
+    state.exportStatus = {
+      tone: "idle",
+      title: "等待打包导出",
+      detail: "正式图生成后，点击按钮会显示打包进度和结果。",
+      download: ""
+    };
     state.activeJobId = "";
     state.lastDebitOrderId = "";
     state.freeReworkRemaining = 0;
@@ -1644,6 +1695,12 @@ async function startJob(options = {}) {
   state.confirmed = false;
   state.charged = false;
   state.chargedPoints = 0;
+  state.exportStatus = {
+    tone: "idle",
+    title: "等待打包导出",
+    detail: "正式图生成后，点击按钮会显示打包进度和结果。",
+    download: ""
+  };
   state.activeJobId = "";
   state.lastDebitOrderId = "";
   state.freeReworkRemaining = 0;
@@ -1793,16 +1850,25 @@ async function redrawImage(rowNo, button = null) {
 }
 
 async function exportImages() {
-  if (!state.confirmed) return toast("请先生成正式图片");
+  if (!state.confirmed) {
+    setExportStatus("error", "导出失败", "请先完成正式出图，再打包导出 ZIP。");
+    return toast("请先生成正式图片");
+  }
   if (state.busy) return toast("请等待当前任务完成");
   const scope = $("#scopeSelect").value;
   const selectedRows = scope === "selected" ? [...state.selectedRows] : [];
-  if (scope === "selected" && !selectedRows.length) return toast("请先勾选要导出的图片");
+  if (scope === "selected" && !selectedRows.length) {
+    setExportStatus("error", "导出失败", "请先在正式图片区勾选要导出的图片。");
+    return toast("请先勾选要导出的图片");
+  }
   if (!hasExportableRows(scope, selectedRows)) {
+    setExportStatus("error", "导出失败", "没有可导出的成图，请等待正式图完成，或只勾选已生成的图片。");
     return toast("没有可导出的成图，请等待正式图完成，或只勾选已生成的图片");
   }
   const platforms = exportPlatforms();
   if (!platforms.length) return;
+  const detail = `${platformNames(platforms)} · 正在按平台真实尺寸生成 ZIP`;
+  setExportStatus("loading", "正在打包导出", detail);
   const token = beginBusy("export-zip", "正在打包 ZIP", "正在按平台尺寸生成下载包，请勿重复点击");
   try {
     const imageFormat = exportImageFormat();
@@ -1811,8 +1877,17 @@ async function exportImages() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ style: state.style, scope, selectedRows, format: imageFormat, imageFormat: imageFormat, watermark: watermarkPayload(), platforms, quality: state.quality })
     });
+    setExportStatus(
+      "success",
+      "打包导出成功",
+      `已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印。" : "。"}`,
+      data.download
+    );
     toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
     location.href = data.download;
+  } catch (error) {
+    setExportStatus("error", "打包导出失败", cleanErrorText(error.message, "服务器生成 ZIP 时遇到问题，请稍后重试。"));
+    throw error;
   } finally {
     endBusy(token);
   }
@@ -1838,6 +1913,9 @@ async function exportSingle(rowNo, button = null) {
     });
     toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
     location.href = data.download;
+  } catch (error) {
+    setExportStatus("error", "单张保存失败", cleanErrorText(error.message, "单张图片导出失败，请稍后重试。"));
+    throw error;
   } finally {
     setButtonLoading(button, false);
     endBusy(token);
