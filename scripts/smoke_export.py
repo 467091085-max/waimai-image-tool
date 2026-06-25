@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,15 @@ def run_smoke_export(export_dir: str | Path | None = None) -> dict[str, Any]:
         watermark={"enabled": True, "type": "text", "text": "SMOKE", "position": "bottom-right"},
         run_name="smoke_export",
     )
-    result["zipPath"] = str(target_export_dir / result["download"].split("/download/", 1)[1])
+    zip_path = target_export_dir / result["download"].split("/download/", 1)[1]
+    result["zipPath"] = str(zip_path)
+    result["zipBytes"] = zip_path.stat().st_size if zip_path.exists() else 0
+    if zip_path.exists():
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            result["zipEntries"] = len(names)
+            result["zipImages"] = sum(1 for name in names if name.startswith("images/") and not name.endswith("/"))
+            result["hasDeliveryReport"] = "delivery_report.xlsx" in names
     return result
 
 

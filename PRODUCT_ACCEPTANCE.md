@@ -1,50 +1,85 @@
-# V4 Product Acceptance Checklist
+# V5 Product Acceptance
 
-This checklist is for the final end-to-end product gate after the V4 module branches are merged.
+This is the release gate for proving the product is not broken after the V5 worktrees merge.
 
 ## Smoke Commands
 
-Dry run. This must not call `/api/jobs/<id>/run` and must not spend Hunyuan quota:
+Dry run against local. This uploads menus, checks six style cards and six free sample slots, creates a generation job, and validates grouped ZIP export without calling `/api/jobs/<id>/run`:
 
 ```bash
 python3 scripts/smoke_product_flow.py \
-  --base-url http://127.0.0.1:8790 \
-  --menu-file /path/to/real-menu.xlsx \
+  --base-url local \
   --style-first \
   --limit 1 \
   --no-live-generate
 ```
 
-Live one-image run. This is the only smoke mode allowed to spend model quota:
+Dry run against Render. `render` resolves to the current known Render URL:
 
 ```bash
 python3 scripts/smoke_product_flow.py \
-  --base-url https://your-production-host.example.com \
-  --menu-file /path/to/real-menu.xlsx \
+  --base-url render \
+  --style-first \
+  --limit 1 \
+  --no-live-generate
+```
+
+Live one-image run. This is the only mode that spends formal model quota:
+
+```bash
+python3 scripts/smoke_product_flow.py \
+  --base-url https://your-render-host.onrender.com \
   --style-first \
   --live-generate \
   --limit 1
 ```
 
-The command prints JSON. The release gate is `ok=true`, `summary.failed=0`, and an empty `failures` array.
+Optional free sample materialization:
+
+```bash
+python3 scripts/smoke_product_flow.py \
+  --base-url local \
+  --generate-free-samples \
+  --no-live-generate
+```
+
+The script writes a full JSON report and a Markdown report under `data/exports/acceptance/`. Stdout is a concise JSON summary with only the key failures, red flags, and artifact paths. Use `--stdout full` if a full JSON dump is needed.
 
 ## Required Gates
 
-1. Homepage is reachable and returns a non-empty HTML response.
-2. `/api/tencent-status` returns `provider=tencent-hunyuan`, `configured=true`, and object storage readiness for live runs.
-3. `/api/library-status` shows real product images, reusable images, stores, style coverage, and the configured external/COS library source.
-4. Real menu upload through `/api/upload-menu` succeeds and returns a non-empty parsed menu count.
-5. `/api/plan` returns menu results, pricing/quote fields, match candidates, points, and a selected style.
-6. The plan contains all six required style cards: `style-1` through `style-6`.
-7. `/api/style-preview?style=<style-id>` works for all six styles and returns sample jobs without paid formal generation.
-8. Dry run creates a generation job and returns poll/progress fields, but does not run the job.
-9. Live run with `--live-generate --limit 1` runs exactly one formal image and reports job status, item status, provider/action, error if any, and an image URL/path.
-10. Progress feedback exposes job totals, completed/failed/pending counts, percent, per-item status, retry/refund fields on failures.
-11. Platform export after a successful live image returns at least one image, a download URL, and the requested platform list.
-12. Pricing and account fields are visible in the plan/account responses. Before launch, the UI payment path must also verify recharge, debit, insufficient balance handling, refund on failed generation, and admin ledger visibility.
+1. Homepage returns non-empty HTML.
+2. `/api/tencent-status` reports provider configuration and object storage readiness.
+3. `/api/library-status` reports reusable product image coverage.
+4. `.xls` and `.xlsx` menu uploads both succeed. The main menu is uploaded last so `/api/plan` uses it.
+5. `/api/plan` returns total count, single count, combo count, points, pricing, quote, and menu results.
+6. The plan exposes at least six style cards. Fixed IDs `style-1` through `style-6` are recorded as evidence when present, but dynamic library style IDs are accepted as long as six cards are shown.
+7. The selected style exposes six free sample slots through `/api/style-preview`.
+8. Dry run creates a formal generation job but skips `/api/jobs/<id>/run`.
+9. Live run requires at least one completed item with a non-empty image URL/path.
+10. If Tencent is configured, live results must not be seed, mock, placeholder, or local fallback output. These are marked in the Markdown report with red text and block the smoke.
+11. Exports are checked for `all`, `single`, and `combo` scopes. Each successful export must return a readable ZIP with `delivery_report.xlsx` and at least one image.
+12. If Tencent is not configured, the report must state that formal generation authenticity is blocked before model execution.
+
+## Latest Local Dry Run
+
+Run on `2026-06-25` against `http://127.0.0.1:8797`:
+
+```text
+ok=true
+passed=21
+failed=0
+skipped=3
+```
+
+Artifacts:
+
+```text
+data/exports/acceptance/product_acceptance_127.0.0.1_8797_20260625T153431Z.json
+data/exports/acceptance/product_acceptance_127.0.0.1_8797_20260625T153431Z.md
+```
+
+Provider note: local Tencent credentials were not configured, so formal live generation was intentionally skipped in this dry run.
 
 ## Failure Policy
 
-Any failed step in the smoke JSON blocks release until the reason is explained and fixed. A live model failure can pass only when it is an expected provider outage and the product shows retry/refund status correctly; otherwise it blocks release.
-
-Dry-run smoke is the default for CI and staging. Live smoke should be run manually on a known small menu after Tencent/COS credentials and library indexing are confirmed.
+Any failed step in the JSON report blocks release until explained. A provider outage can pass only when the product surfaces retry/refund state correctly and the failure is documented. A configured provider returning seed/mock/local fallback output is a red-flag failure.

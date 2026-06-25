@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -51,9 +53,9 @@ def plan_payload(styles: list[dict[str, Any]] | None = None, selected_style: str
     return {
         "selectedStyle": selected_style,
         "styles": styles if styles is not None else style_cards(),
-        "summary": {"total": 1, "direct": 0, "review": 1, "missing": 0, "points": 100},
+        "summary": {"total": 2, "direct": 0, "review": 2, "missing": 0, "points": 200},
         "pricing": {"standardPoints": 100, "premiumPoints": 200, "customEditPoints": 150},
-        "quote": {"points": 100, "cash": 10, "rate": "1 yuan = 10 points"},
+        "quote": {"points": 200, "cash": 20, "rate": "1 yuan = 10 points"},
         "results": [
             {
                 "row": 1,
@@ -64,12 +66,27 @@ def plan_payload(styles: list[dict[str, Any]] | None = None, selected_style: str
                 "publicStatus": "pending",
                 "backgroundAction": "replace",
                 "candidates": [{"url": "https://cdn.example.test/source.jpg", "styleId": "style-3"}],
-            }
+            },
+            {
+                "row": 2,
+                "name": "Smoke Combo",
+                "category": "Combo",
+                "kind": "套餐/组合",
+                "points": 100,
+                "publicStatus": "pending",
+                "backgroundAction": "combo",
+                "candidates": [{"url": "https://cdn.example.test/combo-source.jpg", "styleId": "style-4"}],
+            },
         ],
     }
 
 
-def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | None = None) -> tuple[Flask, dict[str, Any]]:
+def make_mock_app(
+    *,
+    broken_plan: bool = False,
+    styles: list[dict[str, Any]] | None = None,
+    live_result: str = "tencent",
+) -> tuple[Flask, dict[str, Any]]:
     app = Flask(__name__)
     state: dict[str, Any] = {"job_requests": [], "run_requests": [], "export_requests": []}
 
@@ -110,10 +127,12 @@ def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | N
                 "previewFreeImages": 6,
                 "samples": [
                     {
+                        "row": index,
                         "status": "pending",
                         "job": {"status": "pending", "provider": "tencent-hunyuan", "action": "Preview"},
                         "candidate": None,
                     }
+                    for index in range(1, 7)
                 ],
             }
         )
@@ -125,8 +144,8 @@ def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | N
         job = {
             "id": "job-smoke-1",
             "status": "created",
-            "totalItems": 1,
-            "pendingItems": 1,
+            "totalItems": len(payload.get("selectedRows") or [1]),
+            "pendingItems": len(payload.get("selectedRows") or [1]),
             "completedItems": 0,
             "failedItems": 0,
             "points": 100,
@@ -139,6 +158,22 @@ def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | N
     def run_job(job_id: str):
         payload = request.get_json() or {}
         state["run_requests"].append({"job_id": job_id, "payload": payload})
+        if live_result == "local-fallback":
+            item = {
+                "index": 1,
+                "status": "completed",
+                "provider": "local-demo",
+                "action": "LocalFallback",
+                "result": {"candidate": {"path": "/tmp/generated-local/mock.jpg", "source": "generated-local"}},
+            }
+        else:
+            item = {
+                "index": 1,
+                "status": "completed",
+                "provider": "tencent-hunyuan",
+                "action": "ReplaceBackground",
+                "result": {"candidate": {"url": "https://cdn.example.test/final.jpg"}},
+            }
         job = {
             "id": job_id,
             "status": "succeeded",
@@ -147,15 +182,7 @@ def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | N
             "completedItems": 1,
             "failedItems": 0,
             "progress": {"percent": 100},
-            "items": [
-                {
-                    "index": 1,
-                    "status": "completed",
-                    "provider": "tencent-hunyuan",
-                    "action": "ReplaceBackground",
-                    "result": {"candidate": {"url": "https://cdn.example.test/final.jpg"}},
-                }
-            ],
+            "items": [item],
         }
         return jsonify({"ok": True, "job": job, "poll": {"url": f"/api/jobs/{job_id}", "intervalMs": 1500}})
 
@@ -164,6 +191,14 @@ def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | N
         payload = request.get_json() or {}
         state["export_requests"].append(payload)
         return jsonify({"rows": 3, "images": 3, "platforms": payload.get("platforms", []), "watermark": False, "download": "/download/smoke.zip"})
+
+    @app.get("/download/smoke.zip")
+    def download_smoke_zip():
+        body = BytesIO()
+        with zipfile.ZipFile(body, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("delivery_report.xlsx", b"mock report")
+            zf.writestr("images/meituan/mock.jpg", b"mock image")
+        return body.getvalue(), 200, {"Content-Type": "application/zip"}
 
     return app, state
 
@@ -185,12 +220,16 @@ class ProductFlowSmokeTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["failures"])
         self.assertEqual(report["selectedStyle"], "style-1")
         self.assertEqual(state["job_requests"][0]["style"], "style-1")
-        self.assertEqual(state["job_requests"][0]["selectedRows"], [1])
+        self.assertEqual(state["job_requests"][0]["selectedRows"], [2])
         self.assertEqual(state["run_requests"], [])
-        self.assertEqual(state["export_requests"], [])
+        self.assertEqual([request["scope"] for request in state["export_requests"]], ["all", "single", "combo"])
         steps = {step["name"]: step for step in report["steps"]}
         self.assertEqual(steps["job_run_live"]["status"], "skipped")
-        self.assertEqual(steps["style_catalog"]["fields"]["missing"], [])
+        self.assertEqual(steps["upload_menu:xls"]["status"], "ok")
+        self.assertEqual(steps["upload_menu:xlsx"]["status"], "ok")
+        self.assertEqual(steps["menu_summary"]["fields"]["combo"], 1)
+        self.assertEqual(steps["free_sample_slots"]["fields"]["sampleCount"], 6)
+        self.assertEqual(steps["style_catalog"]["fields"]["fixedMissing"], [])
         self.assertIn("style_preview:style-6", steps)
 
     def test_live_generate_runs_one_image_and_reports_export_and_image_url(self) -> None:
@@ -210,7 +249,9 @@ class ProductFlowSmokeTests(unittest.TestCase):
         steps = {step["name"]: step for step in report["steps"]}
         self.assertEqual(steps["job_run_live"]["fields"]["effectiveLimit"], 1)
         self.assertEqual(steps["job_run_live"]["fields"]["imageUrl"], "https://cdn.example.test/final.jpg")
-        self.assertEqual(steps["platform_export"]["fields"]["images"], 3)
+        self.assertEqual(steps["platform_export:all"]["fields"]["images"], 3)
+        self.assertEqual(steps["platform_export:single"]["fields"]["zipImages"], 1)
+        self.assertEqual(steps["platform_export:combo"]["fields"]["hasDeliveryReport"], True)
 
     def test_failure_response_is_reported_without_crashing(self) -> None:
         app, _state = make_mock_app(broken_plan=True)
@@ -223,7 +264,7 @@ class ProductFlowSmokeTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         failures = {item["step"]: item["reason"] for item in report["failures"]}
         self.assertEqual(failures["plan"], "HTTP 500: plan exploded")
-        self.assertIn("missing required styles: style-1", failures["style_catalog"])
+        self.assertEqual(failures["style_catalog"], "expected at least 6 style cards, got 0")
         self.assertIn("style_selection", failures)
 
     def test_missing_required_style_is_a_stable_catalog_failure(self) -> None:
@@ -237,7 +278,35 @@ class ProductFlowSmokeTests(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         failures = {item["step"]: item["reason"] for item in report["failures"]}
-        self.assertEqual(failures["style_catalog"], "missing required styles: style-6")
+        self.assertEqual(failures["style_catalog"], "expected at least 6 style cards, got 5")
+
+    def test_base_url_aliases_are_normalized_before_http_client_runs(self) -> None:
+        local_url, local_note = smoke.normalize_base_url("local")
+        render_url, render_note = smoke.normalize_base_url("render")
+        bare_url, bare_note = smoke.normalize_base_url("example.onrender.com")
+
+        self.assertEqual(local_url, smoke.DEFAULT_LOCAL_URL)
+        self.assertIn("resolved", local_note)
+        self.assertEqual(render_url, smoke.DEFAULT_RENDER_URL)
+        self.assertIn("resolved", render_note)
+        self.assertEqual(bare_url, "https://example.onrender.com")
+        self.assertIn("https://", bare_note)
+
+    def test_provider_configured_but_local_fallback_result_is_red_flagged(self) -> None:
+        app, _state = make_mock_app(live_result="local-fallback")
+        report = smoke.run_product_flow(
+            FlaskClientAdapter(app),
+            base_url="mock://product",
+            limit=1,
+            live_generate=True,
+        )
+
+        self.assertFalse(report["ok"])
+        failures = {item["step"]: item["reason"] for item in report["failures"]}
+        self.assertIn("seed/mock/local fallback", failures["job_run_live"])
+        self.assertEqual(report["redFlags"][0]["step"], "job_run_live")
+        markdown = smoke.render_markdown_report(report)
+        self.assertIn('style="color:red"', markdown)
 
 
 if __name__ == "__main__":

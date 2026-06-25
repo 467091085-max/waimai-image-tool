@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import re
 import sys
 import tempfile
 import time
@@ -12,10 +13,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
+import zipfile
 
 
 STYLE_IDS = [f"style-{index}" for index in range(1, 7)]
-DEFAULT_PLATFORMS = ["meituan", "eleme", "jd"]
+DEFAULT_PLATFORMS = ["meituan", "taobao", "jd"]
+DEFAULT_LOCAL_URL = "http://127.0.0.1:8790"
+DEFAULT_RENDER_URL = "https://waimai-image-tool-1.onrender.com"
+DEFAULT_REPORT_DIR = Path("data") / "exports" / "acceptance"
+MENU_ROWS = [
+    ["分类", "菜品名", "价格", "类型", "套餐内容/规格", "备注"],
+    ["热销", "老长沙辣椒炒肉盖码饭", "19.8", "单品", "", "smoke"],
+    ["热销", "小炒黄牛肉盖码饭", "25.8", "单品", "", "smoke"],
+    ["套餐", "辣椒炒肉+茄子肉末盖码饭", "24.8", "套餐/组合", "辣椒炒肉；茄子肉末；米饭", "smoke"],
+]
+MOCK_RESULT_MARKERS = {
+    "local-demo",
+    "localfallback",
+    "generated-local",
+    "mock",
+    "placeholder",
+    "demo_store",
+}
+SEED_RESULT_MARKERS = {
+    "seed_",
+}
 
 
 @dataclass
@@ -37,6 +59,7 @@ class UrllibProductClient:
     def __init__(self, base_url: str, timeout: float = 20.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.opener = request.build_opener(request.ProxyHandler({}))
 
     def get(self, path: str, query: dict[str, Any] | None = None) -> ClientResponse:
         return self._request("GET", path, query=query)
@@ -75,7 +98,7 @@ class UrllibProductClient:
         url = self._url(path, query)
         req = request.Request(url, data=body, headers=headers or {}, method=method)
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with self.opener.open(req, timeout=self.timeout) as resp:
                 return ClientResponse(resp.status, resp.read(), dict(resp.headers.items()), url)
         except error.HTTPError as exc:
             return ClientResponse(exc.code, exc.read(), dict(exc.headers.items()), url)
@@ -120,20 +143,42 @@ class StepLog:
         return step
 
 
-def create_default_menu_file(directory: str | Path | None = None) -> Path:
-    from openpyxl import Workbook
-
+def create_default_menu_file(directory: str | Path | None = None, suffix: str = ".xlsx") -> Path:
     root = Path(directory) if directory else Path(tempfile.mkdtemp(prefix="waimai_product_menu_"))
     root.mkdir(parents=True, exist_ok=True)
-    path = root / "product_smoke_menu.xlsx"
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    if normalized_suffix not in {".xls", ".xlsx"}:
+        raise ValueError(f"unsupported smoke menu suffix: {suffix}")
+    path = root / f"product_smoke_menu{normalized_suffix}"
+    if normalized_suffix == ".xls":
+        return create_default_xls_menu(path)
+    return create_default_xlsx_menu(path)
+
+
+def create_default_xlsx_menu(path: Path) -> Path:
+    from openpyxl import Workbook
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "菜单"
-    sheet.append(["分类", "菜品名", "价格", "类型", "套餐内容/规格", "备注"])
-    sheet.append(["热销", "老长沙辣椒炒肉盖码饭", "19.8", "单品", "", "smoke"])
-    sheet.append(["热销", "小炒黄牛肉盖码饭", "25.8", "单品", "", "smoke"])
-    sheet.append(["套餐", "辣椒炒肉+茄子肉末盖码饭", "24.8", "套餐/组合", "辣椒炒肉；茄子肉末；米饭", "smoke"])
+    for row in MENU_ROWS:
+        sheet.append(row)
     workbook.save(path)
+    return path
+
+
+def create_default_xls_menu(path: Path) -> Path:
+    try:
+        import xlwt  # type: ignore[import-untyped]
+    except Exception as exc:
+        raise RuntimeError("creating .xls smoke menus requires xlwt; install requirements.txt or pass --xls-menu-file") from exc
+
+    workbook = xlwt.Workbook(encoding="utf-8")
+    sheet = workbook.add_sheet("菜单")
+    for row_index, row in enumerate(MENU_ROWS):
+        for col_index, value in enumerate(row):
+            sheet.write(row_index, col_index, value)
+    workbook.save(str(path))
     return path
 
 
@@ -141,26 +186,28 @@ def run_product_flow(
     client: Any,
     *,
     menu_file: str | Path | None = None,
+    xls_menu_file: str | Path | None = None,
     base_url: str = "",
     style_first: bool = False,
     limit: int = 0,
     live_generate: bool = False,
+    materialize_free_samples: bool = False,
 ) -> dict[str, Any]:
     started_at = utc_now()
     log = StepLog()
-    temp_dir: tempfile.TemporaryDirectory[str] | None = None
-    if menu_file is None:
-        temp_dir = tempfile.TemporaryDirectory(prefix="waimai_product_acceptance_")
-        menu_path = create_default_menu_file(temp_dir.name)
-        menu_source = "generated"
-    else:
-        menu_path = Path(menu_file)
-        menu_source = "provided"
+    temp_dir = tempfile.TemporaryDirectory(prefix="waimai_product_acceptance_")
+    menu_uploads = prepare_menu_uploads(temp_dir.name, menu_file=menu_file, xls_menu_file=xls_menu_file)
 
     selected_style = ""
     plan: dict[str, Any] | None = None
     job_id = ""
-    job_payload: dict[str, Any] | None = None
+    provider_configured = False
+    provider_fields: dict[str, Any] = {}
+    selected_rows: list[int] = []
+    selected_row_details: list[dict[str, Any]] = []
+    red_flags: list[dict[str, str]] = []
+    export_artifacts: list[dict[str, Any]] = []
+    upload_results: dict[str, dict[str, Any]] = {}
 
     try:
         home = safe_request(lambda: client.get("/"))
@@ -179,15 +226,27 @@ def run_product_flow(
 
         tencent_status = request_json(client, "GET", "/api/tencent-status")
         tencent_data = tencent_status["data"] if isinstance(tencent_status["data"], dict) else {}
+        provider_configured = bool(tencent_data.get("configured"))
+        provider_fields = compact_fields(
+            tencent_data,
+            [
+                "provider",
+                "configured",
+                "cosReady",
+                "region",
+                "styleBackgroundsLive",
+                "localFallbackAllowed",
+                "fallbackProvider",
+                "providerStatus",
+                "provider_error",
+            ],
+        )
         ok = not tencent_status["error"] and "provider" in tencent_data and "configured" in tencent_data
         log.add(
             "tencent_status",
             ok,
             http_status=tencent_status["status"],
-            fields=compact_fields(
-                tencent_data,
-                ["provider", "configured", "cosReady", "region", "styleBackgroundsLive", "localFallbackAllowed"],
-            ),
+            fields=provider_fields,
             reason="" if ok else tencent_status["error"] or "missing provider/configured fields",
         )
 
@@ -216,27 +275,67 @@ def run_product_flow(
             reason="" if library_ok else library_status["error"] or "library has no reusable product images",
         )
 
-        if not menu_path.exists():
-            log.add("upload_menu", False, fields={"menuFile": str(menu_path), "source": menu_source}, reason="menu file does not exist")
-        else:
-            upload = safe_request(lambda: client.post_file("/api/upload-menu", menu_path, "file"))
-            upload_data = parse_response_json(upload["response"]) if upload["response"] is not None else None
-            upload_error = upload["error"] or response_error(upload["response"], upload_data)
-            menu_info = upload_data.get("menu") if isinstance(upload_data, dict) and isinstance(upload_data.get("menu"), dict) else {}
-            upload_ok = not upload_error and isinstance(upload_data, dict) and upload_data.get("ok") is True and int_or_zero(menu_info.get("count")) > 0
+        main_upload_ok = False
+        main_upload_fields: dict[str, Any] = {}
+        main_upload_reason = ""
+        for upload_spec in menu_uploads:
+            step_name = f"upload_menu:{upload_spec['format']}"
+            path = upload_spec.get("path")
+            source = str(upload_spec.get("source") or "")
+            if path is None:
+                log.add(
+                    step_name,
+                    True,
+                    skipped=True,
+                    fields={"source": source, "main": upload_spec.get("main")},
+                    reason=str(upload_spec.get("error") or "menu fixture unavailable"),
+                )
+                continue
+            menu_path = Path(path)
+            if not menu_path.exists():
+                upload_ok = False
+                upload_status = None
+                menu_info: dict[str, Any] = {}
+                upload_reason = "menu file does not exist"
+            else:
+                upload = safe_request(lambda menu_path=menu_path: client.post_file("/api/upload-menu", menu_path, "file"))
+                upload_data = parse_response_json(upload["response"]) if upload["response"] is not None else None
+                upload_reason = upload["error"] or response_error(upload["response"], upload_data)
+                upload_status = upload["response"].status_code if upload["response"] is not None else None
+                menu_info = upload_data.get("menu") if isinstance(upload_data, dict) and isinstance(upload_data.get("menu"), dict) else {}
+                upload_ok = (
+                    not upload_reason
+                    and isinstance(upload_data, dict)
+                    and upload_data.get("ok") is True
+                    and int_or_zero(menu_info.get("count")) > 0
+                )
+            upload_fields = {
+                "menuFile": str(menu_path),
+                "source": source,
+                "main": upload_spec.get("main"),
+                "store": menu_info.get("store"),
+                "count": menu_info.get("count"),
+                "kindCounts": menu_info.get("kindCounts"),
+            }
+            upload_results[str(upload_spec["format"])] = {"ok": upload_ok, "fields": upload_fields, "reason": upload_reason}
             log.add(
-                "upload_menu",
+                step_name,
                 upload_ok,
-                http_status=upload["response"].status_code if upload["response"] is not None else None,
-                fields={
-                    "menuFile": str(menu_path),
-                    "source": menu_source,
-                    "store": menu_info.get("store"),
-                    "count": menu_info.get("count"),
-                    "kindCounts": menu_info.get("kindCounts"),
-                },
-                reason="" if upload_ok else upload_error or "upload response did not include ok=true and a non-empty menu",
+                http_status=upload_status,
+                fields=upload_fields,
+                reason="" if upload_ok else upload_reason or "upload response did not include ok=true and a non-empty menu",
             )
+            if upload_spec.get("main"):
+                main_upload_ok = upload_ok
+                main_upload_fields = upload_fields
+                main_upload_reason = upload_reason
+
+        log.add(
+            "upload_menu",
+            main_upload_ok,
+            fields={**main_upload_fields, "formatsChecked": sorted(upload_results)},
+            reason="" if main_upload_ok else main_upload_reason or "main menu upload failed",
+        )
 
         plan_response = request_json(client, "GET", "/api/plan")
         if isinstance(plan_response["data"], dict):
@@ -262,6 +361,24 @@ def run_product_flow(
             reason="" if plan_ok else plan_response["error"] or "plan is missing styles or menu results",
         )
 
+        menu_counts = kind_counts_from_results(results if isinstance(results, list) else [])
+        points_value = points_total_from_plan(plan)
+        total_count = int_or_zero((plan or {}).get("summary", {}).get("total") if isinstance((plan or {}).get("summary"), dict) else 0) or len(results if isinstance(results, list) else [])
+        menu_summary_ok = total_count > 0 and menu_counts["single"] > 0 and menu_counts["combo"] > 0 and points_value is not None
+        log.add(
+            "menu_summary",
+            menu_summary_ok,
+            fields={
+                "total": total_count,
+                "single": menu_counts["single"],
+                "combo": menu_counts["combo"],
+                "other": menu_counts["other"],
+                "points": points_value,
+                "summary": (plan or {}).get("summary") if isinstance(plan, dict) else {},
+            },
+            reason="" if menu_summary_ok else "plan must include single items, combo items, total count, and points",
+        )
+
         if isinstance(styles, list):
             present = [str(style.get("id")) for style in styles if isinstance(style, dict) and style.get("id")]
         else:
@@ -270,13 +387,14 @@ def run_product_flow(
         style_cards = [
             compact_fields(style, ["id", "name", "source", "count", "needsGeneratedBackground", "backgroundJob"])
             for style in styles
-            if isinstance(style, dict) and style.get("id") in STYLE_IDS
+            if isinstance(style, dict)
         ] if isinstance(styles, list) else []
+        style_catalog_ok = len(present) >= 6
         log.add(
             "style_catalog",
-            not missing_styles,
-            fields={"expected": STYLE_IDS, "present": present, "missing": missing_styles, "cards": style_cards},
-            reason="" if not missing_styles else f"missing required styles: {', '.join(missing_styles)}",
+            style_catalog_ok,
+            fields={"expectedCount": 6, "present": present, "fixedIds": STYLE_IDS, "fixedMissing": missing_styles, "cards": style_cards},
+            reason="" if style_catalog_ok else f"expected at least 6 style cards, got {len(present)}",
         )
 
         selected_style = choose_style(plan, style_first=style_first)
@@ -289,7 +407,9 @@ def run_product_flow(
         else:
             log.add("style_selection", False, fields={"styleFirst": style_first}, reason="no selectable style in plan")
 
-        for style_id in STYLE_IDS:
+        selected_preview_sample_count = 0
+        preview_style_ids = present[:6] if len(present) >= 6 else STYLE_IDS
+        for style_id in preview_style_ids:
             preview = request_json(client, "GET", "/api/style-preview", query={"style": style_id})
             preview_data = preview["data"] if isinstance(preview["data"], dict) else {}
             samples = preview_data.get("samples")
@@ -302,7 +422,14 @@ def run_product_flow(
                 not preview["error"]
                 and preview_data.get("style") == style_id
                 and isinstance(samples, list)
+                and len(samples) >= 6
+                and int_or_zero(preview_data.get("previewFreeImages")) >= 6
             )
+            if style_id == selected_style and isinstance(samples, list):
+                selected_preview_sample_count = len(samples)
+                preview_risk = generation_mock_indicators({"samples": samples}, provider_configured=provider_configured)
+                if preview_risk:
+                    red_flags.append({"step": f"style_preview:{style_id}", "reason": "; ".join(preview_risk)})
             log.add(
                 f"style_preview:{style_id}",
                 preview_ok,
@@ -314,14 +441,52 @@ def run_product_flow(
                     "previewFreeImages": preview_data.get("previewFreeImages"),
                     "sampleJobs": sample_jobs,
                 },
-                reason="" if preview_ok else preview["error"] or "style preview response missing style/samples",
+                reason="" if preview_ok else preview["error"] or "style preview must expose 6 free samples for the style",
+            )
+
+        log.add(
+            "free_sample_slots",
+            selected_preview_sample_count >= 6,
+            fields={"selectedStyle": selected_style, "sampleCount": selected_preview_sample_count, "expected": 6},
+            reason="" if selected_preview_sample_count >= 6 else "selected style did not expose 6 free sample slots",
+        )
+
+        if materialize_free_samples and selected_style:
+            generated_samples = []
+            for index in range(6):
+                sample_response = request_json(client, "GET", "/api/style-preview-sample", query={"style": selected_style, "index": index})
+                sample_data = sample_response["data"] if isinstance(sample_response["data"], dict) else {}
+                generated_samples.append(
+                    {
+                        "index": index,
+                        "status": sample_response["status"],
+                        "error": sample_response["error"],
+                        "job": compact_fields(sample_data.get("sample", {}).get("job") if isinstance(sample_data.get("sample"), dict) else {}, ["status", "provider", "action", "error"]),
+                        "hasCandidate": bool(find_url(sample_data)),
+                    }
+                )
+            sample_errors = [item for item in generated_samples if item["error"]]
+            log.add(
+                "free_sample_generation",
+                not sample_errors and len(generated_samples) == 6,
+                fields={"selectedStyle": selected_style, "samples": generated_samples},
+                reason="" if not sample_errors else "; ".join(str(item["error"]) for item in sample_errors[:2]),
+            )
+        else:
+            log.add(
+                "free_sample_generation",
+                True,
+                skipped=True,
+                fields={"selectedStyle": selected_style, "materializeFreeSamples": materialize_free_samples},
+                reason="not run by default; pass --generate-free-samples to call the six free sample generation endpoints",
             )
 
         if selected_style:
+            selected_rows, selected_row_details = choose_generation_rows(results if isinstance(results, list) else [], selected_style)
             job_request = {
                 "style": selected_style,
                 "quality": "standard",
-                "selectedRows": [1],
+                "selectedRows": selected_rows,
                 "platforms": DEFAULT_PLATFORMS,
                 "watermark": {"enabled": False},
             }
@@ -340,6 +505,8 @@ def run_product_flow(
                     "totalItems": job.get("totalItems"),
                     "pendingItems": job.get("pendingItems"),
                     "points": job.get("points"),
+                    "selectedRows": selected_rows,
+                    "selectedRowDetails": selected_row_details,
                     "progress": job.get("progress"),
                     "poll": job_payload.get("poll"),
                 },
@@ -348,7 +515,7 @@ def run_product_flow(
         else:
             log.add("job_create", False, reason="skipped because no style was selected", skipped=True)
 
-        effective_limit = min(max(int_or_zero(limit), 0), 1)
+        effective_limit = min(max(int_or_zero(limit), 0), max(len(selected_rows), 1), 1)
         if live_generate and job_id and effective_limit > 0:
             run_payload = {
                 "limit": effective_limit,
@@ -359,6 +526,7 @@ def run_product_flow(
             run_data = run_response["data"] if isinstance(run_response["data"], dict) else {}
             run_job = run_data.get("job") if isinstance(run_data.get("job"), dict) else {}
             first_item = first_job_item(run_job)
+            formal_evidence = formal_result_evidence(first_item, provider_configured=provider_configured)
             run_fields = {
                 "jobId": job_id,
                 "requestedLimit": limit,
@@ -372,38 +540,35 @@ def run_product_flow(
                 "provider": first_item.get("provider"),
                 "action": first_item.get("action"),
                 "error": first_item.get("error") or first_item.get("providerError"),
-                "imageUrl": extract_image_url(first_item),
+                "imageUrl": formal_evidence.get("imageUrl"),
+                "authenticity": formal_evidence,
             }
-            run_ok = not run_response["error"] and bool(run_job) and str(run_job.get("status") or "") not in {"failed", "cancelled"}
+            run_ok = (
+                not run_response["error"]
+                and bool(run_job)
+                and provider_configured
+                and int_or_zero(run_job.get("completedItems")) >= 1
+                and str(run_job.get("status") or "") not in {"failed", "cancelled"}
+                and bool(formal_evidence.get("imageUrl"))
+                and not formal_evidence.get("mockOrSeed")
+            )
+            if not provider_configured:
+                run_reason = "provider configured=false; formal generation is blocked before model execution"
+            elif formal_evidence.get("mockOrSeed"):
+                run_reason = "provider configured=true but formal result looks like seed/mock/local fallback"
+                red_flags.append({"step": "job_run_live", "reason": run_reason})
+            elif not formal_evidence.get("imageUrl"):
+                run_reason = "formal generation did not return a non-empty image URL/path"
+            else:
+                run_reason = run_response["error"] or str(run_fields.get("error") or "job run failed")
             log.add(
                 "job_run_live",
                 run_ok,
                 http_status=run_response["status"],
                 fields=run_fields,
-                reason="" if run_ok else run_response["error"] or str(run_fields.get("error") or "job run failed"),
+                reason="" if run_ok else run_reason,
             )
 
-            if run_ok:
-                export_payload = {
-                    "style": selected_style,
-                    "quality": "standard",
-                    "selectedRows": [1],
-                    "platforms": DEFAULT_PLATFORMS,
-                    "format": "jpg",
-                    "watermark": {"enabled": False},
-                }
-                exported = request_json(client, "POST", "/api/export", payload=export_payload)
-                export_data = exported["data"] if isinstance(exported["data"], dict) else {}
-                export_ok = not exported["error"] and int_or_zero(export_data.get("images")) > 0 and bool(export_data.get("download"))
-                log.add(
-                    "platform_export",
-                    export_ok,
-                    http_status=exported["status"],
-                    fields=compact_fields(export_data, ["rows", "images", "platforms", "watermark", "download"]),
-                    reason="" if export_ok else exported["error"] or "export did not return images/download",
-                )
-            else:
-                log.add("platform_export", True, skipped=True, reason="skipped because live generation did not complete")
         else:
             log.add(
                 "job_run_live",
@@ -412,16 +577,27 @@ def run_product_flow(
                 fields={"liveGenerate": live_generate, "requestedLimit": limit, "effectiveLimit": effective_limit},
                 reason="not run by default; pass --live-generate --limit 1 to run one formal image",
             )
+
+        for scope in ("all", "single", "combo"):
+            export_result = run_export_check(
+                client,
+                selected_style=selected_style,
+                scope=scope,
+                selected_rows=[],
+                live_generate=live_generate,
+            )
+            export_artifacts.append(export_result.get("artifact", {}))
             log.add(
-                "platform_export",
-                True,
-                skipped=True,
-                reason="requires a successful live formal image in this smoke flow",
+                f"platform_export:{scope}",
+                bool(export_result["ok"]),
+                skipped=bool(export_result.get("skipped")),
+                http_status=export_result.get("httpStatus"),
+                fields=export_result.get("fields"),
+                reason=str(export_result.get("reason") or ""),
             )
 
     finally:
-        if temp_dir is not None:
-            temp_dir.cleanup()
+        temp_dir.cleanup()
 
     failures = [
         {"step": step["name"], "reason": step.get("reason", "")}
@@ -435,11 +611,16 @@ def run_product_flow(
         "mode": {
             "styleFirst": style_first,
             "liveGenerate": live_generate,
+            "materializeFreeSamples": materialize_free_samples,
             "limit": limit,
             "effectiveLiveLimit": min(max(int_or_zero(limit), 0), 1),
             "menuFile": str(menu_file) if menu_file else "generated",
+            "xlsMenuFile": str(xls_menu_file) if xls_menu_file else "generated",
         },
+        "provider": provider_fields,
         "selectedStyle": selected_style,
+        "selectedRows": selected_rows,
+        "selectedRowDetails": selected_row_details,
         "jobId": job_id,
         "startedAt": started_at,
         "finishedAt": finished_at,
@@ -449,9 +630,282 @@ def run_product_flow(
             "skipped": sum(1 for step in log.steps if step.get("status") == "skipped"),
             "total": len(log.steps),
         },
+        "redFlags": red_flags,
+        "exports": [artifact for artifact in export_artifacts if artifact],
         "failures": failures,
         "steps": log.steps,
     }
+
+
+def normalize_base_url(value: str | None) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return DEFAULT_LOCAL_URL, "empty base URL resolved to local default"
+    lowered = raw.lower().strip("/")
+    if lowered in {"local", "localhost", "dev"}:
+        return DEFAULT_LOCAL_URL, f"{raw!r} resolved to {DEFAULT_LOCAL_URL}"
+    if lowered in {"render", "prod", "production"}:
+        return DEFAULT_RENDER_URL, f"{raw!r} resolved to {DEFAULT_RENDER_URL}"
+    parsed = parse.urlparse(raw)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return raw.rstrip("/"), ""
+    if raw.startswith("127.") or raw.startswith("localhost") or raw.startswith("[::1]"):
+        return f"http://{raw}".rstrip("/"), "missing scheme resolved with http:// for local host"
+    if "." in raw and " " not in raw:
+        return f"https://{raw}".rstrip("/"), "missing scheme resolved with https:// for deployed host"
+    raise ValueError(
+        f"Invalid --base-url {raw!r}. Use 'local', 'render', or a full URL such as {DEFAULT_LOCAL_URL}."
+    )
+
+
+def prepare_menu_uploads(
+    directory: str | Path,
+    *,
+    menu_file: str | Path | None = None,
+    xls_menu_file: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    main_path = Path(menu_file) if menu_file else create_default_menu_file(root, ".xlsx")
+    main_format = main_path.suffix.lower().lstrip(".") or "xlsx"
+    if main_format not in {"xls", "xlsx"}:
+        main_format = "xlsx"
+    main_source = "provided" if menu_file else "generated"
+
+    specs: list[dict[str, Any]] = []
+
+    def generated_or_error(fmt: str) -> dict[str, Any]:
+        try:
+            path = create_default_menu_file(root, f".{fmt}")
+            return {"format": fmt, "path": path, "source": "generated", "main": False, "error": ""}
+        except Exception as exc:
+            return {"format": fmt, "path": None, "source": "generated", "main": False, "error": str(exc)}
+
+    if main_format == "xls":
+        specs.append(generated_or_error("xlsx"))
+        specs.append({"format": "xls", "path": main_path, "source": main_source, "main": True, "error": ""})
+    else:
+        if xls_menu_file:
+            specs.append({"format": "xls", "path": Path(xls_menu_file), "source": "provided", "main": False, "error": ""})
+        else:
+            specs.append(generated_or_error("xls"))
+        specs.append({"format": "xlsx", "path": main_path, "source": main_source, "main": True, "error": ""})
+    return specs
+
+
+def kind_counts_from_results(results: list[Any]) -> dict[str, int]:
+    counts = {"single": 0, "combo": 0, "other": 0}
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        kind = str(row.get("kind") or "").lower()
+        name = str(row.get("name") or "").lower()
+        if "套餐" in kind or "组合" in kind or "combo" in kind or "套餐" in name:
+            counts["combo"] += 1
+        elif "单品" in kind or "single" in kind:
+            counts["single"] += 1
+        else:
+            counts["other"] += 1
+    return counts
+
+
+def points_total_from_plan(plan: dict[str, Any] | None) -> int | None:
+    if not isinstance(plan, dict):
+        return None
+    for container_key in ("summary", "quote"):
+        container = plan.get(container_key)
+        if isinstance(container, dict) and container.get("points") is not None:
+            return int_or_zero(container.get("points"))
+    results = plan.get("results")
+    if isinstance(results, list):
+        return sum(int_or_zero(row.get("points")) for row in results if isinstance(row, dict))
+    return None
+
+
+def choose_generation_rows(results: list[Any], selected_style: str) -> tuple[list[int], list[dict[str, Any]]]:
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    for index, row in enumerate(results, start=1):
+        if not isinstance(row, dict):
+            continue
+        action = str(row.get("backgroundAction") or row.get("publicStatus") or "")
+        kind = str(row.get("kind") or "")
+        row_candidates = row.get("candidates") if isinstance(row.get("candidates"), list) else []
+        same_style = any(isinstance(candidate, dict) and candidate.get("styleId") == selected_style for candidate in row_candidates)
+        score = 0
+        if "套餐" in kind or "组合" in kind:
+            score += 60
+        if action not in {"背景一致，直接复用", "直接可用", "已生成"}:
+            score += 30
+        if not same_style:
+            score += 15
+        candidates.append((score, index, row))
+    if not candidates:
+        return [1], []
+    candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    _score, index, row = candidates[0]
+    detail = {
+        "index": index,
+        "row": row.get("row"),
+        "name": row.get("name"),
+        "kind": row.get("kind"),
+        "backgroundAction": row.get("backgroundAction"),
+    }
+    return [index], [detail]
+
+
+def run_export_check(
+    client: Any,
+    *,
+    selected_style: str,
+    scope: str,
+    selected_rows: list[int],
+    live_generate: bool,
+) -> dict[str, Any]:
+    if not selected_style:
+        return {"ok": True, "reason": "skipped because no style was selected", "skipped": True, "fields": {"scope": scope}}
+    export_payload = {
+        "style": selected_style,
+        "quality": "standard",
+        "scope": scope,
+        "selectedRows": selected_rows,
+        "platforms": DEFAULT_PLATFORMS,
+        "format": "jpg",
+        "watermark": {"enabled": False},
+    }
+    exported = request_json(client, "POST", "/api/export", payload=export_payload)
+    export_data = exported["data"] if isinstance(exported["data"], dict) else {}
+    export_fields = {
+        **compact_fields(export_data, ["rows", "images", "platforms", "watermark", "download", "extraPlatformPoints"]),
+        "scope": scope,
+    }
+    if exported["error"]:
+        skippable = not live_generate and exported["status"] == 400 and "可导出" in str(exported["error"])
+        return {
+            "ok": bool(skippable),
+            "skipped": bool(skippable),
+            "httpStatus": exported["status"],
+            "fields": export_fields,
+            "reason": (
+                "dry-run has no formal image for this export scope; run live smoke to validate this ZIP"
+                if skippable
+                else exported["error"]
+            ),
+        }
+    zip_check = validate_export_download(client, str(export_data.get("download") or ""))
+    export_ok = int_or_zero(export_data.get("images")) > 0 and bool(export_data.get("download")) and zip_check["ok"]
+    return {
+        "ok": export_ok,
+        "httpStatus": exported["status"],
+        "fields": {**export_fields, **zip_check["fields"]},
+        "artifact": {"scope": scope, **export_fields, **zip_check["fields"]},
+        "reason": "" if export_ok else zip_check["reason"] or "export did not return a valid non-empty ZIP",
+    }
+
+
+def validate_export_download(client: Any, download_url: str) -> dict[str, Any]:
+    if not download_url:
+        return {"ok": False, "fields": {}, "reason": "export response did not include download URL"}
+    result = safe_request(lambda: client.get(download_url))
+    resp = result["response"]
+    if resp is None:
+        return {"ok": False, "fields": {"download": download_url}, "reason": result["error"]}
+    fields: dict[str, Any] = {"downloadStatus": resp.status_code, "zipBytes": len(resp.body)}
+    if not (200 <= resp.status_code < 300):
+        return {"ok": False, "fields": fields, "reason": http_reason(resp, parse_response_json(resp))}
+    try:
+        from io import BytesIO
+
+        with zipfile.ZipFile(BytesIO(resp.body)) as zf:
+            names = zf.namelist()
+            image_count = sum(1 for name in names if name.startswith("images/") and not name.endswith("/"))
+            fields.update(
+                {
+                    "zipEntries": len(names),
+                    "zipImages": image_count,
+                    "hasDeliveryReport": "delivery_report.xlsx" in names,
+                }
+            )
+            ok = image_count > 0 and bool(fields["hasDeliveryReport"])
+            return {"ok": ok, "fields": fields, "reason": "" if ok else "ZIP is missing images or delivery_report.xlsx"}
+    except Exception as exc:
+        return {"ok": False, "fields": fields, "reason": f"download is not a readable ZIP: {exc}"}
+
+
+def formal_result_evidence(item: dict[str, Any], *, provider_configured: bool) -> dict[str, Any]:
+    result = item.get("result") if isinstance(item.get("result"), dict) else {}
+    generation = result.get("generation") if isinstance(result.get("generation"), dict) else {}
+    generation_result = result.get("generationResult") if isinstance(result.get("generationResult"), dict) else {}
+    candidate = (
+        result.get("candidate")
+        if isinstance(result.get("candidate"), dict)
+        else generation.get("candidate")
+        if isinstance(generation.get("candidate"), dict)
+        else generation_result.get("candidate")
+        if isinstance(generation_result.get("candidate"), dict)
+        else {}
+    )
+    evidence = {
+        "providerConfigured": provider_configured,
+        "provider": first_non_empty(item.get("provider"), result.get("provider"), generation.get("provider"), generation_result.get("provider")),
+        "action": first_non_empty(item.get("action"), result.get("action"), generation.get("action"), generation_result.get("action")),
+        "status": first_non_empty(item.get("status"), result.get("status"), generation.get("status"), generation_result.get("status")),
+        "source": first_non_empty(candidate.get("source"), generation.get("source"), generation_result.get("source")),
+        "imageUrl": extract_image_url(item),
+        "indicators": [],
+        "mockOrSeed": False,
+    }
+    indicators = generation_mock_indicators(
+        {
+            "provider": evidence["provider"],
+            "action": evidence["action"],
+            "status": evidence["status"],
+            "source": evidence["source"],
+            "imageUrl": evidence["imageUrl"],
+            "candidate": candidate,
+        },
+        provider_configured=provider_configured,
+    )
+    evidence["indicators"] = indicators
+    evidence["mockOrSeed"] = bool(indicators)
+    return evidence
+
+
+def generation_mock_indicators(value: Any, *, provider_configured: bool) -> list[str]:
+    if not provider_configured:
+        return []
+    flattened = [item.lower() for item in flatten_strings(value)]
+    indicators = []
+    for marker in sorted(MOCK_RESULT_MARKERS):
+        if any(marker in item for item in flattened):
+            indicators.append(f"mock/local marker: {marker}")
+    for marker in sorted(SEED_RESULT_MARKERS):
+        if any(marker in item for item in flattened):
+            indicators.append(f"seed marker: {marker}")
+    return sorted(set(indicators))
+
+
+def flatten_strings(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        out: list[str] = []
+        for item in value.values():
+            out.extend(flatten_strings(item))
+        return out
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(flatten_strings(item))
+        return out
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def choose_style(plan: dict[str, Any] | None, *, style_first: bool) -> str:
@@ -596,14 +1050,179 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def safe_report_name(base_url: str) -> str:
+    parsed = parse.urlparse(base_url)
+    host = parsed.netloc or parsed.path or "local"
+    host = re.sub(r"[^A-Za-z0-9_.-]+", "_", host).strip("_") or "local"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"product_acceptance_{host}_{stamp}"
+
+
+def write_acceptance_artifacts(
+    report: dict[str, Any],
+    *,
+    report_dir: str | Path | None = None,
+    json_output: str | Path | None = None,
+    markdown_output: str | Path | None = None,
+) -> dict[str, str]:
+    target_dir = Path(report_dir or DEFAULT_REPORT_DIR)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    base_name = safe_report_name(str(report.get("baseUrl") or "local"))
+    json_path = Path(json_output) if json_output else target_dir / f"{base_name}.json"
+    markdown_path = Path(markdown_output) if markdown_output else target_dir / f"{base_name}.md"
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    report["artifacts"] = {"json": str(json_path), "markdown": str(markdown_path)}
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.write_text(render_markdown_report(report), encoding="utf-8")
+    return dict(report["artifacts"])
+
+
+def render_markdown_report(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    mode = report.get("mode") if isinstance(report.get("mode"), dict) else {}
+    provider = report.get("provider") if isinstance(report.get("provider"), dict) else {}
+    failures = report.get("failures") if isinstance(report.get("failures"), list) else []
+    red_flags = report.get("redFlags") if isinstance(report.get("redFlags"), list) else []
+    lines = [
+        "# Product Acceptance Report",
+        "",
+        f"- Result: {'PASS' if report.get('ok') else 'FAIL'}",
+        f"- Base URL: `{report.get('baseUrl')}`",
+        f"- Window: `{report.get('startedAt')}` to `{report.get('finishedAt')}`",
+        f"- Mode: liveGenerate=`{mode.get('liveGenerate')}`, limit=`{mode.get('limit')}`, materializeFreeSamples=`{mode.get('materializeFreeSamples')}`",
+        f"- Provider: `{provider.get('provider')}` configured=`{provider.get('configured')}` cosReady=`{provider.get('cosReady')}`",
+        f"- Summary: passed `{summary.get('passed')}`, failed `{summary.get('failed')}`, skipped `{summary.get('skipped')}`, total `{summary.get('total')}`",
+        "",
+    ]
+    if red_flags:
+        lines.extend(["## Red Flags", ""])
+        for flag in red_flags:
+            lines.append(f"- <span style=\"color:red\"><strong>{flag.get('step')}</strong>: {flag.get('reason')}</span>")
+        lines.append("")
+    if failures:
+        lines.extend(["## Blocking Failures", ""])
+        for failure in failures:
+            lines.append(f"- `{failure.get('step')}`: {failure.get('reason')}")
+        lines.append("")
+    else:
+        lines.extend(["## Blocking Failures", "", "- None", ""])
+    lines.extend(
+        [
+            "## Gate Matrix",
+            "",
+            "| Step | Status | Key Evidence | Reason |",
+            "|---|---:|---|---|",
+        ]
+    )
+    for step in report.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        fields = step.get("fields") if isinstance(step.get("fields"), dict) else {}
+        key_fields = compact_markdown_fields(fields)
+        lines.append(
+            f"| `{step.get('name')}` | {step.get('status')} | {key_fields} | {escape_markdown_cell(str(step.get('reason') or ''))} |"
+        )
+    exports = report.get("exports") if isinstance(report.get("exports"), list) else []
+    if exports:
+        lines.extend(["", "## Export Artifacts", ""])
+        for artifact in exports:
+            if isinstance(artifact, dict):
+                lines.append(
+                    f"- `{artifact.get('scope')}`: images=`{artifact.get('images')}`, zipImages=`{artifact.get('zipImages')}`, download=`{artifact.get('download')}`"
+                )
+    if not mode.get("liveGenerate"):
+        lines.extend(
+            [
+                "",
+                "## Live Generation Note",
+                "",
+                "This run used `--no-live-generate`, so formal model output authenticity is intentionally skipped. Run `--live-generate --limit 1` after Tencent/COS credentials are confirmed.",
+            ]
+        )
+    elif provider.get("configured") is False:
+        lines.extend(
+            [
+                "",
+                "## Provider Blocker",
+                "",
+                "Tencent provider is not configured, so the flow is blocked before formal generation can produce a real image.",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def compact_markdown_fields(fields: dict[str, Any]) -> str:
+    keep = [
+        "count",
+        "kindCounts",
+        "total",
+        "single",
+        "combo",
+        "points",
+        "styleCount",
+        "sampleCount",
+        "selectedStyle",
+        "selectedRows",
+        "jobId",
+        "jobStatus",
+        "completedItems",
+        "imageUrl",
+        "scope",
+        "images",
+        "zipImages",
+        "download",
+    ]
+    compact = {key: fields.get(key) for key in keep if key in fields and fields.get(key) not in (None, "", [])}
+    if not compact:
+        return ""
+    return escape_markdown_cell(json.dumps(compact, ensure_ascii=False, default=str)[:420])
+
+
+def escape_markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def stdout_summary(report: dict[str, Any], artifacts: dict[str, str] | None = None, base_url_note: str = "") -> dict[str, Any]:
+    payload = {
+        "ok": report.get("ok"),
+        "baseUrl": report.get("baseUrl"),
+        "summary": report.get("summary"),
+        "failures": report.get("failures"),
+        "redFlags": report.get("redFlags"),
+        "artifacts": artifacts or {},
+    }
+    if base_url_note:
+        payload["baseUrlNote"] = base_url_note
+    return payload
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run V4 product acceptance smoke flow.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8790", help="Local or deployed waimai-image-tool base URL.")
+    parser = argparse.ArgumentParser(
+        description="Run product acceptance smoke flow without noisy logs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""Examples:
+  python3 scripts/smoke_product_flow.py --base-url local --no-live-generate
+  python3 scripts/smoke_product_flow.py --base-url render --no-live-generate
+  python3 scripts/smoke_product_flow.py --base-url https://your-render-app.onrender.com --live-generate --limit 1
+
+Base URL aliases:
+  local  -> {DEFAULT_LOCAL_URL}
+  render -> {DEFAULT_RENDER_URL}
+""",
+    )
+    parser.add_argument("--base-url", default=DEFAULT_LOCAL_URL, help="Use 'local', 'render', or a full http(s) URL.")
     parser.add_argument("--menu-file", help="Excel menu file to upload. If omitted, a small smoke menu is generated.")
+    parser.add_argument("--xls-menu-file", help="Optional real .xls menu for the .xls upload gate. If omitted, one is generated.")
     parser.add_argument("--style-first", action="store_true", help="Use the first returned style card instead of selectedStyle.")
     parser.add_argument("--limit", type=int, default=0, help="Formal live generation limit. Kept at 0 unless --live-generate is set.")
     parser.add_argument("--live-generate", dest="live_generate", action="store_true", help="Actually run one formal image when --limit is greater than 0.")
     parser.add_argument("--no-live-generate", dest="live_generate", action="store_false", help="Dry-run only; never call /api/jobs/<id>/run.")
+    parser.add_argument("--generate-free-samples", action="store_true", help="Call the six free preview sample endpoints for the selected style.")
+    parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR), help="Directory for JSON and Markdown acceptance artifacts.")
+    parser.add_argument("--json-output", help="Explicit JSON report path.")
+    parser.add_argument("--markdown-output", help="Explicit Markdown report path.")
+    parser.add_argument("--stdout", choices=["summary", "full"], default="summary", help="Print concise summary JSON or full report JSON.")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds.")
     parser.set_defaults(live_generate=False)
     return parser.parse_args(argv)
@@ -611,16 +1230,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    client = UrllibProductClient(args.base_url, timeout=args.timeout)
+    try:
+        base_url, base_url_note = normalize_base_url(args.base_url)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    client = UrllibProductClient(base_url, timeout=args.timeout)
     report = run_product_flow(
         client,
         menu_file=args.menu_file,
-        base_url=args.base_url,
+        xls_menu_file=args.xls_menu_file,
+        base_url=base_url,
         style_first=args.style_first,
         limit=args.limit,
         live_generate=args.live_generate,
+        materialize_free_samples=args.generate_free_samples,
     )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    artifacts = write_acceptance_artifacts(
+        report,
+        report_dir=args.report_dir,
+        json_output=args.json_output,
+        markdown_output=args.markdown_output,
+    )
+    report["artifacts"] = artifacts
+    if args.stdout == "full":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(stdout_summary(report, artifacts, base_url_note), ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1
 
 
