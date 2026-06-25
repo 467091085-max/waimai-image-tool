@@ -692,6 +692,12 @@ main {
   font-size: 13px;
   font-weight: 800;
 }
+.style-media.missing.error {
+  background: #fff4f2;
+}
+.style-media.missing.error > span:not(.image-error-note) {
+  color: #b3261e;
+}
 .image-error-note {
   display: none;
   position: absolute;
