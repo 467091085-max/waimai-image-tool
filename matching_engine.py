@@ -11,7 +11,7 @@ from typing import Any
 
 DIRECT_SCORE = 70.0
 REVIEW_SCORE = 45.0
-DEFAULT_MIN_SCORE = 0.15
+DEFAULT_MIN_SCORE = REVIEW_SCORE / 100
 
 BLOCKED_IMAGE_WORDS = (
     "背景",
@@ -54,6 +54,48 @@ MARKETING_WORDS = (
     "正宗",
     "经典",
     "老长沙",
+    "推荐",
+    "收藏",
+    "宠粉",
+    "粉丝",
+    "会员",
+    "专享",
+)
+
+PLATFORM_WORDS = (
+    "美团",
+    "饿了么",
+    "大众点评",
+    "外卖",
+    "堂食",
+    "到店",
+    "门店",
+    "下单",
+    "打包",
+    "配送",
+)
+
+SPEC_WORDS = (
+    "大份",
+    "中份",
+    "小份",
+    "超大份",
+    "标准份",
+    "一份",
+    "单份",
+    "微辣",
+    "中辣",
+    "重辣",
+    "特辣",
+    "少辣",
+    "免辣",
+    "不辣",
+    "加辣",
+    "常温",
+    "冰镇",
+    "去冰",
+    "少冰",
+    "正常冰",
 )
 
 FORMAT_WORDS = (
@@ -107,6 +149,10 @@ GENERIC_COMPONENTS = {
     "白米饭",
     "主食",
     "餐具",
+    "福利",
+    "加料",
+    "小料",
+    "配菜",
     "饮料任选",
     "任选",
     "自选",
@@ -151,15 +197,79 @@ BEVERAGE_WORDS = (
     "柠檬水",
     "金桔",
     "酸梅汤",
+    "椰子水",
+    "柠檬茶",
+    "酸奶",
+    "冰沙",
     "饮品",
     "饮料",
 )
 
-SOUP_WORDS = ("汤", "羹", "粥")
+SOUP_WORDS = ("汤", "羹")
 
-PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "米", "饭", "主食")
+PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "米", "饭", "主食", "杂粮饭", "糙米饭", "珍珠饭")
 PLAIN_RICE_PREFIXES = ("", "一碗", "一份", "半份", "小份", "大份", "加", "配", "赠", "送", "另加", "单点")
 RICE_DISH_WORDS = ("炒饭", "盖饭", "盖码饭", "盖浇饭", "拌饭", "汤饭", "煲仔饭", "木桶饭")
+RICE_NOODLE_WORDS = ("螺蛳粉", "米粉", "米线", "酸辣粉", "河粉", "粉丝", "土豆粉")
+WHEAT_NOODLE_WORDS = ("面", "拌面", "汤面", "拉面", "燃面", "面条", "抄手", "馄饨", "云吞", "水饺", "饺子", "包子", "烧麦", "肠粉")
+PORRIDGE_WORDS = ("粥", "豆汤饭", "汤饭")
+ADDON_WORDS = (
+    "小料",
+    "加料",
+    "配料",
+    "蘸料",
+    "蘸水",
+    "蘸碟",
+    "调料",
+    "酱汁",
+    "料汁",
+    "辣椒包",
+    "生抽包",
+    "醋包",
+    "白糖包",
+    "香菜",
+    "葱花",
+    "蒜粒",
+    "泡菜",
+    "沙拉汁",
+)
+ADDON_EXACT_WORDS = {
+    "加鸡蛋",
+    "加煎蛋",
+    "加荷包蛋",
+    "加卤蛋",
+    "加茶叶蛋",
+    "加肠",
+    "加火腿",
+    "加肉",
+    "加粉",
+    "加面",
+}
+SERVICE_WORDS = (
+    "餐具",
+    "发票",
+    "纸巾",
+    "打包盒",
+    "包装费",
+    "配送费",
+    "补差价",
+    "差价",
+    "勿点",
+    "勿拍",
+    "请勿",
+    "不要点",
+    "不要拍",
+    "不用点",
+    "误点",
+    "温馨提示",
+    "提示",
+    "说明",
+    "公告",
+    "收藏",
+    "福利",
+    "满减",
+    "红包",
+)
 GENERIC_BIGRAMS = {
     "招牌",
     "爆款",
@@ -178,6 +288,11 @@ GENERIC_BIGRAMS = {
     "组合",
     "单人",
     "双人",
+    "经典",
+    "推荐",
+    "福利",
+    "收藏",
+    "门店",
 }
 
 MAIN_FOOD_WORDS = (
@@ -203,10 +318,16 @@ COMBO_WORDS = (
     "双拼",
     "三拼",
     "四拼",
+    "多拼",
     "拼盘",
     "自选",
     "任选",
     "配菜",
+    "多人餐",
+    "单人餐",
+    "双人餐",
+    "大礼包",
+    "全家桶",
 )
 
 SPLIT_RE = re.compile(r"[+＋#&/／、,，|丨;；]+|\s+(?:配|加|和|含)\s+")
@@ -219,6 +340,46 @@ def _compact_text(text: str) -> str:
 def _looks_like_blocked_image(text: str) -> bool:
     compact = _compact_text(text)
     return bool(compact and any(word in compact for word in BLOCKED_IMAGE_WORDS))
+
+
+def _plain_rice_compact(compact: str) -> bool:
+    if not compact:
+        return False
+    if any(word in compact for word in RICE_DISH_WORDS):
+        return False
+    return bool(re.fullmatch(r"(一碗|一份|半份|小份|大份|加|配|赠|送|另加|单点)?(白米饭|米饭|白饭|主食)", compact))
+
+
+def _service_text(name_text: str, text: str) -> bool:
+    if not text:
+        return False
+    if any(word in name_text for word in ("餐具", "发票", "纸巾", "打包盒", "包装费", "配送费", "补差价", "差价")):
+        return True
+    if any(word in name_text for word in ("勿点", "勿拍", "请勿", "不要点", "不要拍", "不用点", "误点", "温馨提示", "提示", "说明", "公告")):
+        return True
+    if any(word in name_text for word in ("福利", "收藏", "满减", "红包")):
+        food_signal = any(
+            word in text
+            for word in BEVERAGE_WORDS
+            + RICE_NOODLE_WORDS
+            + WHEAT_NOODLE_WORDS
+            + PORRIDGE_WORDS
+            + ("肉", "鸡", "鸭", "鱼", "虾", "菜", "粉", "面", "饭", "汤", "粥", "蛋", "豆", "肠", "丸")
+        )
+        return not food_signal
+    return False
+
+
+def _addon_text(name_text: str, text: str) -> bool:
+    if name_text in ADDON_EXACT_WORDS:
+        return True
+    if any(word in name_text for word in ADDON_WORDS):
+        return True
+    if re.fullmatch(r".{1,8}(酱|汁|蘸料|调料)", name_text):
+        return True
+    if any(word in text for word in ("小料", "加料", "配料")) and len(name_text) <= 8:
+        return True
+    return bool(re.fullmatch(r"(加|另加|单加|配)(鸡蛋|煎蛋|荷包蛋|卤蛋|茶叶蛋|火腿|香肠|肉|菜|粉|面|饭)", name_text))
 
 
 def _canonical_alias(norm: str) -> str:
@@ -236,9 +397,11 @@ def normalize_dish(text: str) -> str:
     if _looks_like_blocked_image(text):
         return ""
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
+    if _plain_rice_compact(_compact_text(text)):
+        return "米饭"
     text = re.sub(r"[【\[].*?[】\]]", "", text)
     text = re.sub(r"[（(][^）)]{0,40}[）)]", "", text)
-    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|盒|两)", "", text)
+    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|盒|杯|碗|两)", "", text)
     text = re.sub(r"(买一送一|第二份半价|限时|折扣|满减|赠|送)", "", text)
     text = text.replace("西红柿", "番茄")
     text = text.replace("紫菜鸡蛋汤", "紫菜蛋花汤")
@@ -247,7 +410,7 @@ def normalize_dish(text: str) -> str:
     text = text.replace("辣椒小炒肉", "辣椒炒肉")
     text = text.replace("农家小炒肉", "辣椒炒肉")
     text = text.replace("农家一碗香", "一碗香")
-    for word in MARKETING_WORDS + FORMAT_WORDS:
+    for word in MARKETING_WORDS + PLATFORM_WORDS + SPEC_WORDS + FORMAT_WORDS:
         text = text.replace(word, "")
     norm = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
     return _canonical_alias(norm)
@@ -288,7 +451,16 @@ def split_components(name: str, attrs: str = "") -> list[str]:
     for raw in raw_parts:
         label = _clean_component_label(raw)
         norm = normalize_dish(label)
-        if len(norm) < 2 or label in GENERIC_COMPONENTS or norm in seen:
+        compact = _compact_text(label)
+        if (
+            len(norm) < 2
+            or label in GENERIC_COMPONENTS
+            or norm in GENERIC_COMPONENTS
+            or _service_text(compact, compact)
+            or _addon_text(compact, compact)
+            or _plain_rice_compact(compact)
+            or norm in seen
+        ):
             continue
         seen.add(norm)
         out.append(label)
@@ -298,19 +470,25 @@ def split_components(name: str, attrs: str = "") -> list[str]:
 def classify_kind(name: str, attrs: str = "", category: str = "") -> str:
     """Classify a menu item as single dish, combo, or snack/drink."""
     text = unicodedata.normalize("NFKC", f"{category or ''} {name or ''} {attrs or ''}")
+    compact = _compact_text(text)
+    name_compact = _compact_text(name)
     components = split_components(name, attrs)
-    has_separator = bool(re.search(r"[+＋#&/／、,，|丨;；]", text))
+    has_separator = bool(re.search(r"[+＋&/／、,，|丨;；]", text))
+    if _service_text(name_compact, compact):
+        return "其他"
     if any(word in text for word in COMBO_WORDS) or (has_separator and len(components) >= 2):
         return "套餐/组合"
-    if any(word in text for word in MAIN_FOOD_WORDS):
-        return "单品"
+    if any(word in compact for word in BEVERAGE_WORDS) or _addon_text(name_compact, compact) or _plain_rice_compact(name_compact):
+        return "饮品/小食"
     if any(word in text for word in DRINK_SNACK_WORDS):
         return "饮品/小食"
+    if any(word in text for word in MAIN_FOOD_WORDS + RICE_NOODLE_WORDS + WHEAT_NOODLE_WORDS + PORRIDGE_WORDS):
+        return "单品"
     return "单品"
 
 
 def _has_combo_signal(text: str) -> bool:
-    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋#&/／、,，|丨;；]", text))
+    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋&/／、,，|丨;；]", text))
 
 
 def _is_plain_rice_name(name: str, norm: str = "") -> bool:
@@ -335,18 +513,29 @@ def semantic_family(name: str, norm: str | None = None, attrs: str = "", categor
     """Return a coarse family used to reject severe cross-category matches."""
     raw = unicodedata.normalize("NFKC", f"{category or ''} {name or ''} {attrs or ''}")
     normalized = normalize_dish(name) if norm is None else str(norm or "")
-    text = f"{raw}{normalized}"
+    text = _compact_text(f"{raw}{normalized}")
+    name_text = _compact_text(name)
     if _looks_like_blocked_image(text):
         return "blocked"
-    if _has_combo_signal(text):
+    if _service_text(name_text, text):
+        return "service"
+    if _has_combo_signal(raw):
         return "combo"
     if _is_plain_rice_name(raw, normalized):
         return "plain_rice"
+    if _addon_text(name_text, text):
+        return "addon"
     if any(word in text for word in BEVERAGE_WORDS):
         return "beverage"
+    if any(word in text for word in RICE_NOODLE_WORDS):
+        return "rice_noodle"
+    if any(word in text for word in PORRIDGE_WORDS):
+        return "porridge"
+    if any(word in text for word in WHEAT_NOODLE_WORDS):
+        return "noodle"
     if any(word in text for word in SOUP_WORDS):
         return "soup"
-    return "food"
+    return "main_dish"
 
 
 def significant_bigrams(norm: str) -> set[str]:
@@ -354,6 +543,15 @@ def significant_bigrams(norm: str) -> set[str]:
     if len(clean) < 2:
         return set()
     return {clean[i : i + 2] for i in range(len(clean) - 1)} - GENERIC_BIGRAMS
+
+
+def compatible_families(menu_family: str, image_family: str) -> bool:
+    """Hard category gate before score ranking."""
+    if "blocked" in {menu_family, image_family}:
+        return False
+    if menu_family != image_family:
+        return False
+    return True
 
 
 def strict_match_allowed(
@@ -371,9 +569,7 @@ def strict_match_allowed(
 
     menu_family = semantic_family(menu_name, left)
     image_family = semantic_family(image_name, right)
-    if "blocked" in {menu_family, image_family}:
-        return False
-    if menu_family != image_family:
+    if not compatible_families(menu_family, image_family):
         return False
 
     if score is None:
@@ -381,7 +577,7 @@ def strict_match_allowed(
 
     if left == right or left in right or right in left:
         return True
-    if menu_family == "plain_rice":
+    if menu_family in {"plain_rice", "addon", "service"}:
         return False
 
     overlap = significant_bigrams(left) & significant_bigrams(right)
@@ -523,12 +719,16 @@ def _score_candidates(
 ) -> list[dict[str, Any]]:
     query_norm = normalize_dish(query_name)
     query_grams = grams(query_norm)
-    if not query_norm or semantic_family(query_name, query_norm) == "blocked":
+    query_family = semantic_family(query_name, query_norm)
+    if not query_norm or query_family == "blocked":
         return []
+    effective_min_score = max(min_score, DEFAULT_MIN_SCORE)
     scored: list[tuple[float, Any]] = []
     for prepared in prepared_records:
+        if not compatible_families(query_family, prepared["family"]):
+            continue
         score = similarity(query_name, prepared["name"], query_norm, prepared["norm"], query_grams, prepared["grams"])
-        if score >= min_score and strict_match_allowed(query_name, prepared["name"], query_norm, prepared["norm"], score):
+        if score >= effective_min_score and strict_match_allowed(query_name, prepared["name"], query_norm, prepared["norm"], score):
             scored.append((score, prepared["record"]))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [_candidate(record, score, query_name, match_type, component) for score, record in scored[:limit]]
@@ -561,6 +761,17 @@ def _status_for(candidates: list[dict[str, Any]]) -> str:
     if score >= REVIEW_SCORE:
         return "需人工确认"
     return "弱匹配"
+
+
+def _machine_status_for(candidates: list[dict[str, Any]]) -> str:
+    if not candidates:
+        return "no_match"
+    score = float(candidates[0].get("score") or 0)
+    if score >= DIRECT_SCORE:
+        return "direct"
+    if score >= REVIEW_SCORE:
+        return "review"
+    return "needs_ai"
 
 
 def _background_action(candidates: list[dict[str, Any]], selected_style: str = "") -> str:
@@ -631,6 +842,8 @@ def match_menu_to_library(
                         "name": component,
                         "norm": normalize_dish(component),
                         "status": _status_for(matches),
+                        "matchStatus": _machine_status_for(matches),
+                        "needsAi": not matches,
                         "candidates": matches,
                     }
                 )
@@ -639,6 +852,7 @@ def match_menu_to_library(
         candidates = _dedupe_candidates(dish_candidates + component_candidates)
         candidates = _sort_candidates(candidates, selected_style)[:limit]
         status = _status_for(candidates)
+        match_status = _machine_status_for(candidates)
         background_action = _background_action(candidates, selected_style)
         results.append(
             {
@@ -649,6 +863,8 @@ def match_menu_to_library(
                 "norm": norm,
                 "components": components,
                 "status": status,
+                "matchStatus": match_status,
+                "needsAi": match_status in {"no_match", "needs_ai"},
                 "candidates": candidates,
                 "componentMatches": component_matches,
                 "backgroundAction": background_action,

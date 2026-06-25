@@ -6,7 +6,10 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from menu_parser import audit_menus, parse_menu
+from menu_parser import audit_menus, classify_basic_category, parse_menu
+
+
+REAL_MENU_DIR = Path("/Users/guiguixiaxia/Documents/menus")
 
 
 def save_workbook(path: Path, sheets: dict[str, list[list[object]]]) -> None:
@@ -44,11 +47,14 @@ class MenuParserTests(unittest.TestCase):
 
         self.assertEqual(menu["store"], "测试店")
         self.assertEqual(menu["count"], 3)
-        self.assertEqual(menu["kindCounts"], {"single": 1, "combo": 1, "snack": 1, "total": 3})
+        self.assertEqual(menu["kindCounts"], {"single": 1, "combo": 1, "snack": 1, "other": 0, "total": 3})
+        self.assertEqual(menu["basicCategoryCounts"]["炒菜/盖饭"], 1)
+        self.assertEqual(menu["basicCategoryCounts"]["套餐"], 1)
+        self.assertEqual(menu["basicCategoryCounts"]["饮品"], 1)
         self.assertEqual(menu["sheets"][0]["sheet"], "调研结果")
         self.assertEqual(menu["sheets"][0]["headerRow"], 3)
         for item in menu["items"]:
-            self.assertGreaterEqual(item.keys(), {"row", "category", "name", "price", "kind", "norm", "components"})
+            self.assertGreaterEqual(item.keys(), {"row", "category", "name", "price", "kind", "basicCategory", "norm", "components"})
 
     def test_parse_prefers_menu_sheet_over_noise_and_cost_sheets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +107,38 @@ class MenuParserTests(unittest.TestCase):
         self.assertEqual(audit["parsed"], 2)
         self.assertEqual(audit["failed"], 0)
         self.assertEqual(audit["totalItems"], 2)
+
+    def test_basic_category_distinguishes_risky_non_main_items(self) -> None:
+        cases = {
+            "一碗米饭": "主食",
+            "加鸡蛋": "小料",
+            "餐具": "其他",
+            "收藏福利": "其他",
+            "手打金桔柠檬水": "饮品",
+            "经典螺蛳粉": "米粉/米线",
+            "北京炒合菜": "炒菜/盖饭",
+        }
+        for name, expected in cases.items():
+            self.assertEqual(classify_basic_category(name), expected)
+
+    def test_parse_failure_reports_actionable_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "不是菜单.xlsx"
+            save_workbook(path, {"说明": [["门店", "备注"], ["测试店", "只有说明没有菜品表头"]]})
+
+            with self.assertRaisesRegex(ValueError, "菜品名/商品名称/菜单名"):
+                parse_menu(path)
+
+    @unittest.skipUnless(REAL_MENU_DIR.exists(), "真实菜单目录不存在")
+    def test_real_menu_directory_samples_parse_including_xls(self) -> None:
+        audit = audit_menus(REAL_MENU_DIR)
+
+        self.assertGreaterEqual(audit["files"], 20)
+        self.assertEqual(audit["parsed"], audit["files"])
+        self.assertEqual(audit["failed"], 0, audit["errors"])
+        self.assertGreater(audit["totalItems"], 2500)
+        self.assertTrue(any(record["file"].endswith(".xls") for record in audit["menus"]))
+        self.assertTrue(any(record["basicCategoryCounts"].get("米粉/米线", 0) for record in audit["menus"]))
 
 
 if __name__ == "__main__":
