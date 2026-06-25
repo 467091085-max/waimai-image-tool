@@ -123,6 +123,24 @@ class StrictMatchingTests(unittest.TestCase):
             self.assertEqual(row["matchStatus"], "no_match")
             self.assertTrue(row["needsAi"])
 
+    def test_downweighted_exact_candidate_is_not_hard_matched(self) -> None:
+        records = [
+            {
+                "imageId": "low-quality-exact",
+                "dishName": "北京炒合菜",
+                "styleId": "style-1",
+                "source": "sample",
+                "match_weight": 0.69,
+            }
+        ]
+
+        results = match_menu_to_library([{"row": 1, "name": "北京炒合菜"}], records, selected_style="style-1")
+
+        self.assertEqual(results[0]["candidates"], [])
+        self.assertEqual(results[0]["matchStatus"], "no_match")
+        self.assertEqual(results[0]["matchReason"], "unmatched")
+        self.assertTrue(results[0]["needsGeneration"])
+
 
 if __name__ == "__main__":
     unittest.main()

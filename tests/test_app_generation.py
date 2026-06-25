@@ -623,6 +623,10 @@ class AppGenerationTests(unittest.TestCase):
                 self.assertIn("imageUrl", style)
                 self.assertIn("backgroundJob", style)
                 self.assertEqual(style["needs_generated_background"], style["needsGeneratedBackground"])
+                if style["needsGeneratedBackground"]:
+                    self.assertIsNotNone(style["aiFillManifest"])
+                    self.assertEqual(style["aiFillManifest"]["type"], "style_background")
+                    self.assertEqual(style["generationManifest"], style["aiFillManifest"])
             self.assertTrue(any(style["source"] == "real" for style in styles))
             self.assertTrue(any(style["needsGeneratedBackground"] for style in styles))
 
@@ -891,6 +895,31 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(generation["status"], "succeeded")
             self.assertEqual(generation["action"], "TextToImageLite")
             self.assertEqual(preview_candidate["dishName"], "辣椒炒肉盖码饭")
+
+    def test_formal_generation_uses_text_to_image_when_source_candidate_does_not_match_dish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong_source = root / "wrong.jpg"
+            save_image(wrong_source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(wrong_source, "百事可乐", "style-2")])
+            row["norm"] = app_module.normalize(str(row["name"]))
+
+            def fake_text(row_arg: dict[str, object], style_id: str, quality: str | None, target: Path) -> dict[str, object]:
+                save_image(target, (90, 140, 180))
+                return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "text_to_image", "requestId": "txt-final"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background") as replace,
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=fake_text) as text_to_image,
+            ):
+                output = app_module.run_formal_generation_item(row, style="style-1", quality="standard")
+
+            replace.assert_not_called()
+            text_to_image.assert_called_once()
+            self.assertEqual(output["row"]["generation"]["status"], "succeeded")
+            self.assertEqual(output["row"]["generation"]["action"], "TextToImageLite")
 
 
 if __name__ == "__main__":

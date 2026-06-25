@@ -11,10 +11,10 @@ from typing import Any
 
 DIRECT_SCORE = 70.0
 REVIEW_SCORE = 45.0
-DEFAULT_MIN_SCORE = REVIEW_SCORE / 100
+DEFAULT_MIN_SCORE = DIRECT_SCORE / 100
 DEFAULT_IMAGE_POINTS = 100
 STRONG_TOKEN_SCORE = 0.68
-FUZZY_SCORE = 0.78
+FUZZY_SCORE = 0.86
 
 MATCH_REASON_EXACT = "exact_normalized"
 MATCH_REASON_ALIAS = "alias_canonical"
@@ -650,7 +650,7 @@ def _match_reason_score(
 
     common_chars = set(left) & set(right)
     char_overlap = len(common_chars) / max(1, min(len(set(left)), len(set(right))))
-    if score >= FUZZY_SCORE and char_overlap >= 0.62 and token_strength >= 0.34:
+    if score >= FUZZY_SCORE and char_overlap >= 0.72 and token_strength >= 0.45:
         return score, MATCH_REASON_FUZZY
     return None
 
@@ -924,9 +924,7 @@ def _status_for(candidates: list[dict[str, Any]]) -> str:
     score = float(candidates[0].get("score") or 0)
     if score >= DIRECT_SCORE:
         return "直接可用"
-    if score >= REVIEW_SCORE:
-        return "需人工确认"
-    return "弱匹配"
+    return "需生成"
 
 
 def _machine_status_for(candidates: list[dict[str, Any]]) -> str:
@@ -935,8 +933,6 @@ def _machine_status_for(candidates: list[dict[str, Any]]) -> str:
     score = float(candidates[0].get("score") or 0)
     if score >= DIRECT_SCORE:
         return "direct"
-    if score >= REVIEW_SCORE:
-        return "review"
     return "needs_ai"
 
 
@@ -948,15 +944,11 @@ def _background_action(candidates: list[dict[str, Any]], selected_style: str = "
     if selected_style:
         if chosen.get("styleId") == selected_style and score >= DIRECT_SCORE:
             return "背景一致，直接复用"
-        if chosen.get("styleId") == selected_style and score >= REVIEW_SCORE:
-            return "需人工确认"
-        if score >= REVIEW_SCORE:
+        if score >= DIRECT_SCORE:
             return "需抠图换背景"
         return "智能补图"
     if score >= DIRECT_SCORE:
         return "优先复用图库图"
-    if score >= REVIEW_SCORE:
-        return "需人工确认"
     return "智能补图"
 
 
@@ -1025,15 +1017,17 @@ def match_menu_to_library(
                     match_type="component",
                     component=component,
                 )
+                component_match_status = _machine_status_for(matches)
+                component_needs_generation = component_match_status in {"no_match", "needs_ai"}
                 component_matches.append(
                     {
                         "name": component,
                         "norm": normalize_dish(component),
                         "status": _status_for(matches),
-                        "matchStatus": _machine_status_for(matches),
-                        "needsAi": not matches,
-                        "needs_generation": not matches,
-                        "needsGeneration": not matches,
+                        "matchStatus": component_match_status,
+                        "needsAi": component_needs_generation,
+                        "needs_generation": component_needs_generation,
+                        "needsGeneration": component_needs_generation,
                         **_top_candidate_fields(matches),
                         "candidates": matches,
                     }
@@ -1159,8 +1153,6 @@ def _component_style_status(row: Mapping[str, Any], style_id: str) -> str | None
         best_scores.append(max(float(c.get("score") or 0) for c in same_style))
     if best_scores and all(score >= DIRECT_SCORE for score in best_scores):
         return "direct"
-    if best_scores and all(score >= REVIEW_SCORE for score in best_scores):
-        return "review"
     return "custom"
 
 
@@ -1203,8 +1195,6 @@ def style_coverage(
                 score = float(same.get("score") or 0)
                 if score >= DIRECT_SCORE:
                     direct += 1
-                elif score >= REVIEW_SCORE:
-                    review += 1
                 else:
                     custom += 1
             elif row.get("candidates"):
