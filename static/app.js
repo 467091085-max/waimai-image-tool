@@ -4,6 +4,7 @@ const state = {
   pendingStyle: "",
   menu: null,
   uploaded: false,
+  uploadingFileName: "",
   running: false,
   confirmed: false,
   selectedRows: new Set(),
@@ -17,7 +18,7 @@ const state = {
   stylePreview: null,
   stylePreviewError: null,
   watermark: defaultWatermark(),
-  deliveryPlatforms: [],
+  deliveryPlatforms: ["meituan"],
   quality: "standard",
   exportStatus: {
     tone: "idle",
@@ -75,7 +76,9 @@ const qualityMeta = {
 
 const styleDisplayNames = ["1号背景", "2号背景", "3号背景", "4号背景", "5号背景", "6号背景"];
 const fallbackExtraPlatformPoints = 100;
+const fallbackWatermarkPoints = 50;
 const fallbackCustomEditPoints = 150;
+const stageNames = ["", "上传菜单", "选择风格", "免费样图", "正式生图", "预览导出"];
 let busySerial = 0;
 
 function currentQuality() {
@@ -93,6 +96,10 @@ function hasStylePreviewReady() {
 
 function primaryPlatform() {
   return state.deliveryPlatforms.find(id => platformMeta[id]) || "meituan";
+}
+
+function primaryPlatformMeta() {
+  return platformMeta[primaryPlatform()] || platformMeta.meituan;
 }
 
 function extraPlatformPoints() {
@@ -122,7 +129,8 @@ function cleanErrorText(value, fallback = "生成失败，请稍后重试") {
 }
 
 function setPreviewAspect() {
-  const meta = platformMeta[primaryPlatform()] || platformMeta.meituan;
+  ensureDeliveryPlatform();
+  const meta = primaryPlatformMeta();
   document.documentElement.style.setProperty("--preview-aspect", `${meta.width} / ${meta.height}`);
 }
 
@@ -134,6 +142,16 @@ function sizeLimitText(meta) {
 function platformSpecText(meta) {
   if (!meta) return "";
   return `${meta.size}，${meta.ratio}，<=${sizeLimitText(meta)}`;
+}
+
+function platformBrief(id) {
+  const meta = platformMeta[id];
+  return meta ? `${meta.name} ${meta.size} <=${sizeLimitText(meta)}` : id;
+}
+
+function ensureDeliveryPlatform() {
+  state.deliveryPlatforms = state.deliveryPlatforms.filter(id => platformMeta[id]);
+  if (!state.deliveryPlatforms.length) state.deliveryPlatforms = ["meituan"];
 }
 
 function styleDisplayName(index) {
@@ -398,7 +416,8 @@ function scrollToPanel(id) {
 
 function watermarkCharge() {
   if (!state.plan || !state.watermark.enabled) return 0;
-  return state.plan.pricing.watermarkPoints || 0;
+  const raw = Number(state.plan.pricing?.watermarkPoints);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallbackWatermarkPoints;
 }
 
 function totalCharge() {
@@ -470,11 +489,68 @@ function renderExportStatus() {
   `;
 }
 
+function renderRunStatus() {
+  const box = $("#runStatusPanel");
+  if (!box) return;
+  let tone = "idle";
+  let title = "等待菜单上传";
+  let detail = "上传 XLS/XLSX 菜单后，工作台会自动进入风格选择。";
+  if (state.busy) {
+    tone = "loading";
+    const labels = {
+      "upload-menu": "正在上传并解析菜单",
+      "style-plan": "正在生成 6 张背景风格候选",
+      "style-preview": "正在生成 6 张免费单品样图",
+      "confirm-charge": "正在扣积分",
+      "confirm-generate": "正在生成正式菜品图",
+      "confirm-refund": "正在退回积分",
+      "export-zip": "正在打包导出 ZIP",
+      "export-single": "正在准备单张保存",
+      "redraw-debit": "正在换版",
+      "refine-debit": "正在提交自定义修改",
+      recharge: "正在处理积分充值"
+    };
+    title = labels[state.busy.key] || state.busy.title || "任务处理中";
+    detail = state.busy.detail || "请稍候，任务完成后会自动更新页面。";
+  } else if (!state.uploaded) {
+    tone = "idle";
+  } else if (!state.plan) {
+    tone = "loading";
+    title = "菜单已上传，正在准备风格候选";
+    detail = `${state.menu?.file || "菜单"} · ${state.menu?.count || 0} 个菜品，正在生成可选背景。`;
+  } else if (!state.pendingStyle) {
+    title = "请选择整店背景风格";
+    detail = "上方会固定展示 6 张背景候选，选中后可生成 6 张免费单品样图。";
+  } else if (!hasStylePreviewReady() && !state.confirmed) {
+    tone = state.stylePreviewError?.style === state.pendingStyle ? "error" : "warning";
+    title = state.stylePreviewError?.style === state.pendingStyle ? "免费样图需要重试" : "等待生成免费样图";
+    detail = `${styleName(state.pendingStyle)} · 先看 6 张免费单品样图，满意后再扣积分。`;
+  } else if (!state.confirmed) {
+    title = "免费样图已就绪，等待确认正式出图";
+    detail = `${currentQuality().name} ${imagePoints()}积分/张 · ${state.deliveryPlatforms.map(platformBrief).join(" / ")} · 将扣 ${totalCharge()} 积分。`;
+  } else {
+    const stats = formalPlanStats(state.plan);
+    tone = stats.failed ? "warning" : "idle";
+    title = stats.failed ? "正式图部分完成，可重试失败项" : "正式图已生成，可预览修改或导出";
+    detail = stats.failed
+      ? `已完成 ${stats.completed}/${stats.total} 张，失败 ${stats.failed} 张。`
+      : `${stats.completed || stats.total} 张正式图 · ${state.deliveryPlatforms.map(platformBrief).join(" / ")}。`;
+  }
+  box.className = `run-status ${tone}`;
+  box.innerHTML = `
+    <span class="run-status-dot"></span>
+    <div>
+      <b>${esc(title)}</b>
+      <p>${esc(detail)}</p>
+    </div>
+  `;
+}
+
 function setProgress(percent, text, stage = state.stage) {
   state.stage = stage;
   $("#progressBar").style.width = `${percent}%`;
   $("#progressText").textContent = text;
-  $("#stageBadge").textContent = `第 ${stage} 步`;
+  $("#stageBadge").textContent = `第 ${stage} 步 · ${stageNames[stage] || "进行中"}`;
   $$(".round-step").forEach((button, index) => {
     const step = index + 1;
     button.classList.toggle("done", step < stage);
@@ -856,7 +932,8 @@ function generationPlanFromJob(job, fallbackPlan = state.plan) {
 }
 
 function setControls() {
-  const menuFile = state.menu?.file || "菜单";
+  ensureDeliveryPlatform();
+  const menuFile = state.uploadingFileName || state.menu?.file || "菜单";
   const menuCount = state.menu?.count ?? 0;
   const busy = Boolean(state.busy);
   const uploadBusy = isBusy("upload-menu");
@@ -909,9 +986,14 @@ function setControls() {
   $("#exportZipBtn").disabled = !state.confirmed || busy;
   $("#exportZipBtn").classList.toggle("is-loading", exportBusy);
   $("#exportZipBtn").textContent = exportBusy ? "打包中" : hasExportable ? "打包导出 ZIP" : "暂无可导出成图";
-  $("#menuStatus").textContent = state.uploaded ? `菜单已就绪：${menuFile} · ${menuCount} 个菜` : "等待选择菜单";
-  $("#menuStatus").className = `menu-status ${state.uploaded ? "good" : ""}`;
+  $("#menuStatus").textContent = uploadBusy
+    ? `正在上传并解析：${menuFile}`
+    : state.uploaded
+      ? `菜单已就绪：${menuFile} · ${menuCount} 个菜`
+      : "等待选择菜单";
+  $("#menuStatus").className = `menu-status ${uploadBusy ? "loading" : state.uploaded ? "good" : ""}`;
   $("#pointsBalance").textContent = `${state.account.balance || 0}`;
+  renderRunStatus();
   renderLibraryStatus();
   updateChargeText();
   renderQualityControls();
@@ -1050,8 +1132,8 @@ function renderWaiting() {
     { title: "上传菜单", status: state.uploaded ? "已完成" : "等待上传菜单", state: state.uploaded ? "done" : "active" },
     { title: "选择背景", status: state.uploaded ? "自动生成中" : "待菜单", state: state.uploaded ? "active" : "" },
     { title: "6张免费样图", status: "待选择背景" },
-    { title: "确认正式图", status: "待扣积分" },
-    { title: "导出图片", status: "待正式图" }
+    { title: "设置并生成", status: "待质量/平台/水印" },
+    { title: "预览修改/导出", status: "待正式图" }
   ]);
   $("#styleBox").innerHTML = `<div class="empty">菜单上传后会展示 6 张背景风格图</div>`;
   $("#sampleActionTitle").textContent = "先选择一个背景";
@@ -1067,6 +1149,30 @@ function renderWaiting() {
   renderQualityControls();
   renderWatermarkControls();
   setControls();
+}
+
+function renderStylePlanLoading() {
+  const styleBox = $("#styleBox");
+  if (styleBox) {
+    styleBox.innerHTML = Array.from({ length: 6 }, (_, index) => `
+      <button class="style skeleton" type="button" disabled>
+        <div class="style-media"></div>
+        <span class="style-body">
+          <b>${index + 1}号背景</b>
+          <span>正在生成背景候选</span>
+          <em>生成中</em>
+        </span>
+      </button>
+    `).join("");
+  }
+  $("#sampleActionTitle").textContent = "正在生成 6 张背景候选";
+  $("#sampleActionHint").textContent = "背景卡完成后，选择任意一张即可生成 6 张免费单品样图。";
+  $("#stylePreviewTitle").textContent = "背景生成中，稍后可生成 6 张免费单品样图";
+  setStylePreviewStatus("loading", "正在准备背景风格图。这里会在选择背景后展示 6 张免费单品样图。");
+  $("#stylePreviewBox").className = "style-preview-box";
+  $("#stylePreviewBox").innerHTML = previewPlaceholders("等待背景候选");
+  $("#selectedStyleHint").textContent = "正在准备风格候选";
+  renderRunStatus();
 }
 
 function renderPlan(showPreview = false) {
@@ -1092,8 +1198,8 @@ function renderPlan(showPreview = false) {
     { title: "上传菜单", status: `${p.menu.count} 个菜品`, state: "done" },
     { title: "选择背景", status: state.pendingStyle ? styleName(state.pendingStyle) : `${styles.length} 张可选`, state: state.pendingStyle || state.confirmed ? "done" : "active" },
     { title: "6张免费样图", status: readyPreview || state.confirmed ? "已生成" : state.pendingStyle ? "待点击生成" : "待选择背景", state: state.confirmed || readyPreview ? "done" : state.pendingStyle ? "active" : "" },
-    { title: "确认正式图", status: state.confirmed ? `已扣 ${state.chargedPoints || totalCharge()} 积分` : readyPreview ? `待扣 ${totalCharge()} 积分` : "待样图", state: state.confirmed ? "done" : readyPreview ? "active" : "" },
-    { title: "导出图片", status: state.confirmed ? "可以导出" : "待正式图", state: state.confirmed ? "active" : "" }
+    { title: "设置并生成", status: state.confirmed ? `已扣 ${state.chargedPoints || totalCharge()} 积分` : readyPreview ? `待扣 ${totalCharge()} 积分` : "待样图", state: state.confirmed ? "done" : readyPreview ? "active" : "" },
+    { title: "预览修改/导出", status: state.confirmed ? "可以导出" : "待正式图", state: state.confirmed ? "active" : "" }
   ]);
   renderStyles();
   renderStylePreview();
@@ -1107,14 +1213,14 @@ function renderPlan(showPreview = false) {
   $("#summary").innerHTML = [
     `正式图 ${p.summary.total} 张`,
     `${quality.name} · ${quality.points} 积分/张`,
-    `交付平台 ${state.deliveryPlatforms.length} 个`,
+    `交付平台 ${state.deliveryPlatforms.map(id => platformMeta[id]?.name || id).join("、")}`,
     generation.jobId ? `任务进度 已完成 ${formalStats.completed} 张 / 失败 ${formalStats.failed} 张 / 总数 ${formalStats.total} 张` : "",
     generation.partial ? "部分图片需要重试" : "",
     generation.refundRequired ? "有图片需要退回积分" : "",
     !generation.jobId && generation.succeeded ? `本次完成 ${generation.succeeded || 0} 张` : "",
     generation.pending ? `待正式生成 ${generation.pending} 张` : "",
     generation.failed ? `生成失败 ${generation.failed} 张` : "",
-    state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
+    state.watermark.enabled ? `品牌水印 ${watermarkCharge()} 积分/单` : "品牌水印可选",
     `自定义修改 ${customEditPoints()} 积分/张`,
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
   ].filter(Boolean).map(x => `<span class="pill">${esc(x)}</span>`).join("");
@@ -1124,6 +1230,7 @@ function renderPlan(showPreview = false) {
 }
 
 function renderPlatformControls() {
+  ensureDeliveryPlatform();
   setPreviewAspect();
   const locked = state.confirmed || Boolean(state.busy);
   $$(".platform-check").forEach(input => {
@@ -1145,13 +1252,14 @@ function renderPlatformControls() {
     return `${meta?.name || id} ${platformSpecText(meta)}`;
   });
   const charge = platformCharge();
+  const previewMeta = primaryPlatformMeta();
   const nextPlatformText = state.deliveryPlatforms.length === 1
     ? `再加选任一平台 +${extraPlatformPoints()}积分`
     : state.deliveryPlatforms.length === 2
       ? `加选第三个平台再 +${extraPlatformPoints()}积分`
       : "三个平台已全选";
   $("#platformChargeHint").textContent = names.length
-    ? `已选 ${state.deliveryPlatforms.length} 个平台，平台附加 +${charge}积分；${names.join(" / ")}；${nextPlatformText}`
+    ? `已选 ${state.deliveryPlatforms.length} 个平台，平台附加 +${charge}积分；水印预览按 ${previewMeta.name} ${previewMeta.ratio}；${nextPlatformText}`
     : "请选择至少 1 个平台，任意 1 个平台不加积分";
   const select = $("#platformSelect");
   if (select) {
@@ -1180,7 +1288,7 @@ function renderWatermarkControls() {
   const enabled = $("#watermarkEnabled");
   if (!enabled) return;
   setPreviewAspect();
-  const meta = platformMeta[primaryPlatform()] || platformMeta.meituan;
+  const meta = primaryPlatformMeta();
   const locked = state.confirmed || Boolean(state.busy);
   enabled.checked = state.watermark.enabled;
   enabled.disabled = locked;
@@ -1203,7 +1311,7 @@ function renderWatermarkControls() {
   const demoImage = watermarkDemoImage();
   demo.className = `watermark-demo ${state.watermark.enabled ? "enabled" : ""} ${state.watermark.pattern} ${state.watermark.position}`;
   demo.innerHTML = `
-    <span>${locked ? "水印已锁定" : `水印预览 · ${meta.name} ${meta.size}，${meta.ratio}`}</span>
+    <span>${locked ? `水印已锁定 · ${meta.name} ${meta.size}，${meta.ratio}` : `水印预览 · ${meta.name} ${meta.size}，${meta.ratio} · 文字无底块`}</span>
     <div class="watermark-preview-canvas ${demoImage ? "" : "empty-preview"}" data-image-shell>
       ${demoImage ? `<img class="watermark-demo-image" src="${demoImage}" alt="水印示意图" ${imageFallbackAttr()}>${watermarkOverlay(text)}<span class="image-error-note">图片加载失败，暂不能预览水印</span>` : `<span class="watermark-empty">生成免费样图后可预览水印</span>`}
     </div>
@@ -1659,6 +1767,7 @@ async function uploadMenu() {
     return;
   }
   state.running = true;
+  state.uploadingFileName = file.name;
   const token = beginBusy("upload-menu", "正在上传菜单", `${file.name} 正在上传并解析`);
   setControls();
   setProgress(15, "正在上传菜单", 1);
@@ -1687,13 +1796,14 @@ async function uploadMenu() {
     state.stylePreview = null;
     state.stylePreviewError = null;
     state.watermark = defaultWatermark();
-    state.deliveryPlatforms = [];
+    state.deliveryPlatforms = ["meituan"];
     state.selectedRows.clear();
     renderWaiting();
     shouldAutoStart = true;
     toast("菜单已上传，正在自动生成风格方案");
   } finally {
     state.running = false;
+    state.uploadingFileName = "";
     endBusy(token);
     setControls();
   }
@@ -1721,8 +1831,10 @@ async function startJob(options = {}) {
   state.stylePreview = null;
   state.stylePreviewError = null;
   state.selectedRows.clear();
+  ensureDeliveryPlatform();
   setControls();
   setProgress(38, "正在识别菜品和品类", 2);
+  renderStylePlanLoading();
   try {
     await new Promise(resolve => setTimeout(resolve, 260));
     updateBusy(token, "style-plan", "正在生成背景风格图", "正在整理 6 张背景卡，请稍候");
