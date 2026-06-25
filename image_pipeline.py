@@ -10,13 +10,45 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 
 PLATFORMS = {
-    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 5120, "default": True},
-    "taobao": {"name": "淘宝外卖/饿了么", "width": 800, "height": 800, "maxKB": 20480, "default": False},
-    "jd": {"name": "京东外卖/京东秒送", "width": 800, "height": 800, "maxKB": 5120, "default": False},
+    "meituan": {
+        "name": "美团外卖",
+        "width": 800,
+        "height": 600,
+        "aspect": "4:3",
+        "maxKB": 5120,
+        "formats": ["jpg", "png"],
+        "defaultFormat": "jpg",
+        "mode": "RGB",
+        "default": True,
+    },
+    "taobao": {
+        "name": "淘宝外卖/饿了么",
+        "width": 800,
+        "height": 800,
+        "aspect": "1:1",
+        "maxKB": 20480,
+        "formats": ["jpg", "png"],
+        "defaultFormat": "jpg",
+        "mode": "RGB",
+        "default": False,
+    },
+    "jd": {
+        "name": "京东外卖/京东秒送",
+        "width": 800,
+        "height": 800,
+        "aspect": "1:1",
+        "maxKB": 5120,
+        "formats": ["jpg", "jpeg", "png"],
+        "defaultFormat": "jpg",
+        "mode": "RGB",
+        "default": False,
+    },
 }
+
+EXTRA_PLATFORM_POINTS = 100
 
 REPORT_COLUMNS = [
     "菜品名",
@@ -35,8 +67,11 @@ REPORT_COLUMNS = [
 
 def safe_filename(name: str) -> str:
     value = unicodedata.normalize("NFKC", str(name))
-    value = re.sub(r"[/:*?\"<>|\\]+", "_", value)
-    return re.sub(r"\s+", " ", value).strip()[:90] or "file"
+    value = re.sub(r"[\x00-\x1f/:*?\"<>|\\]+", "_", value)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    if value.upper() in {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "LPT1", "LPT2", "LPT3"}:
+        value = f"{value}_"
+    return value[:90] or "file"
 
 
 def font(size: int) -> ImageFont.ImageFont:
@@ -63,7 +98,16 @@ def watermark_position(base_size: tuple[int, int], mark_size: tuple[int, int], p
         "bottom-right": (bw - mw - margin, bh - mh - margin),
         "center": ((bw - mw) // 2, (bh - mh) // 2),
     }
-    return positions.get(position, positions["bottom-right"])
+    x, y = positions.get(position, positions["bottom-right"])
+    if mw + (margin * 2) <= bw:
+        x = max(margin, min(x, bw - mw - margin))
+    else:
+        x = max(0, (bw - mw) // 2)
+    if mh + (margin * 2) <= bh:
+        y = max(margin, min(y, bh - mh - margin))
+    else:
+        y = max(0, (bh - mh) // 2)
+    return x, y
 
 
 def watermark_text_fill(color: str) -> tuple[int, int, int, int]:
@@ -99,13 +143,31 @@ def make_logo_watermark(data_url: str, width: int) -> Image.Image | None:
     return logo
 
 
-def paste_tiled(overlay: Image.Image, mark: Image.Image) -> None:
+def fit_watermark_to_safe_area(mark: Image.Image, base_size: tuple[int, int], margin: int) -> Image.Image:
+    max_w = max(1, base_size[0] - (margin * 2))
+    max_h = max(1, base_size[1] - (margin * 2))
+    if mark.width <= max_w and mark.height <= max_h:
+        return mark
+    fitted = mark.copy()
+    fitted.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+    return fitted
+
+
+def paste_tiled(overlay: Image.Image, mark: Image.Image, margin: int = 0) -> None:
     gap_x = max(40, mark.width // 2)
     gap_y = max(38, mark.height)
-    for y in range(-mark.height, overlay.height + mark.height, mark.height + gap_y):
-        offset = 0 if (y // max(1, mark.height + gap_y)) % 2 == 0 else (mark.width + gap_x) // 2
-        for x in range(-mark.width + offset, overlay.width + mark.width, mark.width + gap_x):
+    bottom = max(margin, overlay.height - margin - mark.height)
+    right = max(margin, overlay.width - margin - mark.width)
+    y = margin
+    row = 0
+    while y <= bottom:
+        offset = 0 if row % 2 == 0 else (mark.width + gap_x) // 2
+        x = margin + offset
+        while x <= right:
             overlay.alpha_composite(mark, (x, y))
+        x += mark.width + gap_x
+        y += mark.height + gap_y
+        row += 1
 
 
 def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.Image:
@@ -119,12 +181,14 @@ def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.
     if mark.width <= 0 or mark.height <= 0:
         return base
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    margin = max(24, base.width // 34)
+    mark = fit_watermark_to_safe_area(mark, base.size, margin)
     if str(settings.get("pattern") or "corner") == "tile":
         if mark_type == "text":
             mark = mark.rotate(-22, expand=True)
-        paste_tiled(overlay, mark)
+            mark = fit_watermark_to_safe_area(mark, base.size, margin)
+        paste_tiled(overlay, mark, margin)
     else:
-        margin = max(24, base.width // 34)
         position = str(settings.get("position") or "bottom-right")
         overlay.alpha_composite(mark, watermark_position(base.size, mark.size, position, margin))
     return Image.alpha_composite(base, overlay)
@@ -143,6 +207,30 @@ def parse_platforms(value: Any) -> list[str]:
     return out or ["meituan"]
 
 
+def platform_extra_points(platforms: list[str] | str | None, extra_points: int = EXTRA_PLATFORM_POINTS) -> int:
+    selected = parse_platforms(platforms)
+    return max(len(selected) - 1, 0) * int(extra_points)
+
+
+def normalize_image_format(image_format: str | None, platform_id: str) -> tuple[str, str, str]:
+    spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
+    requested = str(image_format or spec.get("defaultFormat") or "jpg").lower().strip().lstrip(".")
+    if requested == "jpeg":
+        requested = "jpg"
+    allowed = {"jpg" if item == "jpeg" else str(item).lower() for item in spec.get("formats", ["jpg"])}
+    if requested not in allowed:
+        requested = str(spec.get("defaultFormat") or "jpg").lower()
+    if requested == "jpeg":
+        requested = "jpg"
+    if requested == "png":
+        return "png", ".png", "PNG"
+    return "jpg", ".jpg", "JPEG"
+
+
+def platform_folder_name(platform_id: str, spec: dict[str, Any]) -> str:
+    return f"{platform_id}_{safe_filename(str(spec['name']))}_{spec['width']}x{spec['height']}"
+
+
 def edge_background(img: Image.Image) -> tuple[int, int, int, int]:
     rgba = img.convert("RGBA")
     samples = [
@@ -154,20 +242,70 @@ def edge_background(img: Image.Image) -> tuple[int, int, int, int]:
     return tuple(int(sum(pixel[i] for pixel in samples) / len(samples)) for i in range(4))
 
 
-def fit_to_platform(img: Image.Image, platform_id: str) -> Image.Image:
+def expanded_bbox(bbox: tuple[int, int, int, int], size: tuple[int, int], padding_ratio: float = 0.04) -> tuple[int, int, int, int]:
+    width, height = size
+    pad = max(8, int(max(width, height) * padding_ratio))
+    left, top, right, bottom = bbox
+    return max(0, left - pad), max(0, top - pad), min(width, right + pad), min(height, bottom + pad)
+
+
+def subject_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
+    rgba = img.convert("RGBA")
+    alpha_bbox = rgba.getchannel("A").getbbox()
+    if alpha_bbox and alpha_bbox != (0, 0, rgba.width, rgba.height):
+        return expanded_bbox(alpha_bbox, rgba.size)
+
+    background = Image.new("RGBA", rgba.size, edge_background(rgba))
+    diff = ImageChops.difference(rgba, background).convert("L")
+    mask = diff.point(lambda value: 255 if value > 22 else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return None
+    if bbox == (0, 0, rgba.width, rgba.height):
+        return None
+    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+    image_area = rgba.width * rgba.height
+    if bbox_area < image_area * 0.02:
+        return None
+    return expanded_bbox(bbox, rgba.size)
+
+
+def crop_to_subject(img: Image.Image) -> Image.Image:
+    bbox = subject_bbox(img)
+    if not bbox:
+        return img
+    left, top, right, bottom = bbox
+    if (right - left) <= 1 or (bottom - top) <= 1:
+        return img
+    return img.crop(bbox)
+
+
+def fit_to_platform(img: Image.Image, platform_id: str, *, crop: bool = True) -> Image.Image:
     spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
     target = (int(spec["width"]), int(spec["height"]))
     src = img.convert("RGBA")
-    fitted = ImageOps.contain(src, target, Image.Resampling.LANCZOS)
+    subject = crop_to_subject(src) if crop else src
+    fitted = ImageOps.contain(subject, target, Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", target, edge_background(src))
     canvas.alpha_composite(fitted, ((target[0] - fitted.width) // 2, (target[1] - fitted.height) // 2))
     return canvas
 
 
-def save_platform_image(img: Image.Image, target: Path, max_kb: int) -> int:
+def prepare_platform_image(img: Image.Image, platform_id: str, watermark: dict[str, Any] | None = None) -> Image.Image:
+    fitted = fit_to_platform(img, platform_id)
+    return apply_watermark(fitted, watermark)
+
+
+def save_platform_image(img: Image.Image, target: Path, max_kb: int, image_format: str = "jpg") -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     max_bytes = max(64, int(max_kb)) * 1024
     rgb = img.convert("RGB")
+    if str(image_format).lower() == "png":
+        rgb.save(target, "PNG", optimize=True)
+        if target.stat().st_size > max_bytes:
+            rgb.quantize(colors=256).convert("RGB").save(target, "PNG", optimize=True)
+        return target.stat().st_size
+
     for quality in list(range(92, 34, -5)) + [30, 25, 20]:
         rgb.save(target, "JPEG", quality=quality, optimize=True, progressive=True, subsampling=2)
         if target.stat().st_size <= max_bytes:
@@ -184,22 +322,95 @@ def selected_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def should_export_row(row: dict[str, Any], row_number: int, selected_rows: set[int], scope: str) -> bool:
+def normalize_selected_rows(value: Any) -> set[int]:
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    selected: set[int] = set()
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        try:
+            selected.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return selected
+
+
+def normalize_selected_ids(value: Any) -> set[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}
+
+
+def row_identity_values(row: dict[str, Any], row_number: int) -> set[str]:
+    values = {str(row_number)}
+    for key in ("row", "id", "itemId", "rowId", "dishId", "skuId"):
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            values.add(str(value).strip())
+    candidate = selected_candidate(row)
+    if candidate:
+        for key in ("imageId", "id", "objectKey"):
+            value = candidate.get(key)
+            if value is not None and str(value).strip():
+                values.add(str(value).strip())
+    return values
+
+
+def selected_filter_matches(row: dict[str, Any], row_number: int, selected_rows: set[int], selected_ids: set[str]) -> bool:
+    row_number_values = {row_number}
+    try:
+        row_number_values.add(int(row.get("row")))
+    except (TypeError, ValueError):
+        pass
+    if selected_rows and row_number_values.intersection(selected_rows):
+        return True
+    if selected_ids and row_identity_values(row, row_number).intersection(selected_ids):
+        return True
+    return False
+
+
+def should_export_row(
+    row: dict[str, Any],
+    row_number: int,
+    selected_rows: set[int],
+    scope: str,
+    selected_ids: set[str] | None = None,
+) -> bool:
+    selected_ids = selected_ids or set()
     candidate = selected_candidate(row)
     action = row.get("backgroundAction")
-    if selected_rows and row_number not in selected_rows:
+    normalized_scope = str(scope or "all")
+    if selected_rows or selected_ids:
+        if not selected_filter_matches(row, row_number, selected_rows, selected_ids):
+            return False
+    elif normalized_scope == "selected":
         return False
-    if scope == "direct" and action != "背景一致，直接复用":
+    if normalized_scope == "direct" and action != "背景一致，直接复用":
         return False
-    if scope == "need_bg" and action != "需抠图换背景":
+    if normalized_scope == "need_bg" and action != "需抠图换背景":
         return False
-    if scope == "missing" and candidate is not None:
+    if normalized_scope == "missing" and candidate is not None:
         return False
-    if scope == "single" and row.get("kind") != "单品":
+    if normalized_scope == "single" and row.get("kind") != "单品":
         return False
-    if scope == "combo" and row.get("kind") != "套餐/组合":
+    if normalized_scope == "combo" and row.get("kind") != "套餐/组合":
+        return False
+    if normalized_scope == "other" and row.get("kind") in {"单品", "套餐/组合"}:
         return False
     return True
+
+
+def unique_filename(name: str, ext: str, used_names: set[str]) -> str:
+    stem = safe_filename(name or "dish")
+    suffix = ext if ext.startswith(".") else f".{ext}"
+    candidate = f"{stem}{suffix}"
+    counter = 2
+    while candidate.lower() in used_names:
+        candidate = f"{stem}_{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate.lower())
+    return candidate
 
 
 def report_row(
@@ -208,6 +419,7 @@ def report_row(
     file_size: int | None = None,
     delivery_file: str = "",
     watermark_enabled: bool = False,
+    status: str = "待补图",
 ) -> dict[str, Any]:
     if platform is None:
         data = {
@@ -218,7 +430,7 @@ def report_row(
             "尺寸": "",
             "文件大小KB": "",
             "平台上限KB": "",
-            "图片状态": "待补图",
+            "图片状态": status,
             "预计积分": row.get("points", ""),
             "品牌水印": "未添加",
             "交付文件": "",
@@ -245,26 +457,28 @@ def export_delivery_zip(
     export_dir: Path,
     scope: str = "all",
     selected_rows: list[int] | None = None,
+    selected_ids: list[str] | None = None,
     image_format: str = "jpg",
     watermark: dict[str, Any] | None = None,
     platforms: list[str] | str | None = None,
     run_name: str | None = None,
 ) -> dict[str, Any]:
     export_dir.mkdir(parents=True, exist_ok=True)
-    selected = {int(item) for item in selected_rows or []}
+    selected = normalize_selected_rows(selected_rows)
+    selected_id_set = normalize_selected_ids(selected_ids)
     selected_platforms = parse_platforms(platforms)
     watermark_enabled = isinstance(watermark, dict) and bool(watermark.get("enabled"))
-    normalized_format = str(image_format or "jpg").lower()
-    ext = ".jpg" if normalized_format in {"jpg", "jpeg"} else ".jpg"
 
-    run_dir = export_dir / (run_name or f"export_{int(time.time())}_{time.time_ns() % 1_000_000_000:09d}")
+    safe_run_name = safe_filename(run_name) if run_name else f"export_{int(time.time())}_{time.time_ns() % 1_000_000_000:09d}"
+    run_dir = export_dir / safe_run_name
     image_dir = run_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
     image_count = 0
+    used_names_by_platform: dict[str, set[str]] = {}
     for row_number, row in enumerate(plan_results, start=1):
-        if not should_export_row(row, row_number, selected, str(scope or "all")):
+        if not should_export_row(row, row_number, selected, str(scope or "all"), selected_id_set):
             continue
 
         candidate = selected_candidate(row)
@@ -273,17 +487,24 @@ def export_delivery_zip(
             rows.append(report_row(row))
             continue
 
-        with Image.open(src) as raw_img:
-            for platform_id in selected_platforms:
-                spec = PLATFORMS[platform_id]
-                platform_dir = image_dir / f"{platform_id}_{spec['name']}_{spec['width']}x{spec['height']}"
-                target = platform_dir / f"{row_number:03d}_{safe_filename(str(row.get('name') or 'dish'))}{ext}"
-                img = fit_to_platform(raw_img, platform_id)
-                img = apply_watermark(img, watermark)
-                file_size = save_platform_image(img, target, int(spec["maxKB"]))
-                image_count += 1
-                delivery_file = f"{platform_dir.name}/{target.name}"
-                rows.append(report_row(row, spec, file_size, delivery_file, watermark_enabled))
+        try:
+            with Image.open(src) as opened:
+                raw_img = ImageOps.exif_transpose(opened).copy()
+        except Exception:
+            rows.append(report_row(row, status="图片无效"))
+            continue
+
+        for platform_id in selected_platforms:
+            spec = PLATFORMS[platform_id]
+            normalized_format, ext, _ = normalize_image_format(image_format, platform_id)
+            platform_dir = image_dir / platform_folder_name(platform_id, spec)
+            used_names = used_names_by_platform.setdefault(platform_id, set())
+            target = platform_dir / unique_filename(str(row.get("name") or "dish"), ext, used_names)
+            img = prepare_platform_image(raw_img, platform_id, watermark)
+            file_size = save_platform_image(img, target, int(spec["maxKB"]), normalized_format)
+            image_count += 1
+            delivery_file = f"{platform_dir.name}/{target.name}"
+            rows.append(report_row(row, spec, file_size, delivery_file, watermark_enabled))
 
     report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows, columns=REPORT_COLUMNS).to_excel(report, index=False)
@@ -299,6 +520,7 @@ def export_delivery_zip(
         "rows": len(rows),
         "images": image_count,
         "platforms": selected_platforms,
+        "extraPlatformPoints": platform_extra_points(selected_platforms),
         "watermark": watermark_enabled,
         "download": f"/download/{zip_path.relative_to(export_dir).as_posix()}",
     }
