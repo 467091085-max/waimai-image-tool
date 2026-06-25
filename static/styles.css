@@ -413,7 +413,7 @@ main {
 .panel {
   padding: 18px;
   margin-bottom: 16px;
-  scroll-margin-top: 108px;
+  scroll-margin-top: 148px;
 }
 .panel.locked {
   opacity: .72;
@@ -604,7 +604,7 @@ main {
 #styleSampleAction,
 #previewPanel,
 #exportView {
-  scroll-margin-top: 108px;
+  scroll-margin-top: 148px;
 }
 .result-grid,
 .paid-grid {

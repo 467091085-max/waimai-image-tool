@@ -131,6 +131,38 @@ class GenerationJobStateTests(unittest.TestCase):
         self.assertEqual(third["lastRun"]["selected"], 0)
         self.assertEqual([item["attempts"] for item in third["items"]], [1, 1, 1])
 
+    def test_create_job_is_idempotent_by_order_id(self) -> None:
+        first = generation_jobs.create_job(
+            user_id="u1",
+            style="style-1",
+            quality="standard",
+            items=[menu_item(1, "辣椒炒肉")],
+            points=10,
+            order_id="debit-same-order",
+            mark_paid=True,
+            db_path=self.db_path,
+        )
+        duplicate = generation_jobs.create_job(
+            user_id="u1",
+            style="style-1",
+            quality="standard",
+            items=[menu_item(1, "小炒黄牛肉"), menu_item(2, "番茄炒蛋")],
+            points=20,
+            order_id="debit-same-order",
+            mark_paid=True,
+            db_path=self.db_path,
+        )
+        fetched = generation_jobs.get_job_by_order_id("debit-same-order", db_path=self.db_path)
+
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(duplicate["idempotent"])
+        self.assertIsNotNone(fetched)
+        assert fetched is not None
+        self.assertEqual(duplicate["id"], first["id"])
+        self.assertEqual(fetched["id"], first["id"])
+        self.assertEqual(duplicate["totalItems"], 1)
+        self.assertEqual(duplicate["items"][0]["dish"], "辣椒炒肉")
+
     def test_failed_item_does_not_block_rest_of_batch(self) -> None:
         job = self.create_job(3)
 
@@ -268,6 +300,13 @@ class GenerationJobApiTests(unittest.TestCase):
                 job_id = created_body["job"]["id"]
                 self.assertEqual(created_body["job"]["status"], generation_jobs.JOB_PAID)
                 self.assertEqual(created_body["poll"]["url"], f"/api/jobs/{job_id}")
+                self.assertFalse(created_body["idempotent"])
+
+                duplicate = client.post("/api/jobs", json={"style": "style-1", "quality": "standard", "orderId": "debit-1"})
+                duplicate_body = duplicate.get_json()
+                self.assertEqual(duplicate.status_code, 201)
+                self.assertTrue(duplicate_body["idempotent"])
+                self.assertEqual(duplicate_body["job"]["id"], job_id)
 
                 run = client.post(f"/api/jobs/{job_id}/run", json={"limit": 2, "sync": True})
                 self.assertEqual(run.status_code, 200)

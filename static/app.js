@@ -27,6 +27,7 @@ const state = {
     download: ""
   },
   busy: null,
+  currentJob: null,
   previewLoadingStyle: "",
   activeJobId: "",
   lastDebitOrderId: "",
@@ -80,6 +81,7 @@ const fallbackWatermarkPoints = 50;
 const fallbackCustomEditPoints = 150;
 const stageNames = ["", "上传菜单", "选择风格", "免费样图", "正式生图", "预览导出"];
 let busySerial = 0;
+let exportProgressTimer = null;
 
 function currentQuality() {
   return qualityMeta[state.quality] || qualityMeta.standard;
@@ -121,6 +123,16 @@ function cleanCustomerStatus(value) {
 }
 
 function cleanErrorText(value, fallback = "生成失败，请稍后重试") {
+  const raw = String(value || "");
+  if (/ResourceInsufficient|quota|余额不足|资源不足|insufficient/i.test(raw)) {
+    return "生图服务额度不足，请稍后重试，或联系管理员补充额度";
+  }
+  if (/timeout|timed out|超时/i.test(raw)) {
+    return "生成等待超时，请稍后重试";
+  }
+  if (/network|fetch|ECONN|连接|断开/i.test(raw)) {
+    return "网络连接不稳定，请检查网络后重试";
+  }
   const text = cleanCustomerStatus(value || fallback)
     .replace(/\s+/g, " ")
     .replace(/^[：:，,。.\s]+/, "")
@@ -408,7 +420,7 @@ function scrollToPanel(id) {
   const el = $(id);
   if (!el) return;
   const topbar = $(".topbar")?.getBoundingClientRect().height || 0;
-  const offset = topbar + 28;
+  const offset = topbar + 72;
   const top = window.scrollY + el.getBoundingClientRect().top - offset;
   window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
 }
@@ -494,6 +506,7 @@ function renderRunStatus() {
   let tone = "idle";
   let title = "等待菜单上传";
   let detail = "上传 XLS/XLSX 菜单后，工作台会自动进入风格选择。";
+  const job = state.currentJob;
   if (state.busy) {
     tone = "loading";
     const labels = {
@@ -511,6 +524,10 @@ function renderRunStatus() {
     };
     title = labels[state.busy.key] || state.busy.title || "任务处理中";
     detail = state.busy.detail || "请稍候，任务完成后会自动更新页面。";
+  } else if (job && !isGenerationJobTerminal(job)) {
+    tone = "loading";
+    title = "正式图正在生成";
+    detail = generationJobProgressText(job, "正式生图中");
   } else if (!state.uploaded) {
     tone = "idle";
   } else if (!state.plan) {
@@ -751,7 +768,7 @@ function generationJobFailureText(job, limit = 3) {
       const label = item.dish || item.payload?.name || `第 ${item.index || item.itemIndex || "?"} 张`;
       const result = item?.result || {};
       const retry = item.retryable || result.retryable ? "可重试" : "";
-      const refund = item.refund_required || item.refundRequired || result.refund_required || result.refundRequired ? "需退款" : "";
+      const refund = item.refund_required || item.refundRequired || result.refund_required || result.refundRequired ? "需退回积分" : "";
       const suffix = [retry, refund].filter(Boolean).join("、");
       return suffix ? `${label}（${suffix}）` : label;
     })
@@ -760,13 +777,35 @@ function generationJobFailureText(job, limit = 3) {
   return names.length ? `失败项：${names.join("、")}${failed.length > limit ? ` ${more}` : ""}` : `失败项 ${more}`;
 }
 
+function renderWorkflowForGenerationJob(job) {
+  const stats = generationJobStats(job);
+  const terminal = isGenerationJobTerminal(job);
+  const failed = stats.failed > 0;
+  renderWorkflow([
+    { title: "上传菜单", status: `${state.menu?.count || stats.total || 0} 个菜品`, state: "done" },
+    { title: "选择背景", status: state.pendingStyle ? styleName(state.pendingStyle) : "已选择", state: "done" },
+    { title: "6张免费样图", status: hasStylePreviewReady() ? "已生成" : "已确认", state: "done" },
+    {
+      title: "设置并生成",
+      status: terminal
+        ? (failed ? `完成 ${stats.completed} 张，失败 ${stats.failed} 张` : `已完成 ${stats.completed || stats.total} 张`)
+        : `生成中 ${stats.completed}/${stats.total} 张`,
+      state: terminal ? (failed ? "active" : "done") : "active"
+    },
+    { title: "预览修改/导出", status: terminal ? "可以导出" : `等待 ${stats.pending} 张`, state: terminal ? "active" : "" }
+  ]);
+}
+
 function updateGenerationJobProgress(job, token, label = "正式生图中") {
+  state.currentJob = job;
   const stats = generationJobStats(job);
   const text = generationJobProgressText(job, label);
   const detail = [text, generationJobFailureText(job)].filter(Boolean).join("；");
   const percent = Math.min(98, Math.max(82, 82 + stats.percent * 0.16));
   updateBusy(token, "confirm-generate", "正在生成正式图", detail);
   setProgress(percent, text, 4);
+  renderWorkflowForGenerationJob(job);
+  renderRunStatus();
 }
 
 async function createGenerationJob(payload) {
@@ -1784,6 +1823,7 @@ async function uploadMenu() {
       download: ""
     };
     state.activeJobId = "";
+    state.currentJob = null;
     state.lastDebitOrderId = "";
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
@@ -1819,6 +1859,7 @@ async function startJob(options = {}) {
     download: ""
   };
   state.activeJobId = "";
+  state.currentJob = null;
   state.lastDebitOrderId = "";
   state.freeReworkRemaining = 0;
   state.stylePreview = null;
@@ -1892,11 +1933,17 @@ async function confirmStyle() {
       paid: true
     });
     state.activeJobId = created.job.id;
+    if (created.idempotent) {
+      state.charged = true;
+      state.chargedPoints = charge;
+      toast("检测到同一订单已有出图任务，已继续原任务，不会重复扣积分");
+    }
     updateGenerationJobProgress(created.job, token, "正式生图任务已创建");
     const started = await runGenerationJob(created.job.id, { paid: true, orderId: debitOrderId });
     updateGenerationJobProgress(started.job, token);
     const completed = await pollGenerationJob(created.job.id, { token, initial: started, orderId: debitOrderId });
     state.plan = generationPlanFromJob(completed.job);
+    state.currentJob = completed.job;
     state.activeJobId = completed.job.id;
     state.quality = state.plan.quality?.id || state.quality;
     state.style = state.plan.selectedStyle;
@@ -1968,6 +2015,38 @@ async function redrawImage(rowNo, button = null) {
   }
 }
 
+function beginExportProgress(token, platforms, scope) {
+  if (exportProgressTimer) {
+    clearInterval(exportProgressTimer);
+    exportProgressTimer = null;
+  }
+  const steps = [
+    "正在筛选已生成图片",
+    "正在按平台尺寸裁剪",
+    "正在应用品牌水印",
+    "正在生成交付清单",
+    "正在写入 ZIP 压缩包"
+  ];
+  const platformText = platformNames(platforms);
+  let index = 0;
+  const tick = () => {
+    const step = steps[index % steps.length];
+    const detail = `${platformText} · ${step} · 导出范围：${scope === "selected" ? "勾选图片" : scope === "single" ? "单品" : scope === "combo" ? "套餐" : "全部图片"}`;
+    setExportStatus("loading", "正在打包导出", detail);
+    updateBusy(token, "export-zip", "正在打包 ZIP", detail);
+    setProgress(96, "正在打包导出 ZIP", 5);
+    index += 1;
+  };
+  tick();
+  exportProgressTimer = setInterval(tick, 1100);
+  return () => {
+    if (exportProgressTimer) {
+      clearInterval(exportProgressTimer);
+      exportProgressTimer = null;
+    }
+  };
+}
+
 async function exportImages() {
   if (!state.confirmed) {
     setExportStatus("error", "导出失败", "请先完成正式出图，再打包导出 ZIP。");
@@ -1989,6 +2068,7 @@ async function exportImages() {
   const detail = `${platformNames(platforms)} · 正在按平台真实尺寸生成 ZIP`;
   setExportStatus("loading", "正在打包导出", detail);
   const token = beginBusy("export-zip", "正在打包 ZIP", "正在按平台尺寸生成下载包，请勿重复点击");
+  const stopProgress = beginExportProgress(token, platforms, scope);
   try {
     const imageFormat = exportImageFormat();
     const data = await api("/api/export", {
@@ -2008,6 +2088,7 @@ async function exportImages() {
     setExportStatus("error", "打包导出失败", cleanErrorText(error.message, "服务器生成 ZIP 时遇到问题，请稍后重试。"));
     throw error;
   } finally {
+    stopProgress();
     endBusy(token);
   }
 }

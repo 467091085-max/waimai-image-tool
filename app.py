@@ -2781,6 +2781,7 @@ def job_poll_response(job: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "job": job,
         "poll": {"url": f"/api/jobs/{job['id']}", "intervalMs": 1500},
+        "idempotent": bool(job.get("idempotent")),
     }
 
 
