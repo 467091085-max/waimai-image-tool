@@ -2791,27 +2791,36 @@ def upload_library():
 @app.post("/api/export")
 def api_export():
     payload = request.get_json(silent=True) or {}
-    selected_rows = payload.get("selectedRows") or []
-    if not isinstance(selected_rows, list):
-        selected_rows = []
-    selected_rows = [int(x) for x in selected_rows if str(x).isdigit()]
+    selected_rows_payload = payload.get("selectedRows") or []
+    if not isinstance(selected_rows_payload, list):
+        selected_rows_payload = []
+    selected_rows = [int(x) for x in selected_rows_payload if str(x).isdigit()]
+    selected_ids = payload.get("selectedIds") or []
+    if not isinstance(selected_ids, list):
+        selected_ids = []
+    selected_ids = [*selected_ids, *[x for x in selected_rows_payload if not str(x).isdigit()]]
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
     platforms = payload.get("platforms") or ["meituan"]
     quality = str(payload.get("quality", "standard"))
     style = str(payload.get("style", ""))
     if not style:
         return jsonify({"error": "请先选择风格并生成正式图片"}), 400
-    plan = build_plan(style, quality)
-    export_results = prepare_results_for_export(plan["results"], style)
-    result = export_delivery_zip(
-        export_results,
-        EXPORT_DIR,
-        scope=str(payload.get("scope", "all")),
-        selected_rows=selected_rows,
-        image_format=str(payload.get("format", "jpg")),
-        watermark=watermark,
-        platforms=platforms,
-    )
+    try:
+        plan = build_plan(style, quality)
+        export_results = prepare_results_for_export(plan["results"], style)
+        result = export_delivery_zip(
+            export_results,
+            EXPORT_DIR,
+            scope=str(payload.get("scope", "all")),
+            selected_rows=selected_rows,
+            selected_ids=[str(item) for item in selected_ids],
+            image_format=str(payload.get("format", "jpg")),
+            watermark=watermark,
+            platforms=platforms,
+        )
+    except Exception:
+        app.logger.exception("export delivery zip failed")
+        return jsonify({"error": "导出失败：服务器生成 ZIP 时遇到问题，请检查图片是否存在后重试", "code": "export_failed"}), 500
     if int(result.get("images") or 0) <= 0:
         return jsonify({"error": "没有可导出的成图，请先完成正式生图，或只勾选已生成的图片", "export": result}), 400
     return jsonify(result)

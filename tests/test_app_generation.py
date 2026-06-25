@@ -424,19 +424,23 @@ class AppGenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             calls: list[str] = []
+            app_module.library_images.cache_clear()
 
             def fake_style_background(style_id: str, target: Path) -> dict[str, object]:
                 calls.append(style_id)
                 save_image(target, (120, 150, 190))
                 return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": "style_background", "requestId": "style-bg"}
 
-            with (
-                mock.patch.dict("os.environ", {"GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT": "true"}),
-                mock.patch.object(app_module, "LIBRARY_DIR", root),
-                mock.patch.object(app_module, "tencent_ready", return_value=True),
-                mock.patch.object(app_module, "tencent_style_background", side_effect=fake_style_background),
-            ):
-                style_candidate = app_module.style_sample_candidate("style-6")
+            try:
+                with (
+                    mock.patch.dict("os.environ", {"GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT": "true"}),
+                    mock.patch.object(app_module, "LIBRARY_DIR", root),
+                    mock.patch.object(app_module, "tencent_ready", return_value=True),
+                    mock.patch.object(app_module, "tencent_style_background", side_effect=fake_style_background),
+                ):
+                    style_candidate = app_module.style_sample_candidate("style-6")
+            finally:
+                app_module.library_images.cache_clear()
 
             self.assertEqual(calls, ["style-6"])
             self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
@@ -534,6 +538,24 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(body["images"], 2)
             self.assertEqual(body["platforms"], ["meituan", "jd"])
             self.assertRegex(body["download"], r"^/download/export_.*?/result\.zip$")
+
+    def test_export_api_returns_stable_json_when_zip_fails(self) -> None:
+        plan = {"results": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}
+        app_module.app.config["TESTING"] = True
+        client = app_module.app.test_client()
+
+        with (
+            mock.patch.object(app_module, "build_plan", return_value=plan),
+            mock.patch.object(app_module, "export_delivery_zip", side_effect=RuntimeError("is not valid")),
+            mock.patch.object(app_module.app.logger, "exception"),
+        ):
+            response = client.post("/api/export", json={"style": "style-1", "platforms": ["meituan"], "format": "jpg"})
+
+        self.assertEqual(response.status_code, 500)
+        body = response.get_json()
+        self.assertEqual(body["code"], "export_failed")
+        self.assertIn("导出失败", body["error"])
+        self.assertNotIn("is not valid", body["error"])
 
     def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
         with (
