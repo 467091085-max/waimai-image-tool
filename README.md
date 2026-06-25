@@ -113,7 +113,7 @@ PYTHONPATH=.codex_deps:. python3 -m menu_parser /Users/guiguixiaxia/Documents/me
 PYTHONPATH=.codex_deps:. python3 -m library_index --no-thumbs --output data/library_index/library_index.jsonl
 ```
 
-扫描输出会直接包含 `total`、`clean`、`watermark`、`reusable`、`referenceOnly`、`sha1Deduped` 和 `sha1Duplicates`。其中 `cleanpic` 默认可复用，`watermarkpic` 默认 `has_brand_watermark=true` 且 `reference_only=true`；菜品名文字水印只记录 `has_dish_text_watermark` 并降权，饮料/小料/主食/泛图/低质图会写入 `tags`、`style_weight`、`match_weight`，避免成为风格卡或匹配首选。
+扫描输出会直接包含 `total`、`clean`、`watermark`、`reusable`、`referenceOnly`、`sha1Deduped` 和 `sha1Duplicates`。其中 `cleanpic` 默认可复用，`watermarkpic` 默认 `has_brand_watermark=true`、`reference_only=true`、`reusable=false`，不会进入直接复用候选；菜品名文字水印只记录 `has_dish_text_watermark` 并降权，饮料/小料/主食/泛图/低质图会写入 `tags`、`style_weight`、`match_weight`，避免成为风格卡或匹配首选。
 
 真实图库同步到腾讯 COS（默认 dry-run，不会上传）：
 
@@ -127,7 +127,11 @@ PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
   --output data/library_index/cos_library_index.jsonl
 ```
 
-dry-run 会扫描、转 RGB JPG、按 `--max-side` 和 `--quality` 生成完整本地 JSONL 与 `*.summary.json`，但不会加载 COS SDK 或上传对象。图片对象 key 固定为 `waimai-gallery/clean/<store>/<sha1>.jpg` 和 `waimai-gallery/watermark/<store>/<sha1>.jpg`；线上索引 key 固定为 `waimai-gallery/index/library_index.jsonl`。确认 summary 后，显式加 `--no-dry-run` 才会上传图片和索引：
+dry-run 会扫描、转 RGB JPG、按 `--max-side` 和 `--quality` 生成完整本地 JSONL 与 `*.summary.json`，但不会加载 COS SDK 或上传对象。远程 JSONL 每行至少包含 `canonical`、`dish`、`name`、`category`、`style`、`background`、`source`、`local_path`、`cos_key`、`url`、`reusable`、`reference_only`、`watermark`/`watermark_state`。图片对象 key 固定为 `waimai-gallery/clean/<store>/<sha1>.jpg` 和 `waimai-gallery/watermark/<store>/<sha1>.jpg`；线上索引 key 固定为 `waimai-gallery/index/library_index.jsonl`。
+
+summary 会输出 `totalImages`、`reusableImages`、`watermarkedReferenceImages`、`uploadedSuccess`、`skippedImages`、`errorImages`，并在 `sync` 下保留同名明细。缺少腾讯云 bucket、region 或 Secret 时，`--no-dry-run` 会返回清晰 JSON 错误，不会打印密钥或 Python traceback。
+
+确认 summary 后，显式加 `--no-dry-run` 才会上传图片和索引。首次 live check 请限制 3 张以内：
 
 ```bash
 TENCENTCLOUD_SECRET_ID=... TENCENTCLOUD_SECRET_KEY=... \
@@ -135,10 +139,11 @@ PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
   --bucket waimai-image-tool-inputs-1311836560 \
   --region ap-guangzhou \
   --prefix waimai-gallery \
+  --limit 3 \
   --no-dry-run
 ```
 
-脚本不会打印 SecretId/SecretKey；正式上传前可用 `--limit` 小批量验证，COS 桶如果是私有读，线上读取索引后还需要按业务侧策略生成签名 URL 或通过后端代理读取。
+脚本不会打印 SecretId/SecretKey；正式全量上传前先检查 `*.summary.json`，COS 桶如果是私有读，线上读取索引后还需要按业务侧策略生成签名 URL 或通过后端代理读取。
 
 从 Mac 的 `cleanpic` 生成线上真实种子图库：
 

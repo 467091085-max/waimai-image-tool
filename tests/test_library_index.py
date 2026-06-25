@@ -49,6 +49,13 @@ class LibraryIndexTest(unittest.TestCase):
                     "reusable",
                     "reference_only",
                     "direct_delivery_allowed",
+                    "canonical",
+                    "name",
+                    "category",
+                    "style",
+                    "background",
+                    "local_path",
+                    "watermark",
                     "has_brand_watermark",
                     "has_dish_text",
                     "has_dish_text_watermark",
@@ -60,6 +67,10 @@ class LibraryIndexTest(unittest.TestCase):
             )
             self.assertTrue(record["reusable"])
             self.assertFalse(record["reference_only"])
+            self.assertEqual(record["canonical"], "招牌双拼套餐可乐")
+            self.assertEqual(record["name"], "招牌双拼套餐+可乐")
+            self.assertEqual(record["category"], "套餐")
+            self.assertEqual(record["watermark"], "none")
             self.assertTrue(record["avoid_as_style_card"])
             self.assertLess(record["style_weight"], 1.0)
             self.assertTrue(Path(record["thumb_path"]).exists())

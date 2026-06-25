@@ -100,7 +100,7 @@ smoke_export: 成功生成 9 张平台图 ZIP
 /Users/guiguixiaxia/Documents/watermarkpic
 ```
 
-本地可以读取这些目录，线上服务器不可以。要正式售卖，必须把真实图库同步到 COS，并保存图片索引/元数据。
+本地可以读取这些目录，线上服务器不可以。当前分支已提供 `scripts/sync_gallery_to_cos.py`：默认 dry-run 扫描 `cleanpic` / `watermarkpic`，生成可上传 COS 的 JSONL 索引和 summary；`cleanpic` 标为可复用，`watermarkpic` 标为 `reference_only` 且不会进入直接复用候选。上线前还需要主线程拿生产 COS 环境变量执行真实全量上传。
 
 2. 当前腾讯混元真实生图链路已经接入并可检测配置，但本轮没有大批量消耗额度做真实全量生成压测。
 
@@ -114,7 +114,8 @@ smoke_export: 成功生成 9 张平台图 ZIP
 
 最优先做：
 
-1. 写 COS 图库同步脚本，把 `cleanpic` 和 `watermarkpic` 上传到 COS。
-2. 在线上读取 COS 图库索引，而不是只读仓库内置 seed 图。
-3. 用 1 个真实菜单在线上生成 6 张样图，确认混元真实出图质量和成本。
-4. 再做支付和登录。
+1. 用 `scripts/sync_gallery_to_cos.py --no-dry-run --limit 3` 先做 COS 小批量 live check。
+2. 确认 summary 和 COS 对象后执行真实图库全量上传。
+3. 在线上读取 COS 图库索引，而不是只读仓库内置 seed 图。
+4. 用 1 个真实菜单在线上生成 6 张样图，确认混元真实出图质量和成本。
+5. 再做支付和登录。
