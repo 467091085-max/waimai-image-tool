@@ -59,6 +59,30 @@ SKIP_TERMS = (
     "p图",
     "拷贝",
 )
+LOW_PRIORITY_TERMS = (
+    "米饭",
+    "白饭",
+    "大米饭",
+    "饮料",
+    "饮品",
+    "可乐",
+    "雪碧",
+    "美年达",
+    "王老吉",
+    "豆浆",
+    "矿泉水",
+    "纯净水",
+    "小料",
+    "调料",
+    "蘸料",
+    "辣椒包",
+    "醋包",
+    "生抽包",
+    "白糖",
+    "香菜沫",
+    "餐具",
+    "纸巾",
+)
 
 
 def safe_part(value: str, fallback: str = "item") -> str:
@@ -81,6 +105,10 @@ def priority(path: Path) -> tuple[int, str]:
     for skip in SKIP_TERMS:
         if skip in stem:
             return (99, str(path))
+    normalized = unicodedata.normalize("NFKC", stem)
+    for low_term in LOW_PRIORITY_TERMS:
+        if low_term.lower() in stem or low_term.lower() in normalized:
+            return (len(PRIORITY_TERMS) + 20, str(path))
     for idx, term in enumerate(PRIORITY_TERMS):
         if term.lower() in stem:
             return (idx, str(path))

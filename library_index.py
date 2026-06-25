@@ -101,6 +101,7 @@ RAW_KEYWORDS = ("生食", "需自行", "自行煮", "半成品", "冷冻")
 LOW_REUSE_KEYWORDS = (
     "米饭",
     "白饭",
+    "大米饭",
     "可乐",
     "雪碧",
     "王老吉",
@@ -117,6 +118,7 @@ LOW_REUSE_KEYWORDS = (
 PROMPT_IMAGE_KEYWORDS = (
     "勿点",
     "不要点",
+    "下单",
     "提示",
     "背景",
     "公告",
@@ -146,12 +148,24 @@ TEXT_RISK_KEYWORDS = (
     "立减",
     "特价",
     "买一送一",
+    "电子餐饮",
+    "发票",
     "关注",
     "收藏",
     "好评",
     "公告",
     "提示",
     "勿点",
+)
+DISH_TEXT_WATERMARK_KEYWORDS = (
+    "菜品名",
+    "菜名",
+    "品名",
+    "文字水印",
+    "菜品水印",
+    "带字",
+    "字样",
+    "水印",
 )
 BRAND_REVIEW_KEYWORDS = (
     "可口可乐",
@@ -184,7 +198,52 @@ ACTIVITY_REVIEW_KEYWORDS = (
     "爆款",
     "新品",
 )
+STAPLE_KEYWORDS = (
+    "米饭",
+    "白饭",
+    "大米饭",
+    "一碗米饭",
+    "加饭",
+)
+SIDE_ADDON_KEYWORDS = (
+    "小料",
+    "调料",
+    "蘸料",
+    "酱料",
+    "辣椒包",
+    "醋包",
+    "生抽包",
+    "陈醋",
+    "白糖",
+    "蒜粒",
+    "大蒜头",
+    "香菜沫",
+    "腊八蒜",
+    "餐具",
+    "纸巾",
+    "打包",
+)
+GENERIC_IMAGE_KEYWORDS = PROMPT_IMAGE_KEYWORDS + (
+    "门店",
+    "欢迎到店",
+    "更安全",
+    "新鲜食材",
+    "收藏",
+    "福利",
+)
+LOW_QUALITY_NAME_KEYWORDS = (
+    "低清",
+    "低质",
+    "模糊",
+    "糊图",
+    "截图",
+    "小图",
+    "压缩",
+    "临时",
+)
 LOW_QUALITY_SCORE_THRESHOLD = 0.7
+LOW_RESOLUTION_EDGE = 240
+LOW_RESOLUTION_AREA = 320 * 320
 _WORD_RE = re.compile(r"[\u4e00-\u9fff0-9a-z]+")
 _PLUS_RE = re.compile(r"(\+|＋|加|配|搭)")
 _PHONE_RE = re.compile(r"(?:1[3-9]\d{9}|0\d{2,3}[- ]?\d{7,8}|400[- ]?\d{3}[- ]?\d{4})")
@@ -205,15 +264,24 @@ class ScanResult:
         source_counts: dict[str, int] = {}
         tag_counts: dict[str, int] = {}
         for record in self.records:
-            source = str(record.get("source") or "unknown")
+            source = source_bucket(str(record.get("source") or "unknown"))
             source_counts[source] = source_counts.get(source, 0) + 1
             for tag in record.get("tags") or []:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        cleaning = cleaning_summary(self.records)
+        sha1 = sha1_summary(self.records)
         return {
             "total": self.total,
+            "clean": source_counts.get("clean", 0),
+            "watermark": source_counts.get("watermark", 0),
+            "reusable": cleaning["reusable"],
+            "referenceOnly": cleaning["referenceOnly"],
+            "sha1Deduped": sha1["unique"],
+            "sha1Duplicates": sha1["duplicates"],
             "sources": source_counts,
             "tags": tag_counts,
-            "cleaning": cleaning_summary(self.records),
+            "sha1": sha1,
+            "cleaning": cleaning,
             "errors": len(self.errors),
             "elapsedSeconds": round(self.elapsed_seconds, 3),
         }
@@ -222,6 +290,15 @@ class ScanResult:
 def normalize(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).lower()
     return "".join(_WORD_RE.findall(normalized))
+
+
+def source_bucket(source: str) -> str:
+    normalized = normalize(source)
+    if "watermark" in normalized or "watermarkpic" in normalized:
+        return "watermark"
+    if "clean" in normalized or "cleanpic" in normalized:
+        return "clean"
+    return source or "unknown"
 
 
 def sha1_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -265,6 +342,10 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
     is_drink = any(keyword in searchable for keyword in DRINK_KEYWORDS)
     is_promo = any(keyword in searchable for keyword in PROMO_KEYWORDS)
     is_raw = any(keyword in searchable for keyword in RAW_KEYWORDS)
+    is_staple = any(keyword in searchable or normalize(keyword) in norm for keyword in STAPLE_KEYWORDS)
+    is_side_addon = any(keyword in searchable or normalize(keyword) in norm for keyword in SIDE_ADDON_KEYWORDS)
+    is_generic = any(keyword in searchable or normalize(keyword) in norm for keyword in GENERIC_IMAGE_KEYWORDS)
+    is_low_quality_name = any(keyword in searchable or normalize(keyword) in norm for keyword in LOW_QUALITY_NAME_KEYWORDS)
     if is_combo:
         tags.append("combo")
     if is_drink:
@@ -273,11 +354,23 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
         tags.append("promo")
     if is_raw:
         tags.append("raw")
+    if is_staple:
+        tags.append("staple")
+    if is_side_addon:
+        tags.append("side_addon")
+    if is_generic:
+        tags.append("generic")
+    if is_low_quality_name:
+        tags.append("low_quality")
     return {
         "is_combo": is_combo,
         "is_drink": is_drink,
         "is_promo": is_promo,
         "is_raw": is_raw,
+        "is_staple": is_staple,
+        "is_side_addon": is_side_addon,
+        "is_generic": is_generic,
+        "is_low_quality_name": is_low_quality_name,
         "tags": tags,
     }
 
@@ -287,6 +380,9 @@ def detect_reuse_flags(
     source: str,
     path: str | Path | None = None,
     relative_path: str | Path | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    tags: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     dish_text = str(dish).lower()
     filename = Path(str(path)).stem if path is not None else dish
@@ -294,62 +390,121 @@ def detect_reuse_flags(
     review_text = f"{dish_text} {filename_raw}"
     normalized_text = normalize(review_text)
     filename_text = normalize(filename_raw)
-    source_text = normalize(source)
     path_text = normalize(str(path or ""))
+    tag_set = set(tags or [])
     review_reasons: list[str] = []
+    delivery_blockers: list[str] = []
+    extra_tags: list[str] = []
     score = 1.0
 
-    has_brand_watermark = "watermark" in source_text or "watermarkpic" in path_text
+    has_brand_watermark = source_bucket(source) == "watermark" or "watermarkpic" in path_text
     if has_brand_watermark:
         score -= 0.25
-        review_reasons.append("品牌水印风险：来源或路径为 watermark")
+        delivery_blockers.append("brand_watermark")
+        review_reasons.append("品牌水印风险：来源或路径为 watermark，仅可参考")
 
     has_phone = bool(_PHONE_RE.search(review_text))
     has_brand_word = any(keyword.lower() in review_text or normalize(keyword) in normalized_text for keyword in BRAND_REVIEW_KEYWORDS)
     has_activity_word = any(keyword in review_text or normalize(keyword) in normalized_text for keyword in ACTIVITY_REVIEW_KEYWORDS)
     has_text_word = any(keyword.lower() in review_text or normalize(keyword) in normalized_text for keyword in TEXT_RISK_KEYWORDS)
-    has_dish_text = has_phone or has_activity_word or has_text_word
+    has_dish_text_watermark = any(
+        keyword.lower() in review_text or normalize(keyword) in normalized_text
+        for keyword in DISH_TEXT_WATERMARK_KEYWORDS
+    )
+    has_dish_text = has_dish_text_watermark or has_phone or has_activity_word or has_text_word
+    suspected_watermark = has_brand_watermark or has_dish_text_watermark or has_phone or has_brand_word or has_activity_word
+    if has_dish_text_watermark:
+        score -= 0.08
+        review_reasons.append("菜品名文字水印：可复用但需记录并降权")
     if has_phone:
-        review_reasons.append("菜品名文字风险：包含电话")
+        score -= 0.15
+        review_reasons.append("疑似营销文字：包含电话")
     if has_brand_word:
-        review_reasons.append("菜品名文字风险：包含明显品牌词")
+        score -= 0.15
+        review_reasons.append("疑似品牌元素：包含明显品牌词")
     if has_activity_word:
-        review_reasons.append("菜品名文字风险：包含活动词")
-    if has_text_word and not (has_phone or has_activity_word):
-        review_reasons.append("菜品名文字风险：包含文字/提示词")
-    if has_dish_text:
-        score -= 0.2
+        score -= 0.12
+        review_reasons.append("疑似营销文字：包含活动词")
+    if has_text_word and not (has_dish_text_watermark or has_phone or has_activity_word):
+        score -= 0.08
+        review_reasons.append("疑似文字覆盖：包含文字/提示词")
 
     prompt_hits = [keyword for keyword in PROMPT_IMAGE_KEYWORDS if keyword in review_text or normalize(keyword) in filename_text]
     low_reuse_hits = [keyword for keyword in LOW_REUSE_KEYWORDS if keyword in review_text or normalize(keyword) in filename_text]
     if prompt_hits:
         score -= 0.45
-        review_reasons.append(f"低复用图：提示/背景类文件名（{','.join(prompt_hits[:3])}）")
+        extra_tags.append("generic")
+        review_reasons.append(f"低质/泛图：提示/背景类文件名（{','.join(prompt_hits[:3])}）")
     if low_reuse_hits:
-        score -= 0.35
-        review_reasons.append(f"低复用图：泛词/饮料/主食文件名（{','.join(low_reuse_hits[:3])}）")
+        score -= 0.25
+        extra_tags.append("generic")
+        review_reasons.append(f"降权图：泛词/饮料/主食文件名（{','.join(low_reuse_hits[:3])}）")
+    if tag_set & {"drink", "side_addon", "staple"}:
+        score -= 0.15
+        review_reasons.append("降权图：饮料/主食/小料不作为风格或匹配首选")
+    if tag_set & {"promo", "raw", "generic"}:
+        score -= 0.18
+    if tag_set & {"low_quality"}:
+        score -= 0.25
+
+    low_resolution = False
+    if width is not None and height is not None:
+        low_resolution = min(width, height) < LOW_RESOLUTION_EDGE or (width * height) < LOW_RESOLUTION_AREA
+        if low_resolution:
+            score -= 0.35
+            extra_tags.append("low_quality")
+            review_reasons.append(f"低质图：分辨率偏低（{width}x{height}）")
 
     quality_score = round(max(0.0, min(1.0, score)), 2)
-    reusable = not has_brand_watermark and not has_dish_text and quality_score >= LOW_QUALITY_SCORE_THRESHOLD
+    all_tags = tag_set | set(extra_tags)
+    avoid_as_style_card = has_brand_watermark or bool(all_tags & {"drink", "side_addon", "staple", "generic", "promo", "raw", "low_quality"})
+    avoid_as_match_primary = has_brand_watermark or bool(all_tags & {"side_addon", "staple", "generic", "promo", "raw", "low_quality"})
+    reusable = not has_brand_watermark
+    reference_only = not reusable
+    style_weight = 0.0 if has_brand_watermark else quality_score
+    match_weight = 0.0 if has_brand_watermark else quality_score
+    if avoid_as_style_card:
+        style_weight = min(style_weight, 0.35)
+    if avoid_as_match_primary:
+        match_weight = min(match_weight, 0.45)
     return {
         "reusable": reusable,
+        "reference_only": reference_only,
+        "direct_delivery_allowed": reusable,
         "has_brand_watermark": has_brand_watermark,
+        "suspected_watermark": suspected_watermark,
+        "has_dish_text_watermark": has_dish_text_watermark,
         "has_dish_text": has_dish_text,
+        "low_resolution": low_resolution,
+        "avoid_as_style_card": avoid_as_style_card,
+        "avoid_as_match_primary": avoid_as_match_primary,
+        "style_weight": round(style_weight, 2),
+        "match_weight": round(match_weight, 2),
+        "delivery_blockers": delivery_blockers,
         "quality_score": quality_score,
         "review_reasons": review_reasons,
+        "_extra_tags": extra_tags,
     }
 
 
 def cleaning_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     total = 0
     reusable = 0
+    reference_only = 0
     watermark_risk = 0
+    suspected_watermark = 0
+    dish_text_watermark = 0
     needs_review = 0
     low_quality = 0
+    generic = 0
+    downranked = 0
     for record in records:
         total += 1
         is_reusable = bool(record.get("reusable", False))
+        is_reference_only = bool(record.get("reference_only", not is_reusable))
         has_watermark = bool(record.get("has_brand_watermark", False))
+        has_suspected_watermark = bool(record.get("suspected_watermark", False))
+        has_dish_text_watermark = bool(record.get("has_dish_text_watermark", record.get("has_dish_text", False)))
         has_dish_text = bool(record.get("has_dish_text", False))
         quality_score = record.get("quality_score")
         try:
@@ -357,22 +512,81 @@ def cleaning_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
         except (TypeError, ValueError):
             score_value = None
         reasons = record.get("review_reasons") or []
+        tags = set(record.get("tags") or [])
 
         if is_reusable:
             reusable += 1
+        if is_reference_only:
+            reference_only += 1
         if has_watermark:
             watermark_risk += 1
+        if has_suspected_watermark:
+            suspected_watermark += 1
+        if has_dish_text_watermark:
+            dish_text_watermark += 1
         if score_value is not None and score_value < LOW_QUALITY_SCORE_THRESHOLD:
             low_quality += 1
-        if has_watermark or has_dish_text or reasons or (score_value is not None and score_value < LOW_QUALITY_SCORE_THRESHOLD):
+        if tags & {"generic", "drink", "side_addon", "staple"}:
+            generic += 1
+        if record.get("avoid_as_style_card") or record.get("avoid_as_match_primary"):
+            downranked += 1
+        if has_watermark or has_suspected_watermark or has_dish_text or reasons or (score_value is not None and score_value < LOW_QUALITY_SCORE_THRESHOLD):
             needs_review += 1
     return {
         "total": total,
         "reusable": reusable,
+        "referenceOnly": reference_only,
         "watermarkRisk": watermark_risk,
+        "suspectedWatermark": suspected_watermark,
+        "dishTextWatermark": dish_text_watermark,
         "needsReview": needs_review,
         "lowQuality": low_quality,
+        "genericOrAddon": generic,
+        "downranked": downranked,
     }
+
+
+def sha1_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    total = 0
+    for record in records:
+        digest = str(record.get("sha1") or "")
+        if not digest:
+            continue
+        total += 1
+        counts[digest] = counts.get(digest, 0) + 1
+    unique = len(counts)
+    duplicate_groups = sum(1 for count in counts.values() if count > 1)
+    duplicates = sum(count - 1 for count in counts.values() if count > 1)
+    return {
+        "total": total,
+        "unique": unique,
+        "deduped": unique,
+        "duplicates": duplicates,
+        "duplicateGroups": duplicate_groups,
+    }
+
+
+def annotate_sha1_duplicates(records: list[dict[str, Any]]) -> None:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        groups.setdefault(str(record.get("sha1") or ""), []).append(record)
+    for digest, group in groups.items():
+        if not digest:
+            continue
+        group.sort(
+            key=lambda item: (
+                not bool(item.get("reusable", False)),
+                source_bucket(str(item.get("source") or "")) != "clean",
+                str(item.get("path") or ""),
+            )
+        )
+        primary_path = str(group[0].get("path") or "")
+        for index, record in enumerate(group):
+            record["sha1_group_size"] = len(group)
+            record["sha1_duplicate"] = index > 0
+            record["sha1_primary"] = index == 0
+            record["sha1_primary_path"] = primary_path
 
 
 def thumbnail_path_for(thumb_dir: Path, source: str, digest: str) -> Path:
@@ -424,6 +638,7 @@ def build_record(
         "id": digest[:18],
         "sha1": digest,
         "source": source,
+        "source_kind": source_bucket(source),
         "source_root": str(root),
         "store": store,
         "category_path": category_path,
@@ -438,7 +653,22 @@ def build_record(
         "thumb_path": str(thumb_path) if thumb_path else "",
     }
     record.update(detect_tags(dish, norm))
-    record.update(detect_reuse_flags(dish=dish, source=source, path=path, relative_path=rel))
+    flags = detect_reuse_flags(
+        dish=dish,
+        source=source,
+        path=path,
+        relative_path=rel,
+        width=width,
+        height=height,
+        tags=record.get("tags") or [],
+    )
+    extra_tags = flags.pop("_extra_tags", [])
+    if extra_tags:
+        record["tags"] = sorted(set(record.get("tags") or []) | set(extra_tags))
+        record["is_generic"] = bool(record.get("is_generic")) or "generic" in extra_tags
+        record["is_low_quality_name"] = bool(record.get("is_low_quality_name")) or "low_quality" in extra_tags
+    record["is_low_quality"] = "low_quality" in set(record.get("tags") or [])
+    record.update(flags)
     return record
 
 
@@ -477,6 +707,7 @@ def scan_library(
                 errors.append({"source": source, "path": str(path), "error": str(exc)})
 
     records.sort(key=lambda item: (str(item["source"]), str(item["store"]), str(item["relative_path"])))
+    annotate_sha1_duplicates(records)
     return ScanResult(
         records=records,
         errors=errors,
