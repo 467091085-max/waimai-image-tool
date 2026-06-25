@@ -113,6 +113,8 @@ PYTHONPATH=.codex_deps:. python3 -m menu_parser /Users/guiguixiaxia/Documents/me
 PYTHONPATH=.codex_deps:. python3 -m library_index --no-thumbs --output data/library_index/library_index.jsonl
 ```
 
+扫描输出会直接包含 `total`、`clean`、`watermark`、`reusable`、`referenceOnly`、`sha1Deduped` 和 `sha1Duplicates`。其中 `cleanpic` 默认可复用，`watermarkpic` 默认 `has_brand_watermark=true` 且 `reference_only=true`；菜品名文字水印只记录 `has_dish_text_watermark` 并降权，饮料/小料/主食/泛图/低质图会写入 `tags`、`style_weight`、`match_weight`，避免成为风格卡或匹配首选。
+
 从 Mac 的 `cleanpic` 生成线上真实种子图库：
 
 ```bash
@@ -188,7 +190,7 @@ LIBRARY_SOURCE_DIRS=/path/to/cleanpic:/path/to/watermarkpic
 56 个模块单测通过
 匹配引擎单测通过
 24 个真实菜单解析通过，共 3036 个菜品
-真实图库扫描 2316 张
+真实图库扫描 2316 张：clean 842，watermark 1474，可复用 842，仅参考 1474，sha1 去重后 2203，重复文件 113
 Render 可用真实种子图库 359 张
 线上端到端烟测通过：真实图库风格、腾讯 ReplaceBackground 免费样图、正式生图 job、两平台 JPG ZIP 导出、下载 ZIP
 ```
