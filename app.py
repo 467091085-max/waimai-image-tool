@@ -568,6 +568,18 @@ def save_result_image(result_image: str, target: Path) -> None:
     img.save(target, "JPEG", quality=92, optimize=True)
 
 
+def require_result_image(response: dict[str, Any], action: str) -> str:
+    image = response.get("ResultImage")
+    if isinstance(image, list):
+        image = image[0] if image else ""
+    image_text = str(image or "").strip()
+    if not image_text:
+        request_id = response.get("RequestId") or ""
+        suffix = f" requestId={request_id}" if request_id else ""
+        raise RuntimeError(f"腾讯混元 {action} 未返回 ResultImage{suffix}")
+    return image_text
+
+
 def public_base_url() -> str:
     configured = os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
     if configured:
@@ -724,8 +736,9 @@ def tencent_text_to_image_lite(row: dict[str, Any], style_id: str, quality: str 
             "LogoAdd": 0,
         },
     )
-    save_result_image(str(response.get("ResultImage") or ""), target)
+    save_result_image(require_result_image(response, "TextToImageLite"), target)
     return {
+        "status": "succeeded",
         "provider": "tencent-hunyuan",
         "action": "TextToImageLite",
         "promptType": prompt_type,
@@ -756,11 +769,9 @@ def tencent_submit_text_to_image3(row: dict[str, Any], style_id: str, quality: s
         status_code = str(latest.get("JobStatusCode") or "")
         status_msg = str(latest.get("JobStatusMsg") or "")
         if status_code == "5":
-            images = latest.get("ResultImage") or []
-            if not images:
-                raise RuntimeError(f"混元生图3.0任务完成但没有返回图片：{job_id}")
-            save_result_image(str(images[0]), target)
+            save_result_image(require_result_image(latest, "QueryTextToImageJob"), target)
             return {
+                "status": "succeeded",
                 "provider": "tencent-hunyuan",
                 "action": "SubmitTextToImageJob",
                 "queryAction": "QueryTextToImageJob",
@@ -829,8 +840,9 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         )
     except Exception as exc:
         raise RuntimeError(f"ProductUrl={product_url}；{exc}") from exc
-    save_result_image(str(response.get("ResultImage") or ""), target)
+    save_result_image(require_result_image(response, "ReplaceBackground"), target)
     return {
+        "status": "succeeded",
         "provider": "tencent-hunyuan",
         "action": "ReplaceBackground",
         "promptType": "style_background",
@@ -851,7 +863,7 @@ def tencent_replace_background(
     product_url = model_input_public_url(source_candidate)
     if not product_url:
         raise RuntimeError(f"{model_input_unavailable_message(source_candidate)}，无法调用商品背景生成")
-    prompt_type = prompt_type or ("combo" if row.get("kind") == "套餐/组合" else "replace_background")
+    prompt_type = prompt_type or ("combo_replace_background" if row.get("kind") == "套餐/组合" else "replace_background")
     try:
         response = tencent_api_request(
             "ReplaceBackground",
@@ -866,8 +878,15 @@ def tencent_replace_background(
         )
     except Exception as exc:
         raise RuntimeError(f"ProductUrl={product_url}；{exc}") from exc
-    save_result_image(str(response.get("ResultImage") or ""), target)
-    return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId"), "endpoint": response.get("_Endpoint")}
+    save_result_image(require_result_image(response, "ReplaceBackground"), target)
+    return {
+        "status": "succeeded",
+        "provider": "tencent-hunyuan",
+        "action": "ReplaceBackground",
+        "promptType": prompt_type,
+        "requestId": response.get("RequestId"),
+        "endpoint": response.get("_Endpoint"),
+    }
 
 
 def tencent_reference_redraw(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
@@ -1745,6 +1764,7 @@ def style_background_job(candidate: dict[str, Any] | None) -> dict[str, Any]:
         value = tencent.get(key)
         if value:
             job[key] = value
+    job["evidence"] = generation_evidence(provider, action, status, tencent)
     return job
 
 
@@ -1788,7 +1808,24 @@ def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str
     return candidate
 
 
+def generation_evidence(provider: str, action: str, status: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
+    evidence = {
+        "provider": provider,
+        "action": action,
+        "status": status,
+        "providerStatus": generation_engine.provider_status(status),
+        "provider_status": generation_engine.provider_status(status),
+    }
+    source = detail or {}
+    for key in generation_engine.EVIDENCE_KEYS:
+        value = source.get(key)
+        if value:
+            evidence[key] = value
+    return evidence
+
+
 def queued_generation_payload(action: str = "WaitingForProvider") -> dict[str, Any]:
+    evidence = generation_evidence("tencent-hunyuan", action, generation_engine.STATUS_QUEUED)
     return {
         "status": generation_engine.STATUS_QUEUED,
         "provider": "tencent-hunyuan",
@@ -1800,6 +1837,7 @@ def queued_generation_payload(action: str = "WaitingForProvider") -> dict[str, A
         "refund_required": False,
         "refundRequired": False,
         "reason": generation_engine.STRATEGY_WAITING_FOR_PROVIDER,
+        "evidence": evidence,
     }
 
 
@@ -1808,13 +1846,17 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
     cached = generated_preview_candidate(item, selected_style)
     if cached:
         tencent_detail = cached.get("tencent") if isinstance(cached.get("tencent"), dict) else {}
+        status = "cached"
+        provider = str(cached.get("aiProvider") or "tencent-hunyuan")
+        action = str(cached.get("generationAction") or "Cached")
         return cached, {
-            "status": "cached",
-            "provider": cached.get("aiProvider") or "tencent-hunyuan",
-            "action": cached.get("generationAction") or "Cached",
+            "status": status,
+            "provider": provider,
+            "action": action,
             "requestId": tencent_detail.get("requestId"),
             "jobId": tencent_detail.get("jobId"),
             "error": cached.get("error"),
+            "evidence": generation_evidence(provider, action, status, tencent_detail),
         }
     source_candidate = source_candidate_for_preview_generation(item)
     result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan", "action": "Preview"}
@@ -1823,15 +1865,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
     if tencent_ready():
         try:
             if source_candidate:
-                try:
-                    detail = tencent_replace_background(item, source_candidate, selected_style, target, quality)
-                except Exception as replace_error:
-                    try:
-                        detail = tencent_text_to_image(item, selected_style, quality, target)
-                    except Exception as text_error:
-                        raise combined_generation_error("商品背景生成", replace_error, "文生图兜底", text_error) from text_error
-                    result["fallbackFrom"] = "ReplaceBackground"
-                    result["fallbackMessage"] = str(replace_error)[:220]
+                detail = tencent_replace_background(item, source_candidate, selected_style, target, quality)
             else:
                 detail = tencent_text_to_image(item, selected_style, quality, target)
             metadata = {
@@ -1862,9 +1896,22 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                 "promptType": detail.get("promptType"),
                 "requestId": detail.get("requestId"),
                 "jobId": detail.get("jobId"),
+                "evidence": generation_evidence("tencent-hunyuan", str(detail["action"]), "succeeded", detail),
             }
         except Exception as exc:
-            result.update({"status": "failed", "action": "Failed", "error": str(exc)[:220]})
+            failed_action = "ReplaceBackground" if source_candidate else "Failed"
+            error = str(exc)[:220]
+            result.update(
+                {
+                    "status": "failed",
+                    "action": failed_action,
+                    "error": error,
+                    "provider_error": error,
+                    "providerError": error,
+                    "retryable": generation_engine.is_retryable_provider_error(error),
+                    "evidence": generation_evidence("tencent-hunyuan", failed_action, "failed"),
+                }
+            )
             if allow_local_image_fallback():
                 draw_demo_image(target, item["name"], selected_style)
                 metadata = {
@@ -1872,7 +1919,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                     "provider": "local-demo",
                     "action": "LocalFallback",
                     "reason": "free_style_preview",
-                    "error": str(exc)[:220],
+                    "error": error,
                     "modelFailed": True,
                 }
                 write_ai_output_metadata(target, metadata)
@@ -1882,8 +1929,9 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                     "status": "fallback",
                     "provider": "local-demo",
                     "action": "LocalFallback",
-                    "error": str(exc)[:220],
+                    "error": error,
                     "fallbackFrom": "tencent-hunyuan",
+                    "evidence": generation_evidence("local-demo", "LocalFallback", "fallback"),
                 }
             return None, result
     return None, queued_generation_payload()
@@ -1999,13 +2047,11 @@ def materialization_reason(row: dict[str, Any], selected_style: str) -> str | No
     if not selected_style:
         return "no_selected_style"
     sources = source_candidates_for_generation(row)
+    selected_candidate = reusable_selected_style_candidate(row, selected_style)
+    if selected_candidate:
+        return None
     if row.get("kind") == "套餐/组合":
         return "combo"
-    selected_candidate = reusable_selected_style_candidate(row, selected_style)
-    if selected_candidate and generation_engine.candidate_is_model_output(selected_candidate):
-        return None
-    if selected_candidate:
-        return "same_style_unify"
     if not sources:
         return "missing_image"
     if any(not c.get("reusable", True) for c in sources):
@@ -2138,7 +2184,15 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
         item_result = generation_row_result(row, status["provider"], "Reuse", reason)
         if reason is None:
             generation["skipped"] += 1
-            item_result.update({"provider": "library", "status": "reused", "reason": "same_style_reuse"})
+            item_result.update(
+                {
+                    "provider": "library",
+                    "action": "Reuse",
+                    "status": "reused",
+                    "reason": "same_dish_same_style",
+                    "evidence": generation_evidence("library", "Reuse", "reused"),
+                }
+            )
             bump_generation_action(generation, "Reuse")
             row["generation"] = item_result
             generation["items"].append(item_result)
@@ -2155,7 +2209,19 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
             row["publicStatus"] = "已生成"
             row["backgroundAction"] = "正式生成"
             row["generationStatus"] = "cached"
-            item_result.update({"provider": "tencent-hunyuan", "action": cached_action, "status": "cached", "succeeded": True, "cached": True})
+            tencent_detail = metadata.get("tencent") if isinstance(metadata.get("tencent"), dict) else {}
+            item_result.update(
+                {
+                    "provider": "tencent-hunyuan",
+                    "action": cached_action,
+                    "status": "cached",
+                    "succeeded": True,
+                    "cached": True,
+                    "requestId": tencent_detail.get("requestId"),
+                    "jobId": tencent_detail.get("jobId"),
+                    "evidence": generation_evidence("tencent-hunyuan", cached_action, "cached", tencent_detail),
+                }
+            )
             generation["cached"] += 1
             bump_generation_action(generation, "Cached")
             row["generation"] = item_result
@@ -2171,6 +2237,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                     "action": "Limited",
                     "status": "limited",
                     "reason": f"{reason}: TENCENT_HUNYUAN_SYNC_LIMIT reached",
+                    "evidence": generation_evidence("tencent-hunyuan", "Limited", "limited"),
                 }
             )
             row["backgroundAction"] = "待正式生成"
@@ -2190,28 +2257,14 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
 
         used_tencent = False
         detail: dict[str, Any] | None = None
-        replace_error: Exception | None = None
         if status["configured"]:
             generation["attempted"] += 1
             item_result["attempted"] = True
             try:
                 if source_candidate:
-                    try:
-                        detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
-                    except Exception as exc:
-                        replace_error = exc
-                        try:
-                            detail = tencent_text_to_image(row, selected_style, quality, target)
-                        except Exception as text_error:
-                            raise combined_generation_error("商品背景生成", exc, "文生图兜底", text_error) from text_error
+                    detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
                 else:
                     detail = tencent_text_to_image(row, selected_style, quality, target)
-                if replace_error is not None:
-                    generation["fallback"] += 1
-                    generation["actionFallback"] += 1
-                    item_result["fallback"] = True
-                    item_result["fallbackFrom"] = "ReplaceBackground"
-                    item_result["fallbackMessage"] = str(replace_error)[:220]
                 assert detail is not None
                 ai_candidate, _ = ai_output_candidate(row, selected_style, quality, f"tencent-{detail['action']}")
                 ai_candidate["tencent"] = detail
@@ -2238,16 +2291,38 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                 promote_candidate(row, ai_candidate)
                 used_tencent = True
                 generation["succeeded"] += 1
-                item_result.update({"provider": "tencent-hunyuan", "action": detail["action"], "status": "succeeded", "succeeded": True, "promptType": detail.get("promptType")})
+                item_result.update(
+                    {
+                        "provider": "tencent-hunyuan",
+                        "action": detail["action"],
+                        "status": "succeeded",
+                        "succeeded": True,
+                        "promptType": detail.get("promptType"),
+                        "requestId": detail.get("requestId"),
+                        "jobId": detail.get("jobId"),
+                        "evidence": generation_evidence("tencent-hunyuan", str(detail["action"]), "succeeded", detail),
+                    }
+                )
                 bump_generation_action(generation, detail["action"])
             except Exception as exc:
-                generation["errors"].append({"dish": row.get("name"), "message": str(exc)[:220]})
-                item_result["error"] = str(exc)[:220]
+                error = str(exc)[:220]
+                generation["errors"].append({"dish": row.get("name"), "message": error})
+                failed_action = "ReplaceBackground" if source_candidate else "Failed"
+                item_result.update(
+                    {
+                        "error": error,
+                        "provider_error": error,
+                        "providerError": error,
+                        "retryable": generation_engine.is_retryable_provider_error(error),
+                        "evidence": generation_evidence("tencent-hunyuan", failed_action, "failed"),
+                    }
+                )
         if not used_tencent:
             if status["configured"] and not allow_local_image_fallback():
                 generation["failed"] += 1
                 generation["pending"] += 1
-                item_result.update({"provider": "tencent-hunyuan", "action": "Failed", "status": "failed"})
+                failed_action = str((item_result.get("evidence") or {}).get("action") or "Failed")
+                item_result.update({"provider": "tencent-hunyuan", "action": failed_action, "status": "failed"})
                 row["backgroundAction"] = "模型生成失败"
                 row["publicStatus"] = "模型生成失败"
                 row["generationStatus"] = "failed"
@@ -2844,6 +2919,7 @@ def run_formal_generation_item(
         "retryable": result.retryable,
         "refundRequired": result.refund_required,
         "refund_required": result.refund_required,
+        "evidence": result_payload.get("evidence"),
     }
     for key in ("requestId", "jobId", "submitRequestId", "queryRequestId", "endpoint"):
         value = result_payload.get(key) or result.metadata.get(key)
@@ -2879,6 +2955,9 @@ def generation_job_item_runner(style: str, quality: str, platforms: list[str] | 
             "reason": item_result.get("reason"),
             "requestId": item_result.get("requestId"),
             "jobId": item_result.get("jobId"),
+            "submitRequestId": item_result.get("submitRequestId"),
+            "queryRequestId": item_result.get("queryRequestId"),
+            "endpoint": item_result.get("endpoint"),
             "error": item_result.get("error") or item_result.get("provider_error"),
             "provider_error": item_result.get("provider_error") or item_result.get("providerError"),
             "providerError": item_result.get("provider_error") or item_result.get("providerError"),
@@ -2887,6 +2966,7 @@ def generation_job_item_runner(style: str, quality: str, platforms: list[str] | 
             "refundRequired": bool(item_result.get("refund_required") or item_result.get("refundRequired")),
             "generation": updated_row.get("generation") or item_result,
             "generationResult": item_result,
+            "evidence": item_result.get("evidence"),
             "payload": updated_row,
         }
 
@@ -3011,6 +3091,7 @@ def preview_sample_job_payload(generation: dict[str, Any]) -> dict[str, Any]:
         "promptType",
         "requestId",
         "jobId",
+        "evidence",
     ):
         value = generation.get(key)
         if value:
