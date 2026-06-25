@@ -8,6 +8,9 @@ import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import ProxyHandler, Request, build_opener
 
 import pandas as pd
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
@@ -49,6 +52,11 @@ PLATFORMS = {
 }
 
 EXTRA_PLATFORM_POINTS = 100
+REMOTE_IMAGE_TIMEOUT_SECONDS = 10
+REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+REMOTE_IMAGE_CHUNK_BYTES = 64 * 1024
+REMOTE_IMAGE_USER_AGENT = "waimai-image-tool/4.0 export-remote-media"
+REMOTE_IMAGE_OPENER = build_opener(ProxyHandler({}))
 
 REPORT_COLUMNS = [
     "菜品名",
@@ -313,6 +321,91 @@ def save_platform_image(img: Image.Image, target: Path, max_kb: int, image_forma
     return target.stat().st_size
 
 
+class RemoteImageDownloadError(Exception):
+    pass
+
+
+def is_http_url(value: Any) -> bool:
+    parsed = urlparse(str(value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def download_remote_image(url: str, *, timeout: int = REMOTE_IMAGE_TIMEOUT_SECONDS, max_bytes: int = REMOTE_IMAGE_MAX_BYTES) -> bytes:
+    request = Request(
+        str(url),
+        headers={
+            "User-Agent": REMOTE_IMAGE_USER_AGENT,
+            "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+        },
+    )
+    try:
+        with REMOTE_IMAGE_OPENER.open(request, timeout=timeout) as response:
+            status = getattr(response, "status", response.getcode())
+            if status and int(status) >= 400:
+                raise RemoteImageDownloadError(f"HTTP {status}")
+
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise RemoteImageDownloadError("remote image is too large")
+                except ValueError:
+                    pass
+
+            payload = io.BytesIO()
+            total = 0
+            while True:
+                chunk = response.read(REMOTE_IMAGE_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RemoteImageDownloadError("remote image is too large")
+                payload.write(chunk)
+            return payload.getvalue()
+    except RemoteImageDownloadError:
+        raise
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        raise RemoteImageDownloadError(str(exc)) from exc
+
+
+def open_image_file(path: Path) -> Image.Image:
+    with Image.open(path) as opened:
+        return ImageOps.exif_transpose(opened).copy()
+
+
+def open_image_bytes(payload: bytes) -> Image.Image:
+    with Image.open(io.BytesIO(payload)) as opened:
+        return ImageOps.exif_transpose(opened).convert("RGB").copy()
+
+
+def load_candidate_image(candidate: dict[str, Any] | None) -> tuple[Image.Image | None, str]:
+    if not candidate:
+        return None, "待补图"
+
+    path_value = str(candidate.get("path") or "").strip()
+    if path_value:
+        src = Path(path_value)
+        if src.is_file():
+            try:
+                return open_image_file(src), ""
+            except Exception:
+                return None, "图片无效"
+
+    url = str(candidate.get("url") or "").strip()
+    if is_http_url(url):
+        try:
+            payload = download_remote_image(url)
+        except RemoteImageDownloadError:
+            return None, "图片下载失败"
+        try:
+            return open_image_bytes(payload), ""
+        except Exception:
+            return None, "图片无效"
+
+    return None, "待补图"
+
+
 def selected_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     candidates = row.get("candidates")
     if isinstance(candidates, list) and candidates:
@@ -481,17 +574,9 @@ def export_delivery_zip(
         if not should_export_row(row, row_number, selected, str(scope or "all"), selected_id_set):
             continue
 
-        candidate = selected_candidate(row)
-        src = Path(str(candidate.get("path", ""))) if candidate else None
-        if src is None or not src.is_file():
-            rows.append(report_row(row))
-            continue
-
-        try:
-            with Image.open(src) as opened:
-                raw_img = ImageOps.exif_transpose(opened).copy()
-        except Exception:
-            rows.append(report_row(row, status="图片无效"))
+        raw_img, image_status = load_candidate_image(selected_candidate(row))
+        if raw_img is None:
+            rows.append(report_row(row, status=image_status))
             continue
 
         for platform_id in selected_platforms:
