@@ -18,6 +18,7 @@ DEFAULT_WATERMARK_DIR = Path("/Users/guiguixiaxia/Documents/watermarkpic")
 DEFAULT_INDEX_DIR = BASE_DIR / "data" / "library_index"
 DEFAULT_INDEX_PATH = DEFAULT_INDEX_DIR / "library_index.jsonl"
 DEFAULT_THUMB_DIR = DEFAULT_INDEX_DIR / "thumbs"
+STYLE_IDS = ("style-1", "style-2", "style-3", "style-4", "style-5", "style-6")
 
 IMAGE_SUFFIXES = {
     ".jpg",
@@ -307,6 +308,12 @@ def sha1_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def style_id_for_item(store: str, dish: str, digest: str = "") -> str:
+    seed = f"{store}:{dish}:{digest[:12]}"
+    bucket = hashlib.sha1(seed.encode("utf-8")).digest()[0] % len(STYLE_IDS)
+    return STYLE_IDS[bucket]
 
 
 def image_roots(
@@ -644,6 +651,7 @@ def build_record(
         "category_path": category_path,
         "dish": dish,
         "norm": norm,
+        "style_id": style_id_for_item(store, dish, digest),
         "suffix": path.suffix.lower(),
         "size": stat.st_size,
         "width": width,
