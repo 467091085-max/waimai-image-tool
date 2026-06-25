@@ -445,12 +445,13 @@ def run_product_flow(
             reason="" if style_catalog_ok else f"expected at least 6 style cards, got {len(present)}",
         )
 
-        selected_style = choose_style(plan, style_first=style_first)
+        default_selected_style = choose_style(plan, style_first=style_first)
+        selected_style = choose_live_generation_style(results if isinstance(results, list) else [], present, default_selected_style) if live_generate else default_selected_style
         if selected_style:
             log.add(
                 "style_selection",
                 True,
-                fields={"selectedStyle": selected_style, "styleFirst": style_first},
+                fields={"selectedStyle": selected_style, "styleFirst": style_first, "defaultSelectedStyle": default_selected_style, "liveAutoSelected": bool(live_generate and selected_style != default_selected_style)},
             )
         else:
             log.add("style_selection", False, fields={"styleFirst": style_first}, reason="no selectable style in plan")
@@ -993,9 +994,16 @@ def choose_generation_rows(results: list[Any], selected_style: str) -> tuple[lis
         row_candidates = row.get("candidates") if isinstance(row.get("candidates"), list) else []
         same_style = any(isinstance(candidate, dict) and candidate.get("styleId") == selected_style for candidate in row_candidates)
         score = 0
-        if "套餐" in kind or "组合" in kind:
-            score += 60
+        is_combo = "套餐" in kind or "组合" in kind
+        if not is_combo:
+            score += 100
+        else:
+            score += 10
+        if row_needs_model_for_style(row, selected_style):
+            score += 80
         if action not in {"背景一致，直接复用", "直接可用", "已生成"}:
+            score += 30
+        if not row_candidates:
             score += 30
         if not same_style:
             score += 15
@@ -1185,6 +1193,48 @@ def choose_style(plan: dict[str, Any] | None, *, style_first: bool) -> str:
     return str(plan.get("selectedStyle") or first_style or "")
 
 
+def row_needs_model_for_style(row: dict[str, Any], style_id: str) -> bool:
+    action = str(row.get("backgroundAction") or row.get("publicStatus") or "")
+    candidates = row.get("candidates") if isinstance(row.get("candidates"), list) else []
+    same_style = any(isinstance(candidate, dict) and candidate.get("styleId") == style_id for candidate in candidates)
+    if not candidates:
+        return True
+    if action in {"需要定制/生成", "智能补图", "需抠图换背景", "需去水印/重绘", "套餐组合生成"}:
+        return True
+    if action == "智能统一风格":
+        return not same_style
+    return not same_style and action not in {"背景一致，直接复用", "直接可用", "已生成"}
+
+
+def choose_live_generation_style(results: list[Any], style_ids: list[str], fallback: str) -> str:
+    usable_styles = [style_id for style_id in style_ids if style_id] or STYLE_IDS
+    best_score = -1
+    best_style = fallback or (usable_styles[0] if usable_styles else "")
+    for style_id in usable_styles:
+        score = 0
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            kind = str(row.get("kind") or "")
+            if "套餐" in kind or "组合" in kind:
+                continue
+            if not row_needs_model_for_style(row, style_id):
+                continue
+            action = str(row.get("backgroundAction") or row.get("publicStatus") or "")
+            row_candidates = row.get("candidates") if isinstance(row.get("candidates"), list) else []
+            score += 100
+            if not row_candidates:
+                score += 80
+            if action in {"智能补图", "需要定制/生成", "需去水印/重绘"}:
+                score += 60
+            elif action in {"需抠图换背景", "智能统一风格"}:
+                score += 40
+        if score > best_score or (score == best_score and style_id == fallback):
+            best_score = score
+            best_style = style_id
+    return best_style
+
+
 def request_json(
     client: Any,
     method: str,
@@ -1312,19 +1362,29 @@ def formal_job_item(job: dict[str, Any], *, provider_configured: bool) -> dict[s
 
 def poll_job_for_formal_result(client: Any, job_id: str, initial_job: dict[str, Any], *, provider_configured: bool) -> dict[str, Any]:
     job = initial_job if isinstance(initial_job, dict) else {}
-    for attempt in range(6):
+    terminal_statuses = {"completed", "succeeded", "partial", "partially_failed", "failed", "cancelled", "refunded"}
+    deadline = time.monotonic() + 210
+    attempt = 0
+    while True:
         item = formal_job_item(job, provider_configured=provider_configured)
         evidence = formal_result_evidence(item, provider_configured=provider_configured)
-        if evidence.get("imageUrl") or str(job.get("status") or "").lower() in {"failed", "cancelled", "succeeded"}:
+        job_status = str(job.get("status") or "").lower()
+        item_status = str(item.get("status") or "").lower()
+        has_model_result = bool(evidence.get("imageUrl")) and not evidence.get("mockOrSeed")
+        if has_model_result and (item_status in {"completed", "succeeded"} or int_or_zero(job.get("completedItems")) >= 1 or job_status in terminal_statuses):
+            return job
+        if job_status in terminal_statuses:
+            return job
+        if time.monotonic() >= deadline:
             return job
         if attempt:
-            time.sleep(2.5)
+            time.sleep(3)
         refreshed = request_json(client, "GET", f"/api/jobs/{job_id}", retries=1)
         refreshed_data = refreshed["data"] if isinstance(refreshed["data"], dict) else {}
         refreshed_job = refreshed_data.get("job") if isinstance(refreshed_data.get("job"), dict) else {}
         if refreshed_job:
             job = refreshed_job
-    return job
+        attempt += 1
 
 
 def extract_image_url(item: dict[str, Any]) -> str:

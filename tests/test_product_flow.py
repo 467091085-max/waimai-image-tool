@@ -278,7 +278,7 @@ class ProductFlowSmokeTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["failures"])
         self.assertEqual(report["selectedStyle"], "style-1")
         self.assertEqual(state["job_requests"][0]["style"], "style-1")
-        self.assertEqual(state["job_requests"][0]["selectedRows"], [2])
+        self.assertEqual(state["job_requests"][0]["selectedRows"], [1])
         self.assertEqual(state["run_requests"], [])
         self.assertEqual([request["scope"] for request in state["export_requests"]], ["selected", "all", "single", "combo"])
         self.assertEqual([entry["kind"] for entry in state["billing_requests"]], ["recharge", "debit", "debit"])
