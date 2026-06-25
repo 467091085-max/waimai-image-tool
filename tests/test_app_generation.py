@@ -46,7 +46,7 @@ def menu_row(row: int, name: str, kind: str, candidates: list[dict[str, object]]
 
 
 class AppGenerationTests(unittest.TestCase):
-    def test_materialize_routes_required_rows_to_replace_or_text_and_unifies_same_style(self) -> None:
+    def test_materialize_routes_required_rows_to_reuse_replace_or_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sources = [root / f"source_{idx}.jpg" for idx in range(4)]
@@ -91,14 +91,15 @@ class AppGenerationTests(unittest.TestCase):
             ):
                 generation = app_module.materialize_final_images(plan, "style-1", "standard")
 
-            self.assertEqual(generation["attempted"], 4)
-            self.assertEqual(generation["succeeded"], 4)
+            self.assertEqual(generation["attempted"], 2)
+            self.assertEqual(generation["succeeded"], 2)
             self.assertEqual(generation["fallback"], 0)
-            self.assertEqual(generation["skipped"], 0)
-            self.assertEqual(generation["actions"], {"ReplaceBackground": 3, "TextToImageLite": 1})
-            self.assertEqual(calls, [("ReplaceBackground", "红烧肉"), ("TextToImageLite", "新品汤"), ("ReplaceBackground", "清炒时蔬"), ("ReplaceBackground", "红烧肉+青菜套餐")])
-            self.assertEqual(rows[2]["generation"]["status"], "succeeded")
-            self.assertEqual(rows[3]["generation"]["promptType"], "combo")
+            self.assertEqual(generation["skipped"], 2)
+            self.assertEqual(generation["actions"], {"ReplaceBackground": 1, "TextToImageLite": 1, "Reuse": 2})
+            self.assertEqual(calls, [("ReplaceBackground", "红烧肉"), ("TextToImageLite", "新品汤")])
+            self.assertEqual(rows[2]["generation"]["status"], "reused")
+            self.assertEqual(rows[2]["generation"]["reason"], "same_dish_same_style")
+            self.assertEqual(rows[3]["generation"]["status"], "reused")
             self.assertTrue(str(rows[0]["candidates"][0]["source"]).startswith("tencent-ReplaceBackground"))
             self.assertTrue(str(rows[1]["candidates"][0]["source"]).startswith("tencent-TextToImageLite"))
 
@@ -178,12 +179,12 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(combo_detail["action"], "ReplaceBackground")
             text_prompt = str(payloads[0][1]["Prompt"])
             combo_prompt = str(payloads[2][1]["Prompt"])
-            for required in ["纯文生图", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
+            for required in ["C 图库没有该菜", "纯文生图", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
                 self.assertIn(required, text_prompt)
-            for required in ["套餐组合外卖主图", "牛肉饭", "鸡腿", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
+            for required in ["B 同菜不同背景套餐/组合换背景", "保留参考图", "牛肉饭", "鸡腿", "外卖平台套餐主图", "主体完整", "必须把原背景完整替换", "不要保留原桌面", "logo", "水印"]:
                 self.assertIn(required, combo_prompt)
             redraw_prompt = app_module.prompt_for_generation(single, "style-4", "premium", "watermark_redraw")
-            for required in ["去品牌水印重绘", "保持菜品种类", "品牌水印", "生成干净可交付成图"]:
+            for required in ["B 同菜不同背景去品牌水印重绘", "保持菜品种类", "必须把原背景完整替换", "品牌水印", "生成干净可交付成图"]:
                 self.assertIn(required, redraw_prompt)
             self.assertEqual(payloads[0][0], "SubmitTextToImageJob")
             self.assertEqual(payloads[1][0], "QueryTextToImageJob")
@@ -312,6 +313,71 @@ class AppGenerationTests(unittest.TestCase):
             self.assertTrue(output["result"]["refundRequired"])
             self.assertEqual(row["generationStatus"], "failed")
 
+    def test_formal_runner_abc_routes_and_evidence_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            same_source = root / "same.jpg"
+            diff_source = root / "diff.jpg"
+            save_image(same_source)
+            save_image(diff_source)
+            same_row = menu_row(1, "红烧肉", "单品", [candidate(same_source, "红烧肉", "style-1")])
+            diff_row = menu_row(2, "红烧肉", "单品", [candidate(diff_source, "红烧肉", "style-2")])
+            missing_row = menu_row(3, "新品汤", "单品", [])
+            calls: list[tuple[str, str]] = []
+
+            def fake_replace(row_arg: dict[str, object], source_candidate: dict[str, object], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, object]:
+                calls.append(("replace", str(row_arg["name"])))
+                save_image(target, (20, 120, 80))
+                return {
+                    "status": "succeeded",
+                    "provider": "tencent-hunyuan",
+                    "action": "ReplaceBackground",
+                    "promptType": "replace_background",
+                    "requestId": "rb-real",
+                    "endpoint": "aiart.tencentcloudapi.com",
+                }
+
+            def fake_text(row_arg: dict[str, object], style_id: str, quality: str | None, target: Path) -> dict[str, object]:
+                calls.append(("text", str(row_arg["name"])))
+                save_image(target, (40, 80, 180))
+                return {
+                    "status": "succeeded",
+                    "provider": "tencent-hunyuan",
+                    "action": "SubmitTextToImageJob",
+                    "promptType": "text_to_image",
+                    "requestId": "txt-real",
+                    "jobId": "job-real",
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background", side_effect=fake_replace),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=fake_text),
+                mock.patch.object(app_module, "tencent_cloud_api_request", side_effect=AssertionError("network disabled")),
+            ):
+                same_output = app_module.run_formal_generation_item(same_row, style="style-1", quality="standard")
+                diff_output = app_module.run_formal_generation_item(diff_row, style="style-1", quality="standard")
+                missing_output = app_module.run_formal_generation_item(missing_row, style="style-1", quality="standard")
+
+            self.assertEqual(calls, [("replace", "红烧肉"), ("text", "新品汤")])
+            self.assertEqual(same_output["result"]["status"], "reused")
+            self.assertEqual(same_output["result"]["provider"], "library")
+            self.assertEqual(same_output["result"]["action"], "Reuse")
+            self.assertEqual(same_output["result"]["evidence"], {"provider": "library", "action": "Reuse", "status": "reused", "providerStatus": "succeeded", "provider_status": "succeeded"})
+
+            self.assertEqual(diff_output["result"]["sourceStrategy"], "replace_background")
+            self.assertEqual(diff_output["result"]["requestId"], "rb-real")
+            self.assertEqual(diff_output["result"]["evidence"]["provider"], "tencent-hunyuan")
+            self.assertEqual(diff_output["result"]["evidence"]["action"], "ReplaceBackground")
+            self.assertEqual(diff_output["result"]["evidence"]["requestId"], "rb-real")
+            self.assertEqual(diff_output["result"]["evidence"]["status"], "succeeded")
+
+            self.assertEqual(missing_output["result"]["sourceStrategy"], "text_to_image3")
+            self.assertEqual(missing_output["result"]["action"], "SubmitTextToImageJob")
+            self.assertEqual(missing_output["result"]["evidence"]["requestId"], "txt-real")
+            self.assertEqual(missing_output["result"]["evidence"]["jobId"], "job-real")
+
     def test_preview_keeps_replace_background_error_when_local_fallback_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -324,15 +390,15 @@ class AppGenerationTests(unittest.TestCase):
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "tencent_ready", return_value=True),
                 mock.patch.object(app_module, "tencent_replace_background", side_effect=RuntimeError("aiart not open")),
-                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")) as text,
             ):
                 preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
 
             self.assertIsNotNone(preview_candidate)
             self.assertEqual(generation["status"], "fallback")
             self.assertEqual(generation["fallbackFrom"], "tencent-hunyuan")
-            self.assertIn("商品背景生成失败", generation["error"])
-            self.assertIn("文生图兜底失败", generation["error"])
+            self.assertIn("aiart not open", generation["error"])
+            text.assert_not_called()
 
     def test_preview_model_failure_does_not_use_local_fake_image_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -346,14 +412,16 @@ class AppGenerationTests(unittest.TestCase):
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "tencent_ready", return_value=True),
                 mock.patch.object(app_module, "tencent_replace_background", side_effect=RuntimeError("aiart not open")),
-                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan no quota")) as text,
                 mock.patch.object(app_module, "draw_demo_image") as draw_demo,
             ):
                 preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
 
             self.assertIsNone(preview_candidate)
             self.assertEqual(generation["status"], "failed")
-            self.assertIn("商品背景生成失败", generation["error"])
+            self.assertEqual(generation["action"], "ReplaceBackground")
+            self.assertIn("aiart not open", generation["providerError"])
+            text.assert_not_called()
             draw_demo.assert_not_called()
 
     def test_preview_unifies_same_style_candidate_with_tencent_call(self) -> None:
@@ -425,6 +493,11 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(style_candidate["source"], "tencent-style-sample")
             self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
             self.assertTrue((root / "_style_backgrounds" / "style-6" / "背景风格样图.jpg").exists())
+            job = app_module.style_background_job(style_candidate)
+            self.assertEqual(job["evidence"]["provider"], "tencent-hunyuan")
+            self.assertEqual(job["evidence"]["action"], "ReplaceBackground")
+            self.assertEqual(job["evidence"]["requestId"], "style-bg")
+            self.assertEqual(job["evidence"]["status"], "succeeded")
 
     def test_style_background_sample_prefers_real_library_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
