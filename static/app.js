@@ -62,6 +62,12 @@ const platformMeta = {
   jd: { name: "京东", size: "800x800", ratio: "1:1", width: 800, height: 800, maxKB: 5120 }
 };
 
+const exportFormatOptions = [
+  { value: "jpg", label: "JPG（默认，平台通用）" },
+  { value: "jpeg", label: "JPEG（支持时保留 .jpeg）" },
+  { value: "png", label: "PNG" }
+];
+
 const qualityMeta = {
   standard: { name: "普通出图", points: 100 },
   premium: { name: "精修出图", points: 200 }
@@ -589,6 +595,14 @@ function hasExportableRows(scope = "all", selectedRows = []) {
 function exportImageFormat() {
   const value = String($("#formatSelect")?.value || "jpg").toLowerCase();
   return ["jpg", "png", "jpeg"].includes(value) ? value : "jpg";
+}
+
+function ensureExportFormatOptions() {
+  const select = $("#formatSelect");
+  if (!select) return;
+  const current = ["jpg", "jpeg", "png"].includes(String(select.value).toLowerCase()) ? String(select.value).toLowerCase() : "jpg";
+  select.innerHTML = exportFormatOptions.map(option => `<option value="${option.value}">${option.label}</option>`).join("");
+  select.value = current;
 }
 
 function formalPlanStats(plan = state.plan) {
@@ -2112,5 +2126,6 @@ $("#refineModal").onclick = event => {
   if (event.target.id === "refineModal") closeRefine();
 };
 
+ensureExportFormatOptions();
 refreshLibraryStatus();
 refreshMenuStatus();

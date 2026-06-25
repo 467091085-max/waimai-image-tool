@@ -173,7 +173,7 @@ def paste_tiled(overlay: Image.Image, mark: Image.Image, margin: int = 0) -> Non
         x = margin + offset
         while x <= right:
             overlay.alpha_composite(mark, (x, y))
-        x += mark.width + gap_x
+            x += mark.width + gap_x
         y += mark.height + gap_y
         row += 1
 
@@ -223,7 +223,7 @@ def platform_extra_points(platforms: list[str] | str | None, extra_points: int =
 def normalize_image_format(image_format: str | None, platform_id: str) -> tuple[str, str, str]:
     spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
     requested = str(image_format or spec.get("defaultFormat") or "jpg").lower().strip().lstrip(".")
-    if requested in {"image/jpg", "image/jpeg"}:
+    if requested in {"image/jpg", "image/jpeg", "image/png"}:
         requested = requested.split("/", 1)[1]
     allowed = {str(item).lower() for item in spec.get("formats", ["jpg"])}
     requested_is_supported_jpeg = requested in {"jpg", "jpeg"} and bool(allowed.intersection({"jpg", "jpeg"}))
