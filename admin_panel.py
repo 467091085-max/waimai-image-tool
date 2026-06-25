@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+import billing
+import generation_jobs
 from flask import Blueprint, Response, jsonify, render_template, request
 
 MENU_EXTS = {".xls", ".xlsx"}
@@ -19,6 +22,8 @@ class AdminDependencies:
     current_menu_path: Callable[[], Path | None]
     parse_menu: Callable[[Path | None], Mapping[str, Any]]
     upload_dir: Path
+    billing_db_path: Path | str | None = None
+    jobs_db_path: Path | str | None = None
 
 
 def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
@@ -40,6 +45,13 @@ def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
         limit = _bounded_int(request.args.get("limit"), default=40, minimum=1, maximum=100)
         payload = menu_audit_payload(deps, limit)
         return jsonify(payload)
+
+    @blueprint.get("/api/admin/operations")
+    def admin_operations():
+        limit = _bounded_int(request.args.get("limit"), default=40, minimum=1, maximum=100)
+        payload = operations_payload(deps, limit)
+        status = 200 if payload.get("ok", False) else 500
+        return jsonify(payload), status
 
     @blueprint.after_request
     def add_admin_headers(response: Response) -> Response:
@@ -136,6 +148,104 @@ def menu_audit_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, An
     }
 
 
+def operations_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, Any]:
+    billing_payload = billing.admin_billing_payload(deps.billing_db_path, limit=limit)
+    generation_payload = generation_status_payload(deps.jobs_db_path, limit=limit)
+    billing_summary = billing_payload.get("summary", {}) if isinstance(billing_payload, Mapping) else {}
+    generation_summary = generation_payload.get("summary", {}) if isinstance(generation_payload, Mapping) else {}
+    ok = bool(billing_payload.get("ok")) and bool(generation_payload.get("ok"))
+    return {
+        "ok": ok,
+        "summary": {
+            "totalBalance": int(billing_summary.get("totalBalance", 0) or 0),
+            "orderCount": int(billing_summary.get("orderCount", 0) or 0),
+            "ledgerCount": int(billing_summary.get("ledgerCount", 0) or 0),
+            "refundCount": int(billing_summary.get("refundCount", 0) or 0),
+            "refundPoints": int(billing_summary.get("refundPoints", 0) or 0),
+            "generationJobCount": int(generation_summary.get("jobCount", 0) or 0),
+            "runningJobs": int(generation_summary.get("runningJobs", 0) or 0),
+            "failedJobs": int(generation_summary.get("failedJobs", 0) or 0),
+        },
+        "billing": billing_payload,
+        "generation": generation_payload,
+    }
+
+
+def generation_status_payload(
+    db_path: str | Path | None = None,
+    *,
+    limit: int = 40,
+) -> dict[str, Any]:
+    capped_limit = max(1, min(100, int(limit)))
+    path = generation_jobs.resolve_db_path(db_path)
+    if str(path) != ":memory:" and not path.exists():
+        return _empty_generation_payload()
+    try:
+        with sqlite3.connect(str(path)) as conn:
+            conn.row_factory = sqlite3.Row
+            if not _table_exists(conn, "generation_jobs"):
+                return _empty_generation_payload()
+            jobs = [
+                _generation_job_payload(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM generation_jobs
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (capped_limit,),
+                ).fetchall()
+            ]
+            status_counts = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) AS count FROM generation_jobs GROUP BY status"
+                ).fetchall()
+            }
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS jobs,
+                    COALESCE(SUM(total_items), 0) AS total_items,
+                    COALESCE(SUM(completed_items), 0) AS completed_items,
+                    COALESCE(SUM(failed_items), 0) AS failed_items,
+                    COALESCE(SUM(pending_items), 0) AS pending_items,
+                    COALESCE(SUM(points), 0) AS points
+                FROM generation_jobs
+                """
+            ).fetchone()
+    except sqlite3.Error as exc:
+        payload = _empty_generation_payload()
+        payload.update(
+            {
+                "ok": False,
+                "error": "Generation status unavailable",
+                "code": "generation_status_unavailable",
+                "details": {"type": type(exc).__name__, "message": str(exc)},
+            }
+        )
+        return payload
+
+    running_jobs = sum(status_counts.get(status, 0) for status in ("queued", "running", "paid"))
+    failed_jobs = sum(status_counts.get(status, 0) for status in ("failed", "partially_failed"))
+    return {
+        "ok": True,
+        "summary": {
+            "jobCount": int(totals["jobs"]),
+            "totalItems": int(totals["total_items"]),
+            "completedItems": int(totals["completed_items"]),
+            "failedItems": int(totals["failed_items"]),
+            "pendingItems": int(totals["pending_items"]),
+            "points": int(totals["points"]),
+            "runningJobs": int(running_jobs),
+            "failedJobs": int(failed_jobs),
+            "statusCounts": status_counts,
+        },
+        "jobs": jobs,
+    }
+
+
 def _parse_current_menu(deps: AdminDependencies) -> dict[str, Any]:
     path = deps.current_menu_path()
     try:
@@ -218,6 +328,66 @@ def _menu_summary(menu: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "demo": bool(menu.get("demo", False)),
     }
+
+
+def _empty_generation_payload() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "summary": {
+            "jobCount": 0,
+            "totalItems": 0,
+            "completedItems": 0,
+            "failedItems": 0,
+            "pendingItems": 0,
+            "points": 0,
+            "runningJobs": 0,
+            "failedJobs": 0,
+            "statusCounts": {},
+        },
+        "jobs": [],
+    }
+
+
+def _generation_job_payload(row: sqlite3.Row) -> dict[str, Any]:
+    total = int(row["total_items"])
+    completed = int(row["completed_items"])
+    failed = int(row["failed_items"])
+    percent = 100 if total == 0 else round((completed + failed) / total * 100, 1)
+    return {
+        "id": row["id"],
+        "userId": row["user_id"],
+        "status": row["status"],
+        "style": row["style"],
+        "quality": row["quality"],
+        "totalItems": total,
+        "completedItems": completed,
+        "failedItems": failed,
+        "pendingItems": int(row["pending_items"]),
+        "points": int(row["points"]),
+        "orderId": row["order_id"],
+        "error": row["error"],
+        "progress": {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": int(row["pending_items"]),
+            "percent": percent,
+        },
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "paidAt": row["paid_at"],
+        "queuedAt": row["queued_at"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
 
 
 def _balanced_samples(by_source: Mapping[str, Sequence[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:

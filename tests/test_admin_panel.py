@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import billing
+import generation_jobs
 from flask import Flask
 
 from admin_panel import AdminDependencies, create_admin_blueprint
@@ -15,7 +17,12 @@ from admin_panel import AdminDependencies, create_admin_blueprint
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def make_app(upload_dir: Path) -> Flask:
+def make_app(
+    upload_dir: Path,
+    *,
+    billing_db_path: Path | None = None,
+    jobs_db_path: Path | None = None,
+) -> Flask:
     app = Flask(
         __name__,
         template_folder=str(ROOT / "templates"),
@@ -86,6 +93,8 @@ def make_app(upload_dir: Path) -> Flask:
                 current_menu_path=lambda: upload_dir / "ok.xlsx",
                 parse_menu=parse_menu,
                 upload_dir=upload_dir,
+                billing_db_path=billing_db_path,
+                jobs_db_path=jobs_db_path,
             )
         )
     )
@@ -149,6 +158,55 @@ class AdminPanelTests(unittest.TestCase):
             self.assertEqual(data["audit"]["totalItems"], 3)
             self.assertEqual(data["parser"]["supportedExtensions"], [".xls", ".xlsx"])
             self.assertNotIn(str(upload_dir), json.dumps(data, ensure_ascii=False))
+
+    def test_operations_returns_billing_ledger_refunds_and_generation_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            billing_db = root / "billing.db"
+            jobs_db = root / "jobs.db"
+            billing.credit_recharge("u1", "recharge-99", 99, db_path=billing_db)
+            billing.confirm_generation_charge(
+                "u1",
+                "order-1",
+                image_count=2,
+                quality="standard",
+                job_id="job-1",
+                db_path=billing_db,
+            )
+            billing.record_generation_failure(
+                "u1",
+                "order-1",
+                failed_images=1,
+                quality="standard",
+                refund_id="refund-1",
+                job_id="job-1",
+                db_path=billing_db,
+            )
+            generation_jobs.create_job(
+                user_id="u1",
+                style="style-1",
+                quality="standard",
+                items=[{"name": "辣椒炒肉"}, {"name": "茄子肉末"}],
+                points=200,
+                order_id="order-1",
+                mark_paid=True,
+                job_id="job-1",
+                db_path=jobs_db,
+            )
+            client = make_app(root, billing_db_path=billing_db, jobs_db_path=jobs_db).test_client()
+            response = client.get("/api/admin/operations")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["summary"]["totalBalance"], 940)
+        self.assertEqual(data["summary"]["refundCount"], 1)
+        self.assertEqual(data["summary"]["refundPoints"], 100)
+        self.assertEqual(data["summary"]["generationJobCount"], 1)
+        self.assertEqual(data["billing"]["summary"]["ledgerCount"], 3)
+        self.assertEqual(data["billing"]["refunds"][0]["sourceOrderId"], "order-1")
+        self.assertEqual(data["generation"]["jobs"][0]["id"], "job-1")
+        self.assertNotIn(str(root), json.dumps(data, ensure_ascii=False))
 
 
 if __name__ == "__main__":
