@@ -410,6 +410,7 @@ def allow_local_image_fallback() -> bool:
 def tencent_status_payload() -> dict[str, Any]:
     cfg = tencent_config()
     cos = tencent_cos_config()
+    ready = tencent_ready()
     missing = []
     if not cfg["enabled"]:
         missing.append("TENCENT_HUNYUAN_ENABLED=true")
@@ -418,8 +419,18 @@ def tencent_status_payload() -> dict[str, Any]:
     if not cfg["secret_key"]:
         missing.append("TENCENTCLOUD_SECRET_KEY")
     return {
-        "provider": "tencent-hunyuan" if tencent_ready() else "local-demo",
-        "configured": tencent_ready(),
+        "provider": "tencent-hunyuan",
+        "status": generation_engine.STATUS_SUCCEEDED if ready else generation_engine.STATUS_QUEUED,
+        "providerStatus": generation_engine.STATUS_SUCCEEDED if ready else generation_engine.STATUS_QUEUED,
+        "provider_status": generation_engine.STATUS_SUCCEEDED if ready else generation_engine.STATUS_QUEUED,
+        "reason": "ready" if ready else generation_engine.STRATEGY_WAITING_FOR_PROVIDER,
+        "provider_error": None if ready else "waiting_for_provider: 腾讯云生图环境变量未配置完整",
+        "providerError": None if ready else "waiting_for_provider: 腾讯云生图环境变量未配置完整",
+        "retryable": not ready,
+        "refund_required": False,
+        "refundRequired": False,
+        "fallbackProvider": "local-demo" if allow_local_image_fallback() else "",
+        "configured": ready,
         "enabled": cfg["enabled"],
         "region": cfg["region"],
         "mode": cfg["mode"],
@@ -582,6 +593,9 @@ def candidate_public_url(candidate: dict[str, Any]) -> str:
 def model_input_public_url(candidate: dict[str, Any] | None) -> str:
     if not candidate:
         return ""
+    raw_url = str(candidate.get("url") or "")
+    if is_public_http_url(raw_url):
+        return candidate_public_url({"url": raw_url})
     path_text = str(candidate.get("path") or "")
     path = Path(path_text) if path_text else None
     if path and path.exists() and path.suffix.lower() in IMAGE_EXTS:
@@ -589,10 +603,15 @@ def model_input_public_url(candidate: dict[str, Any] | None) -> str:
         cos_url = upload_model_input_to_cos(target)
         if cos_url:
             return cos_url
-        base = public_base_url()
-        if base and "127.0.0.1" not in base and "localhost" not in base:
-            return f"{base.rstrip('/')}/model-inputs/{target.name}"
+        return ""
     return candidate_public_url(candidate)
+
+
+def model_input_unavailable_message(candidate: dict[str, Any] | None) -> str:
+    path_text = str((candidate or {}).get("path") or "")
+    if path_text and Path(path_text).exists():
+        return "当前参考图是本地路径，需配置 TENCENT_COS_BUCKET/TENCENT_COS_REGION 后上传为模型输入，不能直接传 Render 或 Mac 本地路径"
+    return "当前参考图没有可访问的远程 URL，也没有可上传的本地图片路径"
 
 
 def prepare_model_input_file(path: Path) -> Path:
@@ -774,7 +793,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     source_candidate = style_background_seed_candidate()
     product_url = model_input_public_url(source_candidate)
     if not product_url:
-        raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
+        raise RuntimeError(f"{model_input_unavailable_message(source_candidate)}，无法调用商品背景生成")
     try:
         response = tencent_api_request(
             "ReplaceBackground",
@@ -810,7 +829,7 @@ def tencent_replace_background(
 ) -> dict[str, Any]:
     product_url = model_input_public_url(source_candidate)
     if not product_url:
-        raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
+        raise RuntimeError(f"{model_input_unavailable_message(source_candidate)}，无法调用商品背景生成")
     prompt_type = prompt_type or ("combo" if row.get("kind") == "套餐/组合" else "replace_background")
     try:
         response = tencent_api_request(
@@ -1407,7 +1426,7 @@ def style_background_seed_candidate() -> dict[str, Any] | None:
     images.sort(key=lambda image: (not any(word in image.dish for word in preferred_names), image.store, image.dish))
     for image in images:
         candidate = candidate_from_path(image.path, image.dish, image.style_id, image.source, 100.0)
-        if candidate_public_url(candidate):
+        if candidate_public_url(candidate) or candidate.get("path"):
             return candidate
     return None
 
@@ -2491,6 +2510,35 @@ def selected_job_rows(plan: dict[str, Any], selected_rows: Any = None) -> list[d
     return [row for index, row in enumerate(rows, start=1) if index in selected or int(row.get("row") or 0) in selected]
 
 
+def direct_job_rows(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    raw_items = payload.get("items")
+    if raw_items is None:
+        return None
+    if not isinstance(raw_items, list):
+        raise generation_jobs.InvalidJobInput("items must be a list", field="items")
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            raise generation_jobs.InvalidJobInput("job item must be an object", field=f"items[{index}]")
+        name = str(item.get("name") or item.get("dish") or item.get("dishName") or "").strip()
+        if not name:
+            raise generation_jobs.InvalidJobInput("job item name is required", field=f"items[{index}].name")
+        row = dict(item)
+        row.setdefault("row", index)
+        row.setdefault("category", "smoke")
+        row.setdefault("kind", "单品")
+        row.setdefault("components", [])
+        row.setdefault("candidates", [])
+        row.setdefault("backgroundAction", "智能补图")
+        row.setdefault("publicStatus", "待正式生成")
+        row.setdefault("points", 0)
+        row["name"] = name
+        rows.append(row)
+    if not rows:
+        raise generation_jobs.InvalidJobInput("items must not be empty", field="items")
+    return rows
+
+
 def job_points_for_rows(rows: list[dict[str, Any]], fallback: Any = 0) -> int:
     try:
         explicit = int(fallback)
@@ -2660,6 +2708,8 @@ def run_formal_generation_item(
         "attempted": result.source_strategy != generation_engine.STRATEGY_REUSE,
         "succeeded": result.status in {generation_engine.STATUS_SUCCEEDED, generation_engine.STATUS_REUSED},
         "status": result.status,
+        "providerStatus": generation_engine.provider_status(result.status),
+        "provider_status": generation_engine.provider_status(result.status),
         "promptType": result.prompt_type,
         "sourceStrategy": result.source_strategy,
         "source_strategy": result.source_strategy,
@@ -2692,6 +2742,8 @@ def generation_job_item_runner(style: str, quality: str, platforms: list[str] | 
         return {
             "itemStatus": item_status,
             "status": result_status,
+            "providerStatus": item_result.get("providerStatus") or item_result.get("provider_status") or generation_engine.provider_status(result_status),
+            "provider_status": item_result.get("provider_status") or item_result.get("providerStatus") or generation_engine.provider_status(result_status),
             "provider": item_result.get("provider"),
             "action": item_result.get("action"),
             "reason": item_result.get("reason"),
@@ -3355,9 +3407,22 @@ def api_create_generation_job():
     if not style:
         return jsonify({"error": "请先选择风格"}), 400
     try:
-        plan = build_plan(style, quality)
-        quality = str(plan.get("quality", {}).get("id") or quality)
-        rows = selected_job_rows(plan, payload.get("selectedRows"))
+        direct_rows = direct_job_rows(payload)
+        if direct_rows is None:
+            plan = build_plan(style, quality)
+            quality = str(plan.get("quality", {}).get("id") or quality)
+            rows = selected_job_rows(plan, payload.get("selectedRows"))
+            plan_snapshot = job_plan_snapshot(plan)
+        else:
+            quality = app_quality_id(quality)
+            rows = direct_rows
+            plan_snapshot = {
+                "selectedStyle": style,
+                "quality": {"id": quality},
+                "summary": {"total": len(rows), "points": job_points_for_rows(rows, payload.get("points"))},
+                "pipeline": pipeline_payload(),
+                "source": "direct_items",
+            }
         if not rows:
             return jsonify({"error": "没有可生成的菜品"}), 400
         order_id = str(payload.get("orderId") or "").strip() or None
@@ -3372,8 +3437,9 @@ def api_create_generation_job():
                 "selectedRows": payload.get("selectedRows") if isinstance(payload.get("selectedRows"), list) else None,
                 "watermark": payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None,
                 "platforms": payload.get("platforms") if isinstance(payload.get("platforms"), list) else None,
+                "source": "direct_items" if direct_rows is not None else "plan",
             },
-            plan_snapshot=job_plan_snapshot(plan),
+            plan_snapshot=plan_snapshot,
             points=job_points_for_rows(rows, payload.get("points")),
             order_id=order_id,
             mark_paid=bool(payload.get("paid") or order_id),

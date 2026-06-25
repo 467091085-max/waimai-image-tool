@@ -26,6 +26,9 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_REUSED = "reused"
 STATUS_FAILED = "failed"
 STATUS_QUEUED = "queued"
+STATUS_RUNNING = "running"
+STATUS_PARTIAL = "partial"
+PROVIDER_STATUSES = {STATUS_QUEUED, STATUS_RUNNING, STATUS_SUCCEEDED, STATUS_FAILED, STATUS_PARTIAL}
 
 COMBO_MARKERS = ("套餐", "组合", "双人", "单人餐", "多人", "+", "＋", "拼", "任选", "含", "配")
 WATERMARK_MARKERS = ("watermark", "watermarkpic", "品牌水印", "水印", "logo", "商标")
@@ -86,6 +89,8 @@ class GenerationResult:
             "dish": self.dish,
             "kind": self.kind,
             "status": self.status,
+            "provider_status": provider_status(self.status),
+            "providerStatus": provider_status(self.status),
             "provider": self.provider,
             "action": self.action,
             "promptType": self.prompt_type,
@@ -199,9 +204,10 @@ def execute_generation_request(request: GenerationRequest, provider: GenerationP
             status=STATUS_QUEUED,
             source_strategy=STRATEGY_WAITING_FOR_PROVIDER,
             action="WaitingForProvider",
+            provider_error="waiting_for_provider: 腾讯云生图环境变量未配置完整",
             retryable=True,
             refund_required=False,
-            reason="provider_not_configured",
+            reason=STRATEGY_WAITING_FOR_PROVIDER,
         )
     try:
         if routed.source_strategy == STRATEGY_REUSE:
@@ -219,7 +225,7 @@ def execute_generation_request(request: GenerationRequest, provider: GenerationP
 
     action = str(detail.get("action") or _action_for_strategy(routed.source_strategy))
     strategy = _strategy_after_provider(routed.source_strategy, detail)
-    status = STATUS_REUSED if routed.source_strategy == STRATEGY_REUSE else STATUS_SUCCEEDED
+    status = _status_after_provider(routed.source_strategy, detail)
     provider_name = str(detail.get("provider") or (PROVIDER_LIBRARY if routed.source_strategy == STRATEGY_REUSE else PROVIDER_TENCENT))
     return GenerationResult(
         dish=routed.dish,
@@ -231,6 +237,9 @@ def execute_generation_request(request: GenerationRequest, provider: GenerationP
         prompt_type=str(detail.get("promptType") or prompt_type_for_strategy(strategy, routed.kind)),
         candidate=detail.get("candidate") if isinstance(detail.get("candidate"), dict) else None,
         path=str(detail.get("path") or ""),
+        provider_error=str(detail.get("provider_error") or detail.get("providerError") or "") or None,
+        retryable=bool(detail.get("retryable")),
+        refund_required=bool(detail.get("refund_required") if "refund_required" in detail else detail.get("refundRequired")),
         reason=str(detail.get("reason") or "") or None,
         metadata={key: value for key, value in detail.items() if key not in {"candidate", "path", "provider", "action", "promptType", "reason"}},
     )
@@ -279,6 +288,23 @@ def is_retryable_provider_error(message: str) -> bool:
     return True
 
 
+def provider_status(status: str) -> str:
+    clean = str(status or "").strip().lower()
+    if clean in PROVIDER_STATUSES:
+        return clean
+    if clean in {"reused", "cached", "completed", "skipped"}:
+        return STATUS_SUCCEEDED
+    if clean == "fallback":
+        return STATUS_PARTIAL
+    if clean in {"pending", "waiting", "limited", STRATEGY_WAITING_FOR_PROVIDER}:
+        return STATUS_QUEUED
+    if clean in {"partially_failed"}:
+        return STATUS_PARTIAL
+    if clean in {"error"}:
+        return STATUS_FAILED
+    return STATUS_FAILED if clean else STATUS_QUEUED
+
+
 def prompt_for_generation(
     row: dict[str, Any],
     style_id: str,
@@ -295,7 +321,7 @@ def prompt_for_generation(
     kind = normalize_kind(row.get("kind"))
     safe_area = _watermark_safe_area(row)
     forbidden = "不要出现任何文字、价格、非用户指定logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-    common = f"外卖平台主图，主体完整，背景必须跟所选背景一致，{style}，{detail}，{safe_area}{forbidden}"
+    common = f"外卖主图，外卖平台主图，统一背景，主体完整，背景必须跟所选背景一致，{style}，{detail}，{safe_area}{forbidden}"
     if prompt_type == "replace_background":
         return (
             f"保留「{dish}」菜品主体完整，只统一为所选背景风格，{common}"
@@ -408,6 +434,15 @@ def _strategy_after_provider(strategy: str, detail: dict[str, Any]) -> str:
     if action == "TextToImageLite" or detail.get("fallbackFrom") == "SubmitTextToImageJob":
         return STRATEGY_TEXT_TO_IMAGE_LITE
     return strategy
+
+
+def _status_after_provider(strategy: str, detail: dict[str, Any]) -> str:
+    raw_status = str(detail.get("status") or "").strip().lower()
+    if raw_status in PROVIDER_STATUSES:
+        return raw_status
+    if strategy == STRATEGY_REUSE:
+        return STATUS_REUSED
+    return STATUS_SUCCEEDED
 
 
 def _watermark_safe_area(row: dict[str, Any]) -> str:
