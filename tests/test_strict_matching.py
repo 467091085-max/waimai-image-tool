@@ -19,7 +19,7 @@ class StrictMatchingTests(unittest.TestCase):
     def test_unrelated_food_and_drink_images_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            wrong_snack = root / "style-1" / "黄乐条.jpg"
+            wrong_snack = root / "style-1" / "薯条.jpg"
             wrong_rice = root / "style-1" / "一碗米饭.jpg"
             wrong_prompt = root / "style-1" / "北京炒合菜提示勿点.jpg"
             right_drink = root / "style-2" / "金桔柠檬水.jpg"
@@ -28,7 +28,7 @@ class StrictMatchingTests(unittest.TestCase):
             for path in (wrong_snack, wrong_rice, wrong_prompt, right_drink, right_rice_noodle, fallback_rice_noodle):
                 make_image(path)
             library = [
-                app_module.LibraryImage("wrong-snack", wrong_snack, "测试店", "黄乐条", app_module.normalize("黄乐条"), app_module.grams(app_module.normalize("黄乐条")), "style-1"),
+                app_module.LibraryImage("wrong-snack", wrong_snack, "测试店", "薯条", app_module.normalize("薯条"), app_module.grams(app_module.normalize("薯条")), "style-1"),
                 app_module.LibraryImage("wrong-rice", wrong_rice, "测试店", "一碗米饭", app_module.normalize("一碗米饭"), app_module.grams(app_module.normalize("一碗米饭")), "style-1"),
                 app_module.LibraryImage(
                     "wrong-prompt",

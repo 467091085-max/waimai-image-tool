@@ -12,6 +12,10 @@ from typing import Any, Iterable, Mapping
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from matching_engine import classify_kind as classify_match_kind
+from matching_engine import normalize_dish as normalize_match_dish
+from matching_engine import semantic_family as semantic_match_family
+
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CLEAN_DIR = Path("/Users/guiguixiaxia/Documents/cleanpic")
 DEFAULT_WATERMARK_DIR = Path("/Users/guiguixiaxia/Documents/watermarkpic")
@@ -83,6 +87,21 @@ DRINK_KEYWORDS = (
     "啤酒",
     "汽水",
     "茶饮",
+)
+SNACK_KEYWORDS = (
+    "小吃",
+    "小食",
+    "甜品",
+    "茶叶蛋",
+    "卤蛋",
+    "煎蛋",
+    "锅贴",
+    "汤圆",
+    "凉菜",
+    "卤味",
+    "花生米",
+    "糍粑",
+    "酥肉",
 )
 
 PROMO_KEYWORDS = (
@@ -271,16 +290,22 @@ class ScanResult:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
         cleaning = cleaning_summary(self.records)
         sha1 = sha1_summary(self.records)
+        match_categories = match_category_summary(self.records)
         return {
             "total": self.total,
             "clean": source_counts.get("clean", 0),
             "watermark": source_counts.get("watermark", 0),
+            "singleImages": match_categories.get("single", 0),
+            "packageImages": match_categories.get("package", 0),
+            "snackDrinkImages": match_categories.get("beverage", 0) + match_categories.get("snack", 0),
+            "formalImages": match_categories.get("formal", 0),
             "reusable": cleaning["reusable"],
             "referenceOnly": cleaning["referenceOnly"],
             "sha1Deduped": sha1["unique"],
             "sha1Duplicates": sha1["duplicates"],
             "sources": source_counts,
             "tags": tag_counts,
+            "matchCategories": match_categories,
             "sha1": sha1,
             "cleaning": cleaning,
             "errors": len(self.errors),
@@ -291,6 +316,25 @@ class ScanResult:
 def normalize(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).lower()
     return "".join(_WORD_RE.findall(normalized))
+
+
+def match_category_for(dish: str, norm: str, tags: Iterable[str] | None = None) -> str:
+    tag_set = set(tags or [])
+    family = semantic_match_family(dish, norm)
+    kind = classify_match_kind(dish)
+    if kind == "套餐/组合" or family == "combo" or "package" in tag_set or "combo" in tag_set:
+        return "package"
+    if family == "beverage" or "drink" in tag_set:
+        return "beverage"
+    if family == "plain_rice" or "staple" in tag_set:
+        return "staple"
+    if family == "addon" or "side_addon" in tag_set:
+        return "addon"
+    if family in {"soup"} or "snack" in tag_set:
+        return "snack"
+    if family == "service":
+        return "other"
+    return "single"
 
 
 def source_bucket(source: str) -> str:
@@ -358,6 +402,7 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
     tags = []
     is_combo = bool(_PLUS_RE.search(dish)) or any(keyword in searchable for keyword in COMBO_KEYWORDS)
     is_drink = any(keyword in searchable for keyword in DRINK_KEYWORDS)
+    is_snack = any(keyword in searchable for keyword in SNACK_KEYWORDS)
     is_promo = any(keyword in searchable for keyword in PROMO_KEYWORDS)
     is_raw = any(keyword in searchable for keyword in RAW_KEYWORDS)
     is_staple = any(keyword in searchable or normalize(keyword) in norm for keyword in STAPLE_KEYWORDS)
@@ -366,8 +411,11 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
     is_low_quality_name = any(keyword in searchable or normalize(keyword) in norm for keyword in LOW_QUALITY_NAME_KEYWORDS)
     if is_combo:
         tags.append("combo")
+        tags.append("package")
     if is_drink:
         tags.append("drink")
+    if is_snack:
+        tags.append("snack")
     if is_promo:
         tags.append("promo")
     if is_raw:
@@ -382,7 +430,9 @@ def detect_tags(dish: str, norm: str) -> dict[str, Any]:
         tags.append("low_quality")
     return {
         "is_combo": is_combo,
+        "is_package": is_combo,
         "is_drink": is_drink,
+        "is_snack": is_snack,
         "is_promo": is_promo,
         "is_raw": is_raw,
         "is_staple": is_staple,
@@ -503,6 +553,29 @@ def detect_reuse_flags(
         "review_reasons": review_reasons,
         "_extra_tags": extra_tags,
     }
+
+
+def match_category_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {
+        "single": 0,
+        "package": 0,
+        "beverage": 0,
+        "snack": 0,
+        "staple": 0,
+        "addon": 0,
+        "other": 0,
+        "formal": 0,
+    }
+    for record in records:
+        dish = str(record.get("dish") or record.get("dishName") or record.get("name") or "")
+        norm = str(record.get("norm") or normalize_match_dish(dish) or normalize(dish))
+        category = str(record.get("match_category") or match_category_for(dish, norm, record.get("tags") or []))
+        counts[category] = counts.get(category, 0) + 1
+        reusable = bool(record.get("reusable", False))
+        reference_only = bool(record.get("reference_only", not reusable))
+        if reusable and not reference_only and category != "other":
+            counts["formal"] += 1
+    return counts
 
 
 def cleaning_summary(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
@@ -640,7 +713,8 @@ def build_record(
     store = parts[0] if len(parts) > 1 else root.name
     category_path = "/".join(parts[1:-1]) if len(parts) > 2 else ""
     dish = path.stem.strip()
-    norm = normalize(dish)
+    basic_norm = normalize(dish)
+    norm = normalize_match_dish(dish) or basic_norm
     digest = sha1_file(path)
     stat = path.stat()
     thumb_path = thumbnail_path_for(thumb_dir, source, digest) if thumb_dir else None
@@ -665,8 +739,11 @@ def build_record(
         "dish": dish,
         "name": dish,
         "norm": norm,
-        "canonical": norm,
-        "canonical_dish": norm,
+        "canonical": basic_norm,
+        "canonical_dish": basic_norm,
+        "canonical_norm": norm,
+        "match_family": semantic_match_family(dish, norm),
+        "match_kind": classify_match_kind(dish),
         "style_id": style_id,
         "style": style_id,
         "background": style_id,
@@ -681,6 +758,7 @@ def build_record(
         "thumb_path": str(thumb_path) if thumb_path else "",
     }
     record.update(detect_tags(dish, norm))
+    record["match_category"] = match_category_for(dish, norm, record.get("tags") or [])
     flags = detect_reuse_flags(
         dish=dish,
         source=source,

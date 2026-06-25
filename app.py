@@ -29,6 +29,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from admin_panel import AdminDependencies, create_admin_blueprint
 from image_pipeline import PLATFORMS, export_delivery_zip
 from matching_engine import (
+    MATCH_REASON_UNMATCHED,
+    assess_match as engine_assess_match,
     classify_kind as engine_classify_kind,
     grams as engine_grams,
     normalize_dish,
@@ -1360,15 +1362,19 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
     scored = []
     for image in library:
         score = similarity(item["name"], image.dish, item["norm"], image.norm, item_grams, image.grams)
-        if score >= min_score and strict_match_allowed(item["name"], image.dish, item["norm"], image.norm, score):
-            scored.append((score, image))
-    reusable = sorted((x for x in scored if x[1].reusable), key=lambda x: (x[0], x[1].source == "clean"), reverse=True)
-    reference_only = sorted((x for x in scored if not x[1].reusable), key=lambda x: x[0], reverse=True)
+        assessment = engine_assess_match(item["name"], image.dish, item["norm"], image.norm, score)
+        if assessment and float(assessment["score"]) >= min_score:
+            scored.append((float(assessment["score"]), str(assessment["match_reason"]), image))
+    reusable = sorted((x for x in scored if x[2].reusable), key=lambda x: (x[0], x[2].source == "clean"), reverse=True)
+    reference_only = sorted((x for x in scored if not x[2].reusable), key=lambda x: x[0], reverse=True)
     scored = (reusable + reference_only)[:limit]
     return [
         {
             "imageId": image.image_id,
+            "candidate_id": image.image_id,
+            "candidateId": image.image_id,
             "score": round(score * 100, 1),
+            "confidence": round(score * 100, 1),
             "dishName": image.dish,
             "store": image.store,
             "styleId": image.style_id,
@@ -1376,12 +1382,14 @@ def top_candidates(item: dict[str, Any], library: list[LibraryImage], limit: int
             "source": image.source,
             "reusable": image.reusable,
             "referenceOnly": image.reference_only,
+            "match_reason": reason,
+            "matchReason": reason,
             "remoteUrl": image.remote_url,
             "cosKey": image.cos_key,
             "url": library_image_url(image),
             "path": str(image.path),
         }
-        for score, image in scored[:limit]
+        for score, reason, image in scored[:limit]
     ]
 
 
@@ -1393,7 +1401,7 @@ def component_matches(item: dict[str, Any], library: list[LibraryImage], limit: 
             continue
         component_item = {**item, "name": component, "norm": norm}
         candidates = top_candidates(component_item, library, limit)
-        matches.append({"name": component, "norm": norm, "candidates": candidates})
+        matches.append({"name": component, "norm": norm, "candidates": candidates, **candidate_state_fields(candidates)})
     return matches
 
 
@@ -2475,6 +2483,49 @@ def status_for(candidates: list[dict[str, Any]]) -> str:
     return "弱匹配"
 
 
+def machine_status_for_candidates(candidates: list[dict[str, Any]]) -> str:
+    if not candidates:
+        return "no_match"
+    score = float(candidates[0].get("score") or candidates[0].get("confidence") or 0)
+    if score >= 70:
+        return "direct"
+    if score >= 45:
+        return "review"
+    return "needs_generation"
+
+
+def candidate_state_fields(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    match_status = machine_status_for_candidates(candidates)
+    needs_generation = match_status in {"no_match", "needs_generation"}
+    if not candidates:
+        return {
+            "matchStatus": match_status,
+            "needsAi": needs_generation,
+            "needs_generation": needs_generation,
+            "needsGeneration": needs_generation,
+            "confidence": 0.0,
+            "match_reason": MATCH_REASON_UNMATCHED,
+            "matchReason": MATCH_REASON_UNMATCHED,
+            "candidate_id": "",
+            "candidateId": "",
+        }
+    top = candidates[0]
+    reason = str(top.get("match_reason") or top.get("matchReason") or ("generated" if top.get("generated") else ""))
+    candidate_id = str(top.get("candidate_id") or top.get("candidateId") or top.get("imageId") or "")
+    confidence = float(top.get("confidence", top.get("score", 0)) or 0)
+    return {
+        "matchStatus": match_status,
+        "needsAi": needs_generation,
+        "needs_generation": needs_generation,
+        "needsGeneration": needs_generation,
+        "confidence": confidence,
+        "match_reason": reason,
+        "matchReason": reason,
+        "candidate_id": candidate_id,
+        "candidateId": candidate_id,
+    }
+
+
 def quality_config(value: str | None) -> dict[str, Any]:
     key = str(value or "standard")
     return QUALITY_OPTIONS.get(key, QUALITY_OPTIONS["standard"])
@@ -3032,7 +3083,7 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         candidates = top_candidates(item, library)
         components = component_matches(item, library) if item.get("kind") == "套餐/组合" else []
         original_status = status_for(candidates)
-        results.append({**item, "status": original_status, "originalStatus": original_status, "candidates": candidates, "componentMatches": components})
+        results.append({**item, "status": original_status, "originalStatus": original_status, "candidates": candidates, "componentMatches": components, **candidate_state_fields(candidates)})
     styles = style_options(results)
     selected_style = selected_style or (styles[0]["id"] if styles else "")
     for row in results:
@@ -3058,6 +3109,7 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         else:
             action = "智能统一风格" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
+        row.update(candidate_state_fields(candidates))
         if not chosen:
             public_status = "待补图"
         elif not chosen.get("reusable", True):

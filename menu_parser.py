@@ -135,10 +135,18 @@ MARKETING_WORDS = (
     "推荐",
     "现炒",
     "现煎",
+    "手打",
+    "手作",
+    "手工",
+    "入店必点",
     "秘制",
     "正宗",
     "经典",
     "老长沙",
+    "严选",
+    "超值",
+    "精品",
+    "厨师",
     "收藏",
     "宠粉",
     "粉丝",
@@ -167,6 +175,10 @@ SPEC_WORDS = (
     "标准份",
     "一份",
     "单份",
+    "堂食份量",
+    "堂食分量",
+    "加量",
+    "双倍加量",
     "微辣",
     "中辣",
     "重辣",
@@ -180,6 +192,7 @@ SPEC_WORDS = (
     "去冰",
     "少冰",
     "正常冰",
+    "咸鲜",
 )
 
 FORMAT_WORDS = (
@@ -196,6 +209,8 @@ FORMAT_WORDS = (
 COMBO_WORDS = (
     "套餐",
     "组合",
+    "套饭",
+    "套餐饭",
     "双拼",
     "三拼",
     "四拼",
@@ -203,9 +218,15 @@ COMBO_WORDS = (
     "拼盘",
     "自选",
     "任选",
+    "搭配",
+    "搭子",
     "多人餐",
     "单人餐",
     "双人餐",
+    "三人餐",
+    "四人餐",
+    "亲子餐",
+    "分享餐",
     "大礼包",
     "全家桶",
 )
@@ -374,6 +395,8 @@ def normalize(text: str) -> str:
     text = text.replace("辣椒小炒肉", "辣椒炒肉")
     text = text.replace("农家小炒肉", "辣椒炒肉")
     text = text.replace("农家一碗香", "一碗香")
+    text = text.replace("肉沫", "肉末")
+    text = text.replace("宫爆鸡丁", "宫保鸡丁")
     for word in MARKETING_WORDS + PLATFORM_WORDS + SPEC_WORDS + FORMAT_WORDS:
         text = text.replace(word, "")
     return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
@@ -559,6 +582,7 @@ def split_components(name: str, attrs: str) -> list[str]:
     source = unicodedata.normalize("NFKC", f"{name} {attrs}")
     source = re.sub(r"#{2,}", "#", source)
     source = re.sub(r"(口味|份量|规格|主食|基底|自选一|自选二|赠品三选一|味由您定)[:：]?", "#", source)
+    source = re.sub(r"(?<!不)(?:包含|内含|含|搭配|配)(?=[\u4e00-\u9fffA-Za-z0-9])", "#", source)
     parts = re.split(r"[+#/／、,，|丨;；\n]+", source)
     out = []
     seen = set()
@@ -575,7 +599,11 @@ def split_components(name: str, attrs: str) -> list[str]:
 
 
 def _has_combo_signal(text: str) -> bool:
-    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋&/／、,，|丨;；]", text))
+    if any(word in text for word in COMBO_WORDS):
+        return True
+    if re.search(r"[+＋&/／、,，|丨;；]", text):
+        return True
+    return bool(re.search(r"(?<!不)(?:包含|内含|含|搭配)(?=[\u4e00-\u9fffA-Za-z0-9])", text))
 
 
 def _is_service_text(name_text: str, text: str) -> bool:

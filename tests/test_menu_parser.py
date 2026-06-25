@@ -6,7 +6,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from menu_parser import audit_menus, classify_basic_category, parse_menu
+from menu_parser import audit_menus, classify_basic_category, detect_kind, normalize, parse_menu
 
 
 REAL_MENU_DIR = Path("/Users/guiguixiaxia/Documents/menus")
@@ -117,9 +117,19 @@ class MenuParserTests(unittest.TestCase):
             "手打金桔柠檬水": "饮品",
             "经典螺蛳粉": "米粉/米线",
             "北京炒合菜": "炒菜/盖饭",
+            "双人餐含辣椒炒肉米饭": "套餐",
+            "番茄炒蛋(不含米饭)": "炒菜/盖饭",
         }
         for name, expected in cases.items():
             self.assertEqual(classify_basic_category(name), expected)
+
+    def test_menu_name_normalization_and_package_kind(self) -> None:
+        self.assertEqual(normalize("【美团热销】手打金桔柠檬水(大杯)"), "金桔柠檬水")
+        self.assertEqual(normalize("老长沙辣椒小炒肉盖码饭"), "辣椒炒肉")
+        self.assertEqual(normalize("肉沫茄子(堂食份量)"), "肉末茄子")
+        self.assertEqual(detect_kind("双人餐含辣椒炒肉米饭"), "套餐/组合")
+        self.assertEqual(detect_kind("任选小炒黄牛肉+米饭"), "套餐/组合")
+        self.assertEqual(detect_kind("手打金桔柠檬水"), "饮品/小食")
 
     def test_parse_failure_reports_actionable_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

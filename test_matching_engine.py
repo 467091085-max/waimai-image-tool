@@ -6,6 +6,7 @@ from matching_engine import (
     SAMPLE_LIBRARY_RECORDS,
     SAMPLE_MENU_ITEMS,
     classify_kind,
+    match_summary,
     match_menu_to_library,
     normalize_dish,
     run_builtin_selftest,
@@ -21,11 +22,13 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
     def test_normalize_split_and_classify(self) -> None:
         self.assertEqual(normalize_dish("【热销】老长沙辣椒炒肉盖码饭"), "辣椒炒肉")
         self.assertEqual(normalize_dish("农家小炒肉饭"), "辣椒炒肉")
+        self.assertEqual(normalize_dish("【美团热销】手打金桔柠檬水(大杯)"), "金桔柠檬水")
         self.assertEqual(normalize_dish("爆炒黄牛肉"), "小炒黄牛肉")
         self.assertEqual(normalize_dish("西红柿炒鸡蛋"), "番茄炒蛋")
         self.assertEqual(normalize_dish("北京炒合菜提示勿点"), "")
         self.assertEqual(split_components("辣椒炒肉+茄子肉末盖码饭"), ["辣椒炒肉", "茄子肉末"])
         self.assertEqual(classify_kind("辣椒炒肉+茄子肉末盖码饭"), "套餐/组合")
+        self.assertEqual(classify_kind("双人餐含辣椒炒肉米饭"), "套餐/组合")
         self.assertEqual(classify_kind("康师傅冰红茶"), "饮品/小食")
         self.assertEqual(classify_kind("手打金桔柠檬水"), "饮品/小食")
         self.assertEqual(classify_kind("香干炒肉盖码饭"), "单品")
@@ -34,6 +37,7 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
         self.assertEqual(semantic_family("一碗米饭", normalize_dish("一碗米饭")), "plain_rice")
         self.assertEqual(semantic_family("经典螺蛳粉", normalize_dish("经典螺蛳粉")), "rice_noodle")
         self.assertEqual(split_components("辣椒炒肉+米饭+餐具+茄子肉末套餐"), ["辣椒炒肉", "茄子肉末"])
+        self.assertEqual(split_components("双人餐含辣椒炒肉+米饭"), ["辣椒炒肉"])
 
     def test_similarity_scores_aliases_higher_than_unrelated_dishes(self) -> None:
         alias_score = similarity("老长沙辣椒炒肉盖码饭", "辣椒小炒肉盖饭")
@@ -88,6 +92,31 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
             score = similarity(menu_name, image_name, menu_norm, image_norm)
             self.assertFalse(strict_match_allowed(menu_name, image_name, menu_norm, image_norm, score))
 
+    def test_named_mismatch_regressions_return_unmatched_for_generation(self) -> None:
+        records = [
+            {"imageId": "fries", "dishName": "薯条", "styleId": "style-1", "source": "sample"},
+            {"imageId": "rice", "dishName": "一碗米饭", "styleId": "style-1", "source": "sample"},
+            {"imageId": "meat", "dishName": "辣椒炒肉", "styleId": "style-1", "source": "sample"},
+        ]
+        items = [
+            {"row": 1, "name": "手打金桔柠檬水"},
+            {"row": 2, "name": "北京炒合菜"},
+            {"row": 3, "name": "云端秘制新菜"},
+        ]
+
+        results = match_menu_to_library(items, records, selected_style="style-1")
+        by_name = {row["name"]: row for row in results}
+
+        self.assertEqual(by_name["手打金桔柠檬水"]["candidates"], [])
+        self.assertEqual(by_name["北京炒合菜"]["candidates"], [])
+        self.assertEqual(by_name["云端秘制新菜"]["candidates"], [])
+        for row in results:
+            self.assertEqual(row["matchStatus"], "no_match")
+            self.assertTrue(row["needs_generation"])
+            self.assertTrue(row["needsGeneration"])
+            self.assertEqual(row["match_reason"], "unmatched")
+            self.assertEqual(row["candidate_id"], "")
+
     def test_combo_dish_match_does_not_become_single_dish_match(self) -> None:
         records = [
             {"imageId": "single", "dishName": "辣椒炒肉", "styleId": "style-1", "source": "sample"},
@@ -111,6 +140,13 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
         self.assertEqual(first["backgroundAction"], "背景一致，直接复用")
         self.assertEqual(first["candidates"][0]["styleId"], "style-1")
         self.assertEqual(first["candidates"][0]["source"], "sample")
+        self.assertGreaterEqual(first["confidence"], 70)
+        self.assertEqual(first["candidate_id"], first["candidates"][0]["candidate_id"])
+        self.assertIn(first["match_reason"], {"exact_normalized", "alias_canonical", "strong_token"})
+        self.assertGreaterEqual(
+            first["candidates"][0].keys(),
+            {"confidence", "match_reason", "candidate_id", "matchReason"},
+        )
 
         combo = next(row for row in results if row["kind"] == "套餐/组合")
         self.assertGreaterEqual(len(combo["componentMatches"]), 2)
@@ -118,6 +154,13 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
 
         coverage = style_coverage(results)
         self.assertTrue(any(style["styleId"] == "style-1" and style["direct"] >= 2 for style in coverage))
+
+        summary = match_summary(results, points_per_image=100)
+        self.assertEqual(summary["singleImages"], 1)
+        self.assertEqual(summary["packageImages"], 1)
+        self.assertEqual(summary["snackDrinkImages"], 1)
+        self.assertEqual(summary["formalImages"], 3)
+        self.assertEqual(summary["estimatedPoints"], 300)
 
     def test_module_selftest(self) -> None:
         self.assertTrue(run_builtin_selftest()["ok"])
