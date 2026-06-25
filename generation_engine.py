@@ -334,13 +334,13 @@ def prompt_for_generation(
     )
     if prompt_type == "replace_background":
         return _clip_prompt(
-            f"菜品换背景任务：保留参考图里的「{dish}」菜品主体完整，只替换/统一为所选背景风格。"
-            f"{common}不改变菜品种类、摆盘结构、器皿和主要食材，去除杂乱桌面与背景干扰。"
+            _short_replace_prompt(dish, style, watermark=bool(row.get("watermark"))),
+            120,
         )
     if prompt_type in {"reference_redraw", "watermark_redraw", "debrand_redraw"}:
         return _clip_prompt(
-            f"菜品去品牌水印重绘任务：以参考图中的「{dish}」为准，保持菜品种类、份量、器皿、摆盘和卖点一致。"
-            f"{common}彻底去除原图上的品牌水印、logo、店名、活动字、价格和促销贴纸，生成干净可交付成图。"
+            _short_replace_prompt(dish, style, watermark=bool(row.get("watermark")), debrand=True),
+            120,
         )
     if kind == KIND_COMBO or prompt_type == "combo":
         return _clip_prompt(
@@ -368,6 +368,21 @@ def prompt_for_style_background(
         "必须和其他背景方案明显不同，干净高级，主体完整居中，适合平台裁切。"
         "四周保留安全边距，右下角留出后续水印安全区。"
         "不要出现文字、价格、logo、水印、品牌名、人物、手、包装袋。"
+    )
+
+
+def _short_replace_prompt(dish: str, style: str, *, watermark: bool = False, debrand: bool = False) -> str:
+    style_text = _clip_prompt(style, 34)
+    dish_text = _clip_prompt(dish or "菜品", 22)
+    safe = "右下角留水印安全区，" if watermark else ""
+    if debrand:
+        return (
+            f"去品牌水印重绘：保持菜品种类、菜量、餐具摆盘，菜品为{dish_text}，统一为{style_text}。"
+            f"主体完整居中，{safe}生成干净可交付成图，无文字水印logo价格。"
+        )
+    return (
+        f"换背景：保留{dish_text}主体、菜量、餐具和摆盘，只统一为{style_text}。"
+        f"真实外卖主图，主体完整居中，{safe}干净背景，无文字水印logo价格。"
     )
 
 
