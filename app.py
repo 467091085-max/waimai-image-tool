@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import billing
+import generation_engine
 import generation_jobs
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
@@ -639,25 +640,7 @@ def row_components_text(row: dict[str, Any]) -> str:
 
 
 def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | None = "standard", prompt_type: str = "text_to_image") -> str:
-    style = style_prompt_for(style_id)
-    detail = quality_detail(quality)
-    kind = row.get("kind") or "菜品"
-    dish = row.get("name", "外卖菜品")
-    forbidden = "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
-    if kind == "套餐/组合" or prompt_type == "combo":
-        return (
-            f"{dish}，套餐组合外卖主图，外卖平台主图，包含：{row_components_text(row)}，{style}，"
-            f"{detail}，多菜品协调摆放，主体完整，背景必须跟所选背景一致。{forbidden}"
-        )[:250]
-    if prompt_type == "replace_background":
-        return (
-            f"保留「{dish}」菜品主体完整，仅替换为{style}，外卖平台主图，{detail}，"
-            f"背景必须跟所选背景一致，不改变菜品本身，不添加无关物体。{forbidden}"
-        )[:250]
-    return (
-        f"{dish}，{kind}，纯文生图，外卖平台主图，{style}，{detail}，"
-        f"背景必须跟所选背景一致，真实餐饮商业摄影质感。{forbidden}"
-    )[:250]
+    return generation_engine.prompt_for_generation(row, style_id, quality, prompt_type, style_prompt=style_prompt_for)
 
 
 def tencent_text_to_image_lite(row: dict[str, Any], style_id: str, quality: str | None, target: Path) -> dict[str, Any]:
@@ -789,11 +772,18 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     }
 
 
-def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
+def tencent_replace_background(
+    row: dict[str, Any],
+    source_candidate: dict[str, Any],
+    style_id: str,
+    target: Path,
+    quality: str | None = "standard",
+    prompt_type: str | None = None,
+) -> dict[str, Any]:
     product_url = model_input_public_url(source_candidate)
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
-    prompt_type = "combo" if row.get("kind") == "套餐/组合" else "replace_background"
+    prompt_type = prompt_type or ("combo" if row.get("kind") == "套餐/组合" else "replace_background")
     try:
         response = tencent_api_request(
             "ReplaceBackground",
@@ -810,6 +800,13 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
         raise RuntimeError(f"ProductUrl={product_url}；{exc}") from exc
     save_result_image(str(response.get("ResultImage") or ""), target)
     return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId"), "endpoint": response.get("_Endpoint")}
+
+
+def tencent_reference_redraw(row: dict[str, Any], source_candidate: dict[str, Any], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, Any]:
+    detail = tencent_replace_background(row, source_candidate, style_id, target, quality, prompt_type="watermark_redraw")
+    detail["action"] = "ReferenceRedraw"
+    detail["sourceAction"] = "ReplaceBackground"
+    return detail
 
 
 def normalize(text: str) -> str:
@@ -2031,33 +2028,199 @@ def job_run_limit(value: Any = None) -> int:
         return max(1, GENERATION_JOB_SYNC_BATCH_SIZE)
 
 
-def generation_job_item_runner(style: str, quality: str):
+def app_quality_id(quality: str | None) -> str:
+    normalized = generation_engine.normalize_quality(quality)
+    return "premium" if normalized == generation_engine.QUALITY_PREMIUM else "standard"
+
+
+def record_formal_model_output(
+    row: dict[str, Any],
+    *,
+    style: str,
+    quality: str | None,
+    request_data: generation_engine.GenerationRequest,
+    detail: dict[str, Any],
+    target: Path,
+    source_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ai_candidate, _ = ai_output_candidate(row, style, quality, f"tencent-{detail['action']}")
+    ai_candidate["tencent"] = detail
+    metadata = {
+        "status": "succeeded",
+        "provider": "tencent-hunyuan",
+        "action": detail["action"],
+        "promptType": detail.get("promptType"),
+        "sourceStrategy": request_data.source_strategy,
+        "kind": request_data.kind,
+        "quality": request_data.quality,
+        "platforms": list(request_data.platforms),
+        "watermark": request_data.watermark,
+        "row": row.get("row"),
+        "dish": row.get("name"),
+        "sourceCandidate": {
+            "imageId": source_candidate.get("imageId"),
+            "dishName": source_candidate.get("dishName"),
+            "styleId": source_candidate.get("styleId"),
+            "source": source_candidate.get("source"),
+            "reusable": source_candidate.get("reusable"),
+        }
+        if source_candidate
+        else None,
+        "tencent": detail,
+    }
+    write_ai_output_metadata(target, metadata)
+    candidate_generation_metadata(ai_candidate, metadata)
+    promote_candidate(row, ai_candidate)
+    row["backgroundAction"] = "正式生成"
+    row["publicStatus"] = "已生成"
+    row["generationStatus"] = "succeeded"
+    return ai_candidate
+
+
+class AppGenerationProvider:
+    def __init__(self, style: str, quality: str | None) -> None:
+        self.style = style
+        self.quality = app_quality_id(quality)
+        self.configured = tencent_ready()
+        self.allow_lite_fallback = TENCENT_IMAGE3_FALLBACK_TO_LITE
+
+    def reuse(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
+        candidate = request_data.source_candidate or {}
+        if candidate:
+            promote_candidate(request_data.row, candidate)
+        request_data.row["backgroundAction"] = "背景一致，直接复用"
+        request_data.row["publicStatus"] = "已生成"
+        request_data.row["generationStatus"] = "reused"
+        return {
+            "provider": "library",
+            "action": "Reuse",
+            "promptType": "reuse",
+            "candidate": candidate,
+            "path": candidate.get("path") or "",
+            "reason": "same_dish_same_style",
+        }
+
+    def replace_background(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
+        source_candidate = request_data.source_candidate or {}
+        target = ai_output_candidate(request_data.row, self.style, self.quality, "generated-final")[1]
+        detail = tencent_replace_background(request_data.row, source_candidate, self.style, target, self.quality)
+        candidate = record_formal_model_output(
+            request_data.row,
+            style=self.style,
+            quality=self.quality,
+            request_data=request_data,
+            detail=detail,
+            target=target,
+            source_candidate=source_candidate,
+        )
+        return {**detail, "candidate": candidate, "path": str(target)}
+
+    def reference_redraw(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
+        source_candidate = request_data.source_candidate or {}
+        target = ai_output_candidate(request_data.row, self.style, self.quality, "generated-final")[1]
+        detail = tencent_reference_redraw(request_data.row, source_candidate, self.style, target, self.quality)
+        candidate = record_formal_model_output(
+            request_data.row,
+            style=self.style,
+            quality=self.quality,
+            request_data=request_data,
+            detail=detail,
+            target=target,
+            source_candidate=source_candidate,
+        )
+        return {**detail, "candidate": candidate, "path": str(target)}
+
+    def text_to_image(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
+        target = ai_output_candidate(request_data.row, self.style, self.quality, "generated-final")[1]
+        detail = tencent_text_to_image(request_data.row, self.style, self.quality, target)
+        candidate = record_formal_model_output(
+            request_data.row,
+            style=self.style,
+            quality=self.quality,
+            request_data=request_data,
+            detail=detail,
+            target=target,
+            source_candidate=None,
+        )
+        return {**detail, "candidate": candidate, "path": str(target)}
+
+
+def run_formal_generation_item(
+    row: dict[str, Any],
+    *,
+    style: str,
+    quality: str | None = "standard",
+    platforms: list[str] | tuple[str, ...] | None = None,
+    watermark: bool | dict[str, Any] = False,
+) -> dict[str, Any]:
+    strip_nonfinal_generated_candidates(row)
+    if isinstance(watermark, dict):
+        row["watermark"] = watermark
+    request_data = generation_engine.request_from_row(row, style=style, quality=quality, platforms=platforms, watermark=watermark)
+    request_data = generation_engine.select_generation_request(request_data)
+    provider = AppGenerationProvider(style, quality)
+    result = generation_engine.execute_generation_request(request_data, provider)
+    result_payload = result.to_dict()
+    if result.status == generation_engine.STATUS_FAILED:
+        row["backgroundAction"] = "模型生成失败"
+        row["publicStatus"] = "模型生成失败"
+        row["generationStatus"] = "failed"
+    elif result.status == generation_engine.STATUS_QUEUED:
+        row["backgroundAction"] = "待正式生成"
+        row["publicStatus"] = "待正式生成"
+        row["generationStatus"] = "queued"
+    row["generation"] = {
+        "row": row.get("row"),
+        "dish": row.get("name"),
+        "provider": result.provider,
+        "action": result.action,
+        "reason": result.reason,
+        "attempted": result.source_strategy != generation_engine.STRATEGY_REUSE,
+        "succeeded": result.status in {generation_engine.STATUS_SUCCEEDED, generation_engine.STATUS_REUSED},
+        "status": result.status,
+        "promptType": result.prompt_type,
+        "sourceStrategy": result.source_strategy,
+        "source_strategy": result.source_strategy,
+        "providerError": result.provider_error,
+        "provider_error": result.provider_error,
+        "retryable": result.retryable,
+        "refundRequired": result.refund_required,
+        "refund_required": result.refund_required,
+    }
+    if result.candidate:
+        row["generation"]["candidate"] = result.candidate
+    return {"result": result_payload, "row": row}
+
+
+def generation_job_item_runner(style: str, quality: str, platforms: list[str] | tuple[str, ...] | None = None, watermark: bool | dict[str, Any] = False):
     def run_item(item: dict[str, Any]) -> dict[str, Any]:
         row = item.get("payload") if isinstance(item.get("payload"), dict) else {}
         if not row:
             raise generation_jobs.InvalidJobInput("Job item payload is empty", itemIndex=item.get("index"))
-        plan = {"results": [row]}
-        generation = materialize_final_images(plan, style, quality)
-        updated_row = plan["results"][0]
-        generation_items = generation.get("items") if isinstance(generation.get("items"), list) else []
-        item_result = generation_items[0] if generation_items else updated_row.get("generation") or {}
+        item_output = run_formal_generation_item(row, style=style, quality=quality, platforms=platforms, watermark=watermark)
+        updated_row = item_output["row"]
+        item_result = item_output["result"]
         result_status = str(item_result.get("status") or "")
         if result_status in {"failed"}:
             item_status = generation_jobs.ITEM_FAILED
-        elif result_status in {"pending", "limited"}:
+        elif result_status in {"pending", "limited", "queued"}:
             item_status = generation_jobs.ITEM_QUEUED
         else:
             item_status = generation_jobs.ITEM_COMPLETED
-        generation_summary = {key: value for key, value in generation.items() if key != "items"}
         return {
             "itemStatus": item_status,
             "status": result_status,
-            "provider": item_result.get("provider") or generation.get("provider"),
-            "action": item_result.get("action") or generation.get("action"),
+            "provider": item_result.get("provider"),
+            "action": item_result.get("action"),
             "reason": item_result.get("reason"),
-            "error": item_result.get("error"),
-            "generation": item_result,
-            "generationSummary": generation_summary,
+            "error": item_result.get("error") or item_result.get("provider_error"),
+            "provider_error": item_result.get("provider_error") or item_result.get("providerError"),
+            "providerError": item_result.get("provider_error") or item_result.get("providerError"),
+            "retryable": bool(item_result.get("retryable")),
+            "refund_required": bool(item_result.get("refund_required") or item_result.get("refundRequired")),
+            "refundRequired": bool(item_result.get("refund_required") or item_result.get("refundRequired")),
+            "generation": updated_row.get("generation") or item_result,
+            "generationResult": item_result,
             "payload": updated_row,
         }
 
@@ -2704,9 +2867,15 @@ def api_run_generation_job(job_id: str):
         if payload.get("paid") or order_id:
             job = generation_jobs.mark_paid(job_id, order_id=order_id or None)
         limit = job_run_limit(payload.get("limit"))
+        job_request = job.get("request") if isinstance(job.get("request"), dict) else {}
         job = generation_jobs.run_job(
             job_id,
-            generation_job_item_runner(str(job["style"]), str(job["quality"])),
+            generation_job_item_runner(
+                str(job["style"]),
+                str(job["quality"]),
+                platforms=job_request.get("platforms") if isinstance(job_request.get("platforms"), list) else None,
+                watermark=job_request.get("watermark") if isinstance(job_request.get("watermark"), dict) else False,
+            ),
             limit=limit,
         )
         return jsonify(job_poll_response(job))
@@ -2723,9 +2892,15 @@ def api_retry_generation_job(job_id: str):
         job = generation_jobs.retry_failed_items(job_id, item_indexes=item_indexes)
         if payload.get("run", True):
             limit = job_run_limit(payload.get("limit"))
+            job_request = job.get("request") if isinstance(job.get("request"), dict) else {}
             job = generation_jobs.run_job(
                 job_id,
-                generation_job_item_runner(str(job["style"]), str(job["quality"])),
+                generation_job_item_runner(
+                    str(job["style"]),
+                    str(job["quality"]),
+                    platforms=job_request.get("platforms") if isinstance(job_request.get("platforms"), list) else None,
+                    watermark=job_request.get("watermark") if isinstance(job_request.get("watermark"), dict) else False,
+                ),
                 limit=limit,
             )
         return jsonify(job_poll_response(job))

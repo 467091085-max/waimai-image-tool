@@ -16,8 +16,10 @@ JOB_CREATED = "created"
 JOB_PAID = "paid"
 JOB_QUEUED = "queued"
 JOB_RUNNING = "running"
-JOB_PARTIALLY_FAILED = "partially_failed"
-JOB_COMPLETED = "completed"
+JOB_SUCCEEDED = "succeeded"
+JOB_PARTIAL = "partial"
+JOB_COMPLETED = JOB_SUCCEEDED
+JOB_PARTIALLY_FAILED = JOB_PARTIAL
 JOB_FAILED = "failed"
 JOB_REFUNDED = "refunded"
 JOB_CANCELLED = "cancelled"
@@ -26,8 +28,12 @@ JOB_STATUSES = {
     JOB_PAID,
     JOB_QUEUED,
     JOB_RUNNING,
+    JOB_SUCCEEDED,
+    JOB_PARTIAL,
     JOB_PARTIALLY_FAILED,
     JOB_COMPLETED,
+    "partially_failed",
+    "completed",
     JOB_FAILED,
     JOB_REFUNDED,
     JOB_CANCELLED,
@@ -71,6 +77,8 @@ CREATE TABLE IF NOT EXISTS generation_jobs (
         'paid',
         'queued',
         'running',
+        'succeeded',
+        'partial',
         'partially_failed',
         'completed',
         'failed',
@@ -118,6 +126,9 @@ CREATE TABLE IF NOT EXISTS generation_job_items (
     action TEXT NOT NULL DEFAULT '',
     reason TEXT,
     error TEXT,
+    provider_error TEXT,
+    retryable INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1)),
+    refund_required INTEGER NOT NULL DEFAULT 0 CHECK (refund_required IN (0, 1)),
     payload TEXT NOT NULL DEFAULT '{}',
     result TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -363,6 +374,9 @@ def record_item_status(
     action: str | None = None,
     reason: str | None = None,
     error: str | None = None,
+    provider_error: str | None = None,
+    retryable: bool | None = None,
+    refund_required: bool | None = None,
     result: dict[str, Any] | None = None,
     payload: dict[str, Any] | None = None,
     increment_attempt: bool = False,
@@ -382,17 +396,44 @@ def record_item_status(
             next_action = str(action) if action is not None else str(item["action"] or "")
             next_reason = str(reason) if reason is not None else item["reason"]
             next_error = str(error) if error is not None else (item["error"] if clean_status == ITEM_FAILED else None)
-            next_result = _json_dumps(result if result is not None else _json_loads(item["result"], {}))
+            next_result_value = result if result is not None else _json_loads(item["result"], {})
+            next_result = _json_dumps(next_result_value)
             next_payload = _json_dumps(payload if payload is not None else _json_loads(item["payload"], {}))
+            result_provider_error = None
+            result_retryable = None
+            result_refund_required = None
+            if isinstance(next_result_value, dict):
+                result_provider_error = next_result_value.get("provider_error") or next_result_value.get("providerError")
+                result_retryable = next_result_value.get("retryable")
+                result_refund_required = (
+                    next_result_value.get("refund_required")
+                    if "refund_required" in next_result_value
+                    else next_result_value.get("refundRequired")
+                )
+            next_provider_error = (
+                str(provider_error)
+                if provider_error is not None
+                else str(result_provider_error)
+                if result_provider_error is not None
+                else (item["provider_error"] if clean_status == ITEM_FAILED else None)
+            )
+            next_retryable = _bool_int(retryable if retryable is not None else result_retryable)
+            next_refund_required = _bool_int(refund_required if refund_required is not None else result_refund_required)
             started_at = item["started_at"]
             completed_at = item["completed_at"]
             if clean_status == ITEM_RUNNING:
                 started_at = started_at or now
                 completed_at = None
+                next_provider_error = None
+                next_retryable = 0
+                next_refund_required = 0
             elif clean_status in ITEM_TERMINAL_STATUSES:
                 completed_at = now
             elif clean_status in {ITEM_PENDING, ITEM_QUEUED}:
                 completed_at = None
+                next_provider_error = None if clean_status == ITEM_QUEUED else next_provider_error
+                next_retryable = 0 if clean_status == ITEM_QUEUED else next_retryable
+                next_refund_required = 0 if clean_status == ITEM_QUEUED else next_refund_required
 
             conn.execute(
                 """
@@ -403,6 +444,9 @@ def record_item_status(
                     action = ?,
                     reason = ?,
                     error = ?,
+                    provider_error = ?,
+                    retryable = ?,
+                    refund_required = ?,
                     payload = ?,
                     result = ?,
                     updated_at = ?,
@@ -417,6 +461,9 @@ def record_item_status(
                     next_action,
                     next_reason,
                     next_error,
+                    next_provider_error,
+                    next_retryable,
+                    next_refund_required,
                     next_payload,
                     next_result,
                     now,
@@ -484,6 +531,9 @@ def retry_failed_items(
                     UPDATE generation_job_items
                     SET status = ?,
                         error = NULL,
+                        provider_error = NULL,
+                        retryable = 0,
+                        refund_required = 0,
                         updated_at = ?,
                         completed_at = NULL
                     WHERE job_id = ? AND status = ? AND item_index IN ({placeholders})
@@ -496,6 +546,9 @@ def retry_failed_items(
                     UPDATE generation_job_items
                     SET status = ?,
                         error = NULL,
+                        provider_error = NULL,
+                        retryable = 0,
+                        refund_required = 0,
                         updated_at = ?,
                         completed_at = NULL
                     WHERE job_id = ? AND status = ?
@@ -547,7 +600,18 @@ def run_job(
                 index,
                 ITEM_FAILED,
                 error=message,
-                result={"status": "failed", "error": message},
+                provider_error=message,
+                retryable=True,
+                refund_required=True,
+                result={
+                    "status": "failed",
+                    "error": message,
+                    "provider_error": message,
+                    "providerError": message,
+                    "retryable": True,
+                    "refund_required": True,
+                    "refundRequired": True,
+                },
                 db_path=db_path,
             )
             run_summary["failed"] += 1
@@ -564,6 +628,9 @@ def run_job(
                 action=_optional_text(result.get("action")),
                 reason=_optional_text(result.get("reason")),
                 error=error or _optional_text(result.get("error")),
+                provider_error=_optional_text(result.get("provider_error") or result.get("providerError")),
+                retryable=_optional_bool(result.get("retryable")),
+                refund_required=_optional_bool(result.get("refund_required") if "refund_required" in result else result.get("refundRequired")),
                 result=result,
                 payload=result.get("payload") if isinstance(result.get("payload"), dict) else None,
                 db_path=db_path,
@@ -578,6 +645,9 @@ def run_job(
                 provider=_optional_text(result.get("provider")),
                 action=_optional_text(result.get("action")),
                 reason=_optional_text(result.get("reason")),
+                provider_error=_optional_text(result.get("provider_error") or result.get("providerError")),
+                retryable=_optional_bool(result.get("retryable")),
+                refund_required=_optional_bool(result.get("refund_required") if "refund_required" in result else result.get("refundRequired")),
                 result=result,
                 payload=result.get("payload") if isinstance(result.get("payload"), dict) else None,
                 db_path=db_path,
@@ -591,6 +661,9 @@ def run_job(
                 provider=_optional_text(result.get("provider")),
                 action=_optional_text(result.get("action")),
                 reason=_optional_text(result.get("reason")),
+                provider_error=_optional_text(result.get("provider_error") or result.get("providerError")),
+                retryable=_optional_bool(result.get("retryable")),
+                refund_required=_optional_bool(result.get("refund_required") if "refund_required" in result else result.get("refundRequired")),
                 result=result,
                 payload=result.get("payload") if isinstance(result.get("payload"), dict) else None,
                 db_path=db_path,
@@ -624,6 +697,15 @@ def refresh_job_status(
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "generation_job_items", "provider_error", "TEXT")
+    _ensure_column(conn, "generation_job_items", "retryable", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "generation_job_items", "refund_required", "INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _insert_item(conn: sqlite3.Connection, job_id: str, index: int, item: dict[str, Any], now: str) -> None:
@@ -707,7 +789,7 @@ def _set_job_status(
     result_summary: dict[str, Any] | None = None,
 ) -> None:
     row = _job_row(conn, job_id)
-    current_status = str(row["status"])
+    current_status = _canonical_job_status(row["status"])
     if current_status in {JOB_REFUNDED, JOB_CANCELLED} and status not in {JOB_REFUNDED, JOB_CANCELLED}:
         return
     values: list[Any] = [status, now]
@@ -731,7 +813,7 @@ def _set_job_status(
 
 def _refresh_job_status(conn: sqlite3.Connection, job_id: str, *, now: str) -> None:
     job = _job_row(conn, job_id)
-    current_status = str(job["status"])
+    current_status = _canonical_job_status(job["status"])
     if current_status in {JOB_REFUNDED, JOB_CANCELLED}:
         return
     counts = _item_counts(conn, job_id)
@@ -836,11 +918,13 @@ def _job_payload(conn: sqlite3.Connection, job_id: str, *, include_items: bool =
     pending = int(row["pending_items"])
     running = int(counts.get(ITEM_RUNNING, 0))
     queued = int(counts.get(ITEM_QUEUED, 0))
+    refund_required = any(bool(item.get("refundRequired")) for item in items)
+    retryable_failed = any(item.get("status") == ITEM_FAILED and bool(item.get("retryable")) for item in items)
     percent = 100 if total == 0 else round((completed + failed) / total * 100, 1)
     payload = {
         "id": row["id"],
         "userId": row["user_id"],
-        "status": row["status"],
+        "status": _canonical_job_status(row["status"]),
         "style": row["style"],
         "quality": row["quality"],
         "totalItems": total,
@@ -850,6 +934,9 @@ def _job_payload(conn: sqlite3.Connection, job_id: str, *, include_items: bool =
         "points": int(row["points"]),
         "orderId": row["order_id"],
         "error": row["error"],
+        "refundRequired": refund_required,
+        "refund_required": refund_required,
+        "retryableFailed": retryable_failed,
         "request": _json_loads(row["request_payload"], {}),
         "planSnapshot": _json_loads(row["plan_snapshot"], {}),
         "resultSummary": _json_loads(row["result_summary"], {}),
@@ -889,6 +976,11 @@ def _item_payload(row: sqlite3.Row) -> dict[str, Any]:
         "action": row["action"],
         "reason": row["reason"],
         "error": row["error"],
+        "providerError": row["provider_error"],
+        "provider_error": row["provider_error"],
+        "retryable": bool(row["retryable"]),
+        "refundRequired": bool(row["refund_required"]),
+        "refund_required": bool(row["refund_required"]),
         "payload": _json_loads(row["payload"], {}),
         "result": _json_loads(row["result"], {}),
         "createdAt": row["created_at"],
@@ -950,8 +1042,18 @@ def _clean_optional(value: Any) -> str | None:
 
 def _clean_job_status(status: str) -> str:
     clean = str(status or "").strip().lower()
+    clean = _canonical_job_status(clean)
     if clean not in JOB_STATUSES:
         raise InvalidJobInput("Unsupported job status", status=status)
+    return clean
+
+
+def _canonical_job_status(status: Any) -> str:
+    clean = str(status or "").strip().lower()
+    if clean == "completed":
+        return JOB_SUCCEEDED
+    if clean == "partially_failed":
+        return JOB_PARTIAL
     return clean
 
 
@@ -1002,3 +1104,23 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n", ""}:
+        return False
+    return bool(text)
+
+
+def _bool_int(value: Any) -> int:
+    parsed = _optional_bool(value)
+    return 1 if parsed else 0

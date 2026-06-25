@@ -1,0 +1,423 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Protocol
+
+
+KIND_SINGLE = "single"
+KIND_COMBO = "combo"
+KIND_OTHER = "other"
+QUALITY_NORMAL = "normal"
+QUALITY_PREMIUM = "premium"
+
+STRATEGY_REUSE = "reuse"
+STRATEGY_REPLACE_BACKGROUND = "replace_background"
+STRATEGY_REFERENCE_REDRAW = "reference_redraw"
+STRATEGY_TEXT_TO_IMAGE3 = "text_to_image3"
+STRATEGY_TEXT_TO_IMAGE_LITE = "text_to_image_lite"
+STRATEGY_WAITING_FOR_PROVIDER = "waiting_for_provider"
+
+PROVIDER_TENCENT = "tencent-hunyuan"
+PROVIDER_LIBRARY = "library"
+
+STATUS_SUCCEEDED = "succeeded"
+STATUS_REUSED = "reused"
+STATUS_FAILED = "failed"
+STATUS_QUEUED = "queued"
+
+COMBO_MARKERS = ("套餐", "组合", "双人", "单人餐", "多人", "+", "＋", "拼", "任选", "含", "配")
+WATERMARK_MARKERS = ("watermark", "watermarkpic", "品牌水印", "水印", "logo", "商标")
+
+STYLE_PROMPT_FALLBACK = "严格贴合所选背景风格，背景、光线、色彩和构图保持一致"
+NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景"
+
+
+@dataclass(frozen=True)
+class GenerationRequest:
+    dish: str
+    kind: str
+    style: str
+    quality: str
+    platforms: tuple[str, ...] = ()
+    watermark: bool | dict[str, Any] = False
+    source_strategy: str = "auto"
+    row: dict[str, Any] = field(default_factory=dict)
+    candidates: tuple[dict[str, Any], ...] = ()
+    component_matches: tuple[dict[str, Any], ...] = ()
+    source_candidate: dict[str, Any] | None = None
+
+    def with_strategy(self, strategy: str, source_candidate: dict[str, Any] | None = None) -> "GenerationRequest":
+        return GenerationRequest(
+            dish=self.dish,
+            kind=self.kind,
+            style=self.style,
+            quality=self.quality,
+            platforms=self.platforms,
+            watermark=self.watermark,
+            source_strategy=strategy,
+            row=self.row,
+            candidates=self.candidates,
+            component_matches=self.component_matches,
+            source_candidate=source_candidate,
+        )
+
+
+@dataclass
+class GenerationResult:
+    dish: str
+    kind: str
+    status: str
+    source_strategy: str
+    provider: str = PROVIDER_TENCENT
+    action: str = ""
+    prompt_type: str = ""
+    candidate: dict[str, Any] | None = None
+    path: str = ""
+    provider_error: str | None = None
+    retryable: bool = False
+    refund_required: bool = False
+    reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        body = {
+            "dish": self.dish,
+            "kind": self.kind,
+            "status": self.status,
+            "provider": self.provider,
+            "action": self.action,
+            "promptType": self.prompt_type,
+            "source_strategy": self.source_strategy,
+            "sourceStrategy": self.source_strategy,
+            "retryable": self.retryable,
+            "refund_required": self.refund_required,
+            "refundRequired": self.refund_required,
+            "reason": self.reason,
+            "metadata": self.metadata,
+        }
+        if self.candidate is not None:
+            body["candidate"] = self.candidate
+        if self.path:
+            body["path"] = self.path
+        if self.provider_error:
+            body["provider_error"] = self.provider_error
+            body["providerError"] = self.provider_error
+            body["error"] = self.provider_error
+        return body
+
+
+class GenerationProvider(Protocol):
+    configured: bool
+    allow_lite_fallback: bool
+
+    def reuse(self, request: GenerationRequest) -> dict[str, Any]:
+        ...
+
+    def replace_background(self, request: GenerationRequest) -> dict[str, Any]:
+        ...
+
+    def reference_redraw(self, request: GenerationRequest) -> dict[str, Any]:
+        ...
+
+    def text_to_image(self, request: GenerationRequest) -> dict[str, Any]:
+        ...
+
+
+def normalize_kind(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {KIND_SINGLE, "单品", "菜品", "single_dish"}:
+        return KIND_SINGLE
+    if text in {KIND_COMBO, "套餐", "套餐/组合", "组合", "combo", "set"}:
+        return KIND_COMBO
+    if any(marker in text for marker in COMBO_MARKERS):
+        return KIND_COMBO
+    return KIND_OTHER
+
+
+def normalize_quality(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"premium", "精修", "refined"}:
+        return QUALITY_PREMIUM
+    return QUALITY_NORMAL
+
+
+def request_from_row(
+    row: dict[str, Any],
+    *,
+    style: str,
+    quality: str | None = None,
+    platforms: list[str] | tuple[str, ...] | None = None,
+    watermark: bool | dict[str, Any] = False,
+) -> GenerationRequest:
+    candidates = tuple(c for c in row.get("candidates") or [] if isinstance(c, dict))
+    component_matches = tuple(c for c in row.get("componentMatches") or [] if isinstance(c, dict))
+    return GenerationRequest(
+        dish=str(row.get("name") or row.get("dish") or row.get("dishName") or ""),
+        kind=normalize_kind(row.get("kind")),
+        style=str(style or ""),
+        quality=normalize_quality(quality),
+        platforms=tuple(str(platform) for platform in (platforms or ()) if str(platform or "").strip()),
+        watermark=watermark,
+        row=row,
+        candidates=candidates,
+        component_matches=component_matches,
+    )
+
+
+def select_generation_request(request: GenerationRequest) -> GenerationRequest:
+    same_style = _same_style_reusable_candidate(request)
+    if same_style:
+        return request.with_strategy(STRATEGY_REUSE, same_style)
+
+    if request.kind == KIND_COMBO:
+        combo_source = _combo_reference_candidate(request)
+        if combo_source:
+            if candidate_has_brand_watermark(combo_source) or not combo_source.get("reusable", True):
+                return request.with_strategy(STRATEGY_REFERENCE_REDRAW, combo_source)
+            return request.with_strategy(STRATEGY_REPLACE_BACKGROUND, combo_source)
+        return request.with_strategy(STRATEGY_TEXT_TO_IMAGE3, None)
+
+    clean_source = _different_style_reusable_candidate(request)
+    if clean_source:
+        return request.with_strategy(STRATEGY_REPLACE_BACKGROUND, clean_source)
+
+    reference = _reference_candidate(request)
+    if reference:
+        return request.with_strategy(STRATEGY_REFERENCE_REDRAW, reference)
+
+    return request.with_strategy(STRATEGY_TEXT_TO_IMAGE3, None)
+
+
+def execute_generation_request(request: GenerationRequest, provider: GenerationProvider) -> GenerationResult:
+    routed = request if request.source_strategy != "auto" else select_generation_request(request)
+    if routed.source_strategy != STRATEGY_REUSE and not provider.configured:
+        return GenerationResult(
+            dish=routed.dish,
+            kind=routed.kind,
+            status=STATUS_QUEUED,
+            source_strategy=STRATEGY_WAITING_FOR_PROVIDER,
+            action="WaitingForProvider",
+            retryable=True,
+            refund_required=False,
+            reason="provider_not_configured",
+        )
+    try:
+        if routed.source_strategy == STRATEGY_REUSE:
+            detail = provider.reuse(routed)
+        elif routed.source_strategy == STRATEGY_REPLACE_BACKGROUND:
+            detail = provider.replace_background(routed)
+        elif routed.source_strategy == STRATEGY_REFERENCE_REDRAW:
+            detail = provider.reference_redraw(routed)
+        elif routed.source_strategy in {STRATEGY_TEXT_TO_IMAGE3, STRATEGY_TEXT_TO_IMAGE_LITE}:
+            detail = provider.text_to_image(routed)
+        else:
+            raise RuntimeError(f"Unsupported generation strategy: {routed.source_strategy}")
+    except Exception as exc:
+        return failed_result(routed, exc)
+
+    action = str(detail.get("action") or _action_for_strategy(routed.source_strategy))
+    strategy = _strategy_after_provider(routed.source_strategy, detail)
+    status = STATUS_REUSED if routed.source_strategy == STRATEGY_REUSE else STATUS_SUCCEEDED
+    provider_name = str(detail.get("provider") or (PROVIDER_LIBRARY if routed.source_strategy == STRATEGY_REUSE else PROVIDER_TENCENT))
+    return GenerationResult(
+        dish=routed.dish,
+        kind=routed.kind,
+        status=status,
+        source_strategy=strategy,
+        provider=provider_name,
+        action=action,
+        prompt_type=str(detail.get("promptType") or prompt_type_for_strategy(strategy, routed.kind)),
+        candidate=detail.get("candidate") if isinstance(detail.get("candidate"), dict) else None,
+        path=str(detail.get("path") or ""),
+        reason=str(detail.get("reason") or "") or None,
+        metadata={key: value for key, value in detail.items() if key not in {"candidate", "path", "provider", "action", "promptType", "reason"}},
+    )
+
+
+def failed_result(request: GenerationRequest, exc: Exception) -> GenerationResult:
+    message = str(exc)[:1000] or exc.__class__.__name__
+    return GenerationResult(
+        dish=request.dish,
+        kind=request.kind,
+        status=STATUS_FAILED,
+        source_strategy=request.source_strategy,
+        provider=PROVIDER_TENCENT,
+        action="Failed",
+        prompt_type=prompt_type_for_strategy(request.source_strategy, request.kind),
+        provider_error=message,
+        retryable=is_retryable_provider_error(message),
+        refund_required=True,
+        reason="provider_error",
+    )
+
+
+def is_retryable_provider_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    permanent_markers = ("invalidparameter", "illegal", "敏感", "审核", "policy", "not found", "公网 url")
+    if any(marker in lowered for marker in permanent_markers):
+        return False
+    retry_markers = (
+        "timeout",
+        "timed out",
+        "temporarily",
+        "resourceinsufficient",
+        "resource insufficient",
+        "quota",
+        "rate",
+        "throttl",
+        "http 429",
+        "http 5",
+        "资源不足",
+        "超时",
+        "限频",
+        "额度",
+    )
+    if any(marker in lowered for marker in retry_markers):
+        return True
+    return True
+
+
+def prompt_for_generation(
+    row: dict[str, Any],
+    style_id: str,
+    quality: str | None = "standard",
+    prompt_type: str = "text_to_image",
+    *,
+    style_prompt: Callable[[str], str] | None = None,
+) -> str:
+    style = style_prompt(style_id) if style_prompt else STYLE_PROMPT_FALLBACK
+    detail = "高清真实、菜品细节清楚、主体完整居中"
+    if normalize_quality(quality) == QUALITY_PREMIUM:
+        detail += "、专业商业摄影光影、食材纹理精细"
+    dish = str(row.get("name") or row.get("dish") or row.get("dishName") or "外卖菜品")
+    kind = normalize_kind(row.get("kind"))
+    safe_area = _watermark_safe_area(row)
+    forbidden = "不要出现任何文字、价格、非用户指定logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
+    common = f"外卖平台主图，主体完整，背景必须跟所选背景一致，{style}，{detail}，{safe_area}{forbidden}"
+    if prompt_type == "replace_background":
+        return (
+            f"保留「{dish}」菜品主体完整，只统一为所选背景风格，{common}"
+            "不改变菜品种类、摆盘结构和主要食材。"
+        )[:350]
+    if prompt_type in {"reference_redraw", "watermark_redraw", "debrand_redraw"}:
+        return (
+            f"以参考图中的「{dish}」为准进行去品牌水印重绘，保持菜品种类、份量、器皿和卖点一致，"
+            f"{common}去除原图上的品牌水印、logo、店名、活动字、价格和促销贴纸，生成干净可交付成图。"
+        )[:350]
+    if kind == KIND_COMBO or prompt_type == "combo":
+        return (
+            f"{dish}，套餐组合外卖主图，包含：{row_components_text(row)}，{common}"
+            "多菜品协调摆放，主次清楚，所有组件真实同框，不用单品图拼凑痕迹。"
+        )[:350]
+    return (
+        f"{dish}，菜品单品图，纯文生图，{common}"
+        "真实餐饮商业摄影质感，菜品自然可食用，画面干净。"
+    )[:350]
+
+
+def row_components_text(row: dict[str, Any]) -> str:
+    components = [str(value).strip() for value in row.get("components") or [] if str(value).strip()]
+    if not components:
+        for component in row.get("componentMatches") or []:
+            name = str(component.get("name") or component.get("dish") or "").strip()
+            if name:
+                components.append(name)
+    return "、".join(components[:8]) if components else str(row.get("name") or "套餐组合")
+
+
+def prompt_type_for_strategy(strategy: str, kind: str) -> str:
+    if strategy == STRATEGY_REPLACE_BACKGROUND:
+        return "combo" if kind == KIND_COMBO else "replace_background"
+    if strategy == STRATEGY_REFERENCE_REDRAW:
+        return "watermark_redraw"
+    if kind == KIND_COMBO:
+        return "combo"
+    return "text_to_image"
+
+
+def candidate_has_brand_watermark(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    if candidate.get("has_brand_watermark") or candidate.get("hasBrandWatermark"):
+        return True
+    if candidate.get("reusable") is False:
+        return True
+    source = " ".join(str(candidate.get(key) or "") for key in ("source", "path", "url", "reviewReason", "reviewReasons"))
+    return any(marker.lower() in source.lower() for marker in WATERMARK_MARKERS)
+
+
+def candidate_kind(candidate: dict[str, Any] | None) -> str:
+    if not candidate:
+        return KIND_OTHER
+    text = " ".join(str(candidate.get(key) or "") for key in ("kind", "dishName", "name", "path", "url"))
+    return normalize_kind(text)
+
+
+def _same_style_reusable_candidate(request: GenerationRequest) -> dict[str, Any] | None:
+    for candidate in request.candidates:
+        if not candidate.get("reusable", True) or candidate_has_brand_watermark(candidate):
+            continue
+        if str(candidate.get("styleId") or "") != request.style:
+            continue
+        if request.kind == KIND_COMBO and candidate_kind(candidate) != KIND_COMBO:
+            continue
+        return candidate
+    return None
+
+
+def _different_style_reusable_candidate(request: GenerationRequest) -> dict[str, Any] | None:
+    for candidate in request.candidates:
+        if not candidate.get("reusable", True) or candidate_has_brand_watermark(candidate):
+            continue
+        if str(candidate.get("styleId") or "") == request.style:
+            continue
+        if request.kind == KIND_COMBO and candidate_kind(candidate) != KIND_COMBO:
+            continue
+        return candidate
+    return None
+
+
+def _reference_candidate(request: GenerationRequest) -> dict[str, Any] | None:
+    for candidate in request.candidates:
+        if candidate_has_brand_watermark(candidate) or candidate.get("path") or candidate.get("url"):
+            return candidate
+    return None
+
+
+def _combo_reference_candidate(request: GenerationRequest) -> dict[str, Any] | None:
+    for candidate in request.candidates:
+        if candidate_kind(candidate) == KIND_COMBO:
+            return candidate
+    return None
+
+
+def _action_for_strategy(strategy: str) -> str:
+    return {
+        STRATEGY_REUSE: "Reuse",
+        STRATEGY_REPLACE_BACKGROUND: "ReplaceBackground",
+        STRATEGY_REFERENCE_REDRAW: "ReferenceRedraw",
+        STRATEGY_TEXT_TO_IMAGE3: "SubmitTextToImageJob",
+        STRATEGY_TEXT_TO_IMAGE_LITE: "TextToImageLite",
+    }.get(strategy, "Generate")
+
+
+def _strategy_after_provider(strategy: str, detail: dict[str, Any]) -> str:
+    action = str(detail.get("action") or "")
+    if action == "TextToImageLite" or detail.get("fallbackFrom") == "SubmitTextToImageJob":
+        return STRATEGY_TEXT_TO_IMAGE_LITE
+    return strategy
+
+
+def _watermark_safe_area(row: dict[str, Any]) -> str:
+    watermark = row.get("watermark")
+    if isinstance(watermark, dict) and watermark.get("enabled"):
+        return "右下角保留干净安全区，便于后续添加用户指定品牌水印；"
+    return "画面中不主动生成任何品牌水印；"
+
+
+def output_path_text(value: Any) -> str:
+    if isinstance(value, Path):
+        return str(value)
+    return str(value or "")

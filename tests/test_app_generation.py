@@ -181,6 +181,9 @@ class AppGenerationTests(unittest.TestCase):
                 self.assertIn(required, text_prompt)
             for required in ["套餐组合外卖主图", "牛肉饭", "鸡腿", "外卖平台主图", "主体完整", "背景必须跟所选背景一致", "不要出现任何文字", "logo", "水印"]:
                 self.assertIn(required, combo_prompt)
+            redraw_prompt = app_module.prompt_for_generation(single, "style-4", "premium", "watermark_redraw")
+            for required in ["去品牌水印重绘", "保持菜品种类", "品牌水印", "生成干净可交付成图"]:
+                self.assertIn(required, redraw_prompt)
             self.assertEqual(payloads[0][0], "SubmitTextToImageJob")
             self.assertEqual(payloads[1][0], "QueryTextToImageJob")
             self.assertEqual(payloads[0][1]["LogoAdd"], 0)
@@ -223,6 +226,90 @@ class AppGenerationTests(unittest.TestCase):
                 app_module.tencent_api_request("TextToImageLite", {"Prompt": "测试"})
 
         self.assertEqual(calls, [app_module.TENCENT_AIART_HOST, app_module.TENCENT_HUNYUAN_HOST])
+
+    def test_formal_runner_combo_without_combo_reference_uses_ai_combo_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            single_source = root / "single.jpg"
+            save_image(single_source)
+            row = menu_row(
+                1,
+                "红烧肉+青菜套餐",
+                "套餐/组合",
+                [candidate(single_source, "红烧肉", "style-2")],
+                ["红烧肉", "青菜"],
+            )
+            calls: list[str] = []
+
+            def fake_text(row_arg: dict[str, object], style_id: str, quality: str | None, target: Path) -> dict[str, object]:
+                calls.append(f"text:{row_arg['name']}")
+                save_image(target, (60, 120, 180))
+                return {"provider": "tencent-hunyuan", "action": "SubmitTextToImageJob", "promptType": "combo", "requestId": "combo-text"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=fake_text),
+                mock.patch.object(app_module, "tencent_replace_background") as replace,
+            ):
+                output = app_module.run_formal_generation_item(row, style="style-1", quality="standard")
+
+            replace.assert_not_called()
+            self.assertEqual(calls, ["text:红烧肉+青菜套餐"])
+            self.assertEqual(output["result"]["status"], "succeeded")
+            self.assertEqual(output["result"]["kind"], "combo")
+            self.assertEqual(output["result"]["sourceStrategy"], "text_to_image3")
+            self.assertEqual(row["generation"]["promptType"], "combo")
+
+    def test_formal_runner_uses_reference_redraw_for_watermarked_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "watermarked.jpg"
+            save_image(source)
+            row = menu_row(
+                1,
+                "招牌牛肉饭",
+                "单品",
+                [{**candidate(source, "招牌牛肉饭", "style-2", reusable=False), "source": "watermarkpic"}],
+            )
+            calls: list[str] = []
+
+            def fake_redraw(row_arg: dict[str, object], source_candidate: dict[str, object], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, object]:
+                calls.append(str(source_candidate["source"]))
+                save_image(target, (160, 80, 120))
+                return {"provider": "tencent-hunyuan", "action": "ReferenceRedraw", "promptType": "watermark_redraw", "requestId": "redraw"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_reference_redraw", side_effect=fake_redraw),
+                mock.patch.object(app_module, "tencent_text_to_image") as text,
+            ):
+                output = app_module.run_formal_generation_item(row, style="style-1", quality="premium")
+
+            text.assert_not_called()
+            self.assertEqual(calls, ["watermarkpic"])
+            self.assertEqual(output["result"]["sourceStrategy"], "reference_redraw")
+            self.assertEqual(output["result"]["action"], "ReferenceRedraw")
+            self.assertEqual(row["generationStatus"], "succeeded")
+
+    def test_formal_runner_provider_failure_returns_refund_hook_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = menu_row(1, "新品汤", "单品", [])
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=RuntimeError("hunyuan.tencentcloudapi.com ResourceInsufficient: 资源不足")),
+            ):
+                output = app_module.run_formal_generation_item(row, style="style-1", quality="standard")
+
+            self.assertEqual(output["result"]["status"], "failed")
+            self.assertIn("ResourceInsufficient", output["result"]["providerError"])
+            self.assertTrue(output["result"]["retryable"])
+            self.assertTrue(output["result"]["refundRequired"])
+            self.assertEqual(row["generationStatus"], "failed")
 
     def test_preview_keeps_replace_background_error_when_local_fallback_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
