@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, jsonify, request
+
+from scripts import smoke_product_flow as smoke
+
+
+class FlaskClientAdapter:
+    def __init__(self, app: Flask) -> None:
+        self.client = app.test_client()
+
+    def get(self, path: str, query: dict[str, Any] | None = None) -> smoke.ClientResponse:
+        resp = self.client.get(path, query_string=query or {})
+        return smoke.ClientResponse(resp.status_code, resp.get_data(), dict(resp.headers), path)
+
+    def post_json(self, path: str, payload: dict[str, Any]) -> smoke.ClientResponse:
+        resp = self.client.post(path, json=payload)
+        return smoke.ClientResponse(resp.status_code, resp.get_data(), dict(resp.headers), path)
+
+    def post_file(self, path: str, file_path: str | Path, field_name: str = "file") -> smoke.ClientResponse:
+        file_path = Path(file_path)
+        with file_path.open("rb") as handle:
+            resp = self.client.post(
+                path,
+                data={field_name: (handle, file_path.name)},
+                content_type="multipart/form-data",
+            )
+        return smoke.ClientResponse(resp.status_code, resp.get_data(), dict(resp.headers), path)
+
+
+def style_cards() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": style_id,
+            "name": f"Style {index}",
+            "source": "library",
+            "count": 3,
+            "needsGeneratedBackground": False,
+            "backgroundJob": {"status": "cached", "provider": "library", "action": "Reuse"},
+        }
+        for index, style_id in enumerate(smoke.STYLE_IDS, start=1)
+    ]
+
+
+def plan_payload(styles: list[dict[str, Any]] | None = None, selected_style: str = "style-2") -> dict[str, Any]:
+    return {
+        "selectedStyle": selected_style,
+        "styles": styles if styles is not None else style_cards(),
+        "summary": {"total": 1, "direct": 0, "review": 1, "missing": 0, "points": 100},
+        "pricing": {"standardPoints": 100, "premiumPoints": 200, "customEditPoints": 150},
+        "quote": {"points": 100, "cash": 10, "rate": "1 yuan = 10 points"},
+        "results": [
+            {
+                "row": 1,
+                "name": "Smoke Dish",
+                "category": "Hot",
+                "kind": "single",
+                "points": 100,
+                "publicStatus": "pending",
+                "backgroundAction": "replace",
+                "candidates": [{"url": "https://cdn.example.test/source.jpg", "styleId": "style-3"}],
+            }
+        ],
+    }
+
+
+def make_mock_app(*, broken_plan: bool = False, styles: list[dict[str, Any]] | None = None) -> tuple[Flask, dict[str, Any]]:
+    app = Flask(__name__)
+    state: dict[str, Any] = {"job_requests": [], "run_requests": [], "export_requests": []}
+
+    @app.get("/")
+    def index() -> str:
+        return "<html><body>waimai smoke</body></html>"
+
+    @app.get("/api/tencent-status")
+    def tencent_status():
+        return jsonify({"provider": "tencent-hunyuan", "configured": True, "cosReady": True, "styleBackgroundsLive": True})
+
+    @app.get("/api/account")
+    def account():
+        return jsonify({"account": {"userId": "smoke-user", "balance": 1200}})
+
+    @app.get("/api/library-status")
+    def library_status():
+        return jsonify({"total": 42, "reusable": 40, "stores": 3, "styles": 6, "sources": {"seed": 42}, "externalDirs": ["/mock/library"]})
+
+    @app.post("/api/upload-menu")
+    def upload_menu():
+        assert "file" in request.files
+        return jsonify({"ok": True, "file": request.files["file"].filename, "menu": {"store": "Smoke Store", "count": 3, "kindCounts": {"single": 2, "combo": 1}}})
+
+    @app.get("/api/plan")
+    def plan():
+        if broken_plan:
+            return jsonify({"error": "plan exploded"}), 500
+        return jsonify(plan_payload(styles=styles))
+
+    @app.get("/api/style-preview")
+    def style_preview():
+        style = request.args.get("style", "")
+        return jsonify(
+            {
+                "style": style,
+                "styleName": style,
+                "previewFreeImages": 6,
+                "samples": [
+                    {
+                        "status": "pending",
+                        "job": {"status": "pending", "provider": "tencent-hunyuan", "action": "Preview"},
+                        "candidate": None,
+                    }
+                ],
+            }
+        )
+
+    @app.post("/api/jobs")
+    def create_job():
+        payload = request.get_json() or {}
+        state["job_requests"].append(payload)
+        job = {
+            "id": "job-smoke-1",
+            "status": "created",
+            "totalItems": 1,
+            "pendingItems": 1,
+            "completedItems": 0,
+            "failedItems": 0,
+            "points": 100,
+            "progress": {"percent": 0},
+            "items": [{"index": 1, "status": "pending", "dish": "Smoke Dish"}],
+        }
+        return jsonify({"ok": True, "job": job, "poll": {"url": "/api/jobs/job-smoke-1", "intervalMs": 1500}}), 201
+
+    @app.post("/api/jobs/<job_id>/run")
+    def run_job(job_id: str):
+        payload = request.get_json() or {}
+        state["run_requests"].append({"job_id": job_id, "payload": payload})
+        job = {
+            "id": job_id,
+            "status": "succeeded",
+            "totalItems": 1,
+            "pendingItems": 0,
+            "completedItems": 1,
+            "failedItems": 0,
+            "progress": {"percent": 100},
+            "items": [
+                {
+                    "index": 1,
+                    "status": "completed",
+                    "provider": "tencent-hunyuan",
+                    "action": "ReplaceBackground",
+                    "result": {"candidate": {"url": "https://cdn.example.test/final.jpg"}},
+                }
+            ],
+        }
+        return jsonify({"ok": True, "job": job, "poll": {"url": f"/api/jobs/{job_id}", "intervalMs": 1500}})
+
+    @app.post("/api/export")
+    def export():
+        payload = request.get_json() or {}
+        state["export_requests"].append(payload)
+        return jsonify({"rows": 3, "images": 3, "platforms": payload.get("platforms", []), "watermark": False, "download": "/download/smoke.zip"})
+
+    return app, state
+
+
+class ProductFlowSmokeTests(unittest.TestCase):
+    def test_dry_run_uploads_menu_creates_job_and_does_not_run_live_generation(self) -> None:
+        app, state = make_mock_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            menu_file = smoke.create_default_menu_file(tmp)
+            report = smoke.run_product_flow(
+                FlaskClientAdapter(app),
+                menu_file=menu_file,
+                base_url="mock://product",
+                style_first=True,
+                limit=1,
+                live_generate=False,
+            )
+
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(report["selectedStyle"], "style-1")
+        self.assertEqual(state["job_requests"][0]["style"], "style-1")
+        self.assertEqual(state["job_requests"][0]["selectedRows"], [1])
+        self.assertEqual(state["run_requests"], [])
+        self.assertEqual(state["export_requests"], [])
+        steps = {step["name"]: step for step in report["steps"]}
+        self.assertEqual(steps["job_run_live"]["status"], "skipped")
+        self.assertEqual(steps["style_catalog"]["fields"]["missing"], [])
+        self.assertIn("style_preview:style-6", steps)
+
+    def test_live_generate_runs_one_image_and_reports_export_and_image_url(self) -> None:
+        app, state = make_mock_app()
+        report = smoke.run_product_flow(
+            FlaskClientAdapter(app),
+            base_url="mock://product",
+            style_first=False,
+            limit=1,
+            live_generate=True,
+        )
+
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(report["selectedStyle"], "style-2")
+        self.assertEqual(state["run_requests"], [{"job_id": "job-smoke-1", "payload": {"limit": 1, "paid": True, "orderId": state["run_requests"][0]["payload"]["orderId"]}}])
+        self.assertEqual(state["export_requests"][0]["platforms"], smoke.DEFAULT_PLATFORMS)
+        steps = {step["name"]: step for step in report["steps"]}
+        self.assertEqual(steps["job_run_live"]["fields"]["effectiveLimit"], 1)
+        self.assertEqual(steps["job_run_live"]["fields"]["imageUrl"], "https://cdn.example.test/final.jpg")
+        self.assertEqual(steps["platform_export"]["fields"]["images"], 3)
+
+    def test_failure_response_is_reported_without_crashing(self) -> None:
+        app, _state = make_mock_app(broken_plan=True)
+        report = smoke.run_product_flow(
+            FlaskClientAdapter(app),
+            base_url="mock://product",
+            live_generate=False,
+        )
+
+        self.assertFalse(report["ok"])
+        failures = {item["step"]: item["reason"] for item in report["failures"]}
+        self.assertEqual(failures["plan"], "HTTP 500: plan exploded")
+        self.assertIn("missing required styles: style-1", failures["style_catalog"])
+        self.assertIn("style_selection", failures)
+
+    def test_missing_required_style_is_a_stable_catalog_failure(self) -> None:
+        incomplete_styles = style_cards()[:5]
+        app, _state = make_mock_app(styles=incomplete_styles)
+        report = smoke.run_product_flow(
+            FlaskClientAdapter(app),
+            base_url="mock://product",
+            live_generate=False,
+        )
+
+        self.assertFalse(report["ok"])
+        failures = {item["step"]: item["reason"] for item in report["failures"]}
+        self.assertEqual(failures["style_catalog"], "missing required styles: style-6")
+
+
+if __name__ == "__main__":
+    unittest.main()
