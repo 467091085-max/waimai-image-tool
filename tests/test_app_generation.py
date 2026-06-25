@@ -46,7 +46,7 @@ def menu_row(row: int, name: str, kind: str, candidates: list[dict[str, object]]
 
 
 class AppGenerationTests(unittest.TestCase):
-    def test_materialize_routes_required_rows_to_replace_or_text_and_reuses_same_style(self) -> None:
+    def test_materialize_routes_required_rows_to_replace_or_text_and_unifies_same_style(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sources = [root / f"source_{idx}.jpg" for idx in range(4)]
@@ -91,13 +91,13 @@ class AppGenerationTests(unittest.TestCase):
             ):
                 generation = app_module.materialize_final_images(plan, "style-1", "standard")
 
-            self.assertEqual(generation["attempted"], 3)
-            self.assertEqual(generation["succeeded"], 3)
+            self.assertEqual(generation["attempted"], 4)
+            self.assertEqual(generation["succeeded"], 4)
             self.assertEqual(generation["fallback"], 0)
-            self.assertEqual(generation["skipped"], 1)
-            self.assertEqual(generation["actions"], {"ReplaceBackground": 2, "Reuse": 1, "TextToImageLite": 1})
-            self.assertEqual(calls, [("ReplaceBackground", "红烧肉"), ("TextToImageLite", "新品汤"), ("ReplaceBackground", "红烧肉+青菜套餐")])
-            self.assertEqual(rows[2]["generation"]["status"], "reused")
+            self.assertEqual(generation["skipped"], 0)
+            self.assertEqual(generation["actions"], {"ReplaceBackground": 3, "TextToImageLite": 1})
+            self.assertEqual(calls, [("ReplaceBackground", "红烧肉"), ("TextToImageLite", "新品汤"), ("ReplaceBackground", "清炒时蔬"), ("ReplaceBackground", "红烧肉+青菜套餐")])
+            self.assertEqual(rows[2]["generation"]["status"], "succeeded")
             self.assertEqual(rows[3]["generation"]["promptType"], "combo")
             self.assertTrue(str(rows[0]["candidates"][0]["source"]).startswith("tencent-ReplaceBackground"))
             self.assertTrue(str(rows[1]["candidates"][0]["source"]).startswith("tencent-TextToImageLite"))
@@ -356,23 +356,27 @@ class AppGenerationTests(unittest.TestCase):
             self.assertIn("商品背景生成失败", generation["error"])
             draw_demo.assert_not_called()
 
-    def test_preview_reuses_same_style_candidate_without_tencent_call(self) -> None:
+    def test_preview_unifies_same_style_candidate_with_tencent_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "same_style.jpg"
             save_image(source)
             row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(source, "辣椒炒肉", "style-2")])
 
+            def fake_replace(row_arg: dict[str, object], source_candidate: dict[str, object], style_id: str, target: Path, quality: str | None = "standard") -> dict[str, object]:
+                save_image(target, (90, 130, 170))
+                return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": "replace_background", "requestId": "same-preview"}
+
             with (
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "tencent_ready", return_value=True),
-                mock.patch.object(app_module, "tencent_replace_background") as replace,
+                mock.patch.object(app_module, "tencent_replace_background", side_effect=fake_replace) as replace,
             ):
                 preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-2", "standard")
 
-            replace.assert_not_called()
+            replace.assert_called_once()
             self.assertIsNotNone(preview_candidate)
-            self.assertEqual(generation["status"], "reused")
+            self.assertEqual(generation["status"], "succeeded")
             self.assertEqual(preview_candidate["styleId"], "style-2")
 
     def test_preview_sample_materializes_with_tencent_instead_of_local_demo(self) -> None:
@@ -729,18 +733,19 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(traversal.status_code, 404)
             self.assertEqual(traversal.get_json()["code"], "download_not_found")
 
-    def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
+    def test_style_preview_default_generates_six_preview_jobs(self) -> None:
         with (
             mock.patch.object(app_module, "parse_menu", return_value={"items": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}),
             mock.patch.object(app_module, "library_images", return_value=[]),
-            mock.patch.object(app_module, "materialize_preview_candidate") as materialize,
+            mock.patch.object(app_module, "materialize_preview_candidate", return_value=(None, app_module.queued_generation_payload())) as materialize,
             mock.patch.object(app_module, "generated_preview_candidate", return_value=None),
         ):
-            manifest = app_module.preview_samples("style-1", generate=False)
+            manifest = app_module.preview_samples("style-1")
 
-        materialize.assert_not_called()
+        self.assertEqual(materialize.call_count, app_module.PREVIEW_SAMPLE_COUNT)
         self.assertEqual(manifest["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
-        self.assertEqual(manifest["samples"][0]["generation"]["status"], "pending")
+        self.assertEqual(manifest["samples"][0]["generation"]["status"], "queued")
+        self.assertIn("waiting_for_provider", manifest["samples"][0]["error"])
 
     def test_preview_sample_entries_filter_drinks_sides_rice_prompts_and_combos(self) -> None:
         items = [

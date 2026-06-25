@@ -175,6 +175,17 @@ STYLE_PROMPTS = {
     "style-6": "冷灰蓝陶瓷砖背景，清爽现代感，柔和自然光，真实餐饮摄影，适合外卖菜品统一主图",
 }
 
+STYLE_BACKGROUND_VARIANTS = (
+    "温暖原木餐桌，奶油白墙面，柔和自然窗光，适合家常热菜",
+    "深色石板桌面，低饱和暗背景，柔和侧逆光，适合高级餐厅质感",
+    "浅灰微水泥台面，明亮极简棚拍，干净留白，适合清爽平台主图",
+    "红色暖调背景，节日热卖氛围但不含文字，适合促销款菜品",
+    "竹编与浅木色自然背景，中式清爽质感，适合粉面饭与小炒",
+    "冷灰蓝陶瓷砖与浅色台面，现代清爽光线，适合轻食和盖饭",
+    "米白瓷盘搭配浅绿色点缀，通透自然光，适合健康餐",
+    "暖灰布纹桌面与米色背景，柔和餐厅光，适合套餐组合",
+)
+
 NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景"
 STRICT_MATCH_MIN_SCORE = 0.45
 BEVERAGE_WORDS = (
@@ -403,8 +414,8 @@ def tencent_style_backgrounds_enabled() -> bool:
 
 
 def allow_local_image_fallback() -> bool:
-    """Use local drawn images only for development when no model is configured."""
-    return env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=not tencent_ready())
+    """Use local drawn images only when an explicit development flag enables it."""
+    return env_truthy("ALLOW_LOCAL_IMAGE_FALLBACK", default=False)
 
 
 def tencent_status_payload() -> dict[str, Any]:
@@ -424,8 +435,8 @@ def tencent_status_payload() -> dict[str, Any]:
         "providerStatus": generation_engine.STATUS_SUCCEEDED if ready else generation_engine.STATUS_QUEUED,
         "provider_status": generation_engine.STATUS_SUCCEEDED if ready else generation_engine.STATUS_QUEUED,
         "reason": "ready" if ready else generation_engine.STRATEGY_WAITING_FOR_PROVIDER,
-        "provider_error": None if ready else "waiting_for_provider: 腾讯云生图环境变量未配置完整",
-        "providerError": None if ready else "waiting_for_provider: 腾讯云生图环境变量未配置完整",
+        "provider_error": None if ready else generation_engine.WAITING_FOR_PROVIDER_ERROR,
+        "providerError": None if ready else generation_engine.WAITING_FOR_PROVIDER_ERROR,
         "retryable": not ready,
         "refund_required": False,
         "refundRequired": False,
@@ -672,6 +683,15 @@ def style_prompt_for(style_id: str) -> str:
     return f"严格贴合所选背景风格「{style_name_for(style_id)}」，背景、光线、色彩和构图保持一致"
 
 
+def style_background_variant_for(style_id: str) -> str:
+    match = re.search(r"(\d+)$", str(style_id or ""))
+    if match:
+        index = max(0, int(match.group(1)) - 1)
+    else:
+        index = int(hashlib.sha1(str(style_id).encode("utf-8")).hexdigest()[:4], 16)
+    return STYLE_BACKGROUND_VARIANTS[index % len(STYLE_BACKGROUND_VARIANTS)]
+
+
 def quality_detail(quality: str | None = "standard") -> str:
     detail = "高清真实、菜品细节清楚、主体完整居中"
     if quality_config(quality)["id"] == "premium":
@@ -781,12 +801,11 @@ def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | Non
 
 
 def prompt_for_style_background(style_id: str) -> str:
-    return (
-        f"外卖菜品主图背景风格样图，展示{style_prompt_for(style_id)}。"
-        "一份普通中式菜品占位，背景、桌面、光影和色调清楚可见。"
-        "主体完整居中，背景风格必须鲜明且和其他方案明显不同。"
-        "不要出现文字、价格、logo、水印、人物。"
-    )[:250]
+    return generation_engine.prompt_for_style_background(
+        style_id,
+        style_prompt=style_prompt_for,
+        variant_prompt=style_background_variant_for(style_id),
+    )
 
 
 def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
@@ -1636,7 +1655,12 @@ def style_background_placeholder_candidate(style_id: str, status: str, action: s
     candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 0.0)
     candidate["url"] = ""
     candidate["path"] = ""
-    provider = "tencent-hunyuan" if tencent_ready() else "local-demo"
+    provider = "tencent-hunyuan"
+    if status == "queued" and not error:
+        error = generation_engine.WAITING_FOR_PROVIDER_ERROR
+    candidate["provider_error"] = error if error else ""
+    candidate["providerError"] = error if error else ""
+    candidate["retryable"] = status in {"queued", "failed"}
     return annotate_generated_style_background(candidate, status, provider, action, error)
 
 
@@ -1648,16 +1672,8 @@ def style_background_candidate(style_id: str) -> dict[str, Any]:
         assert metadata is not None
         candidate_generation_metadata(candidate, metadata)
         return annotate_generated_style_background(candidate, "cached", "tencent-hunyuan", str(metadata.get("action") or "Cached"))
-    if target.exists() and not tencent_ready():
-        candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
-        if metadata:
-            candidate_generation_metadata(candidate, metadata)
-        return annotate_generated_style_background(
-            candidate,
-            str(candidate.get("generationStatus") or "fallback"),
-            str(candidate.get("generationProvider") or "local-demo"),
-            str(candidate.get("generationAction") or "LocalFallback"),
-        )
+    if not tencent_ready():
+        return style_background_placeholder_candidate(style_id, "queued", "WaitingForProvider", generation_engine.WAITING_FOR_PROVIDER_ERROR)
     if tencent_ready():
         try:
             detail = tencent_style_background(style_id, target)
@@ -1675,10 +1691,7 @@ def style_background_candidate(style_id: str) -> dict[str, Any]:
             return annotate_generated_style_background(candidate, "succeeded", "tencent-hunyuan", detail["action"])
         except Exception as exc:
             return style_background_placeholder_candidate(style_id, "failed", "ReplaceBackground", str(exc))
-    if not target.exists():
-        draw_demo_image(target, "背景风格样图", style_id)
-    candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
-    return annotate_generated_style_background(candidate, "fallback", "local-demo", "LocalFallback")
+    return style_background_placeholder_candidate(style_id, "queued", "WaitingForProvider", generation_engine.WAITING_FOR_PROVIDER_ERROR)
 
 
 def style_sample_is_real(candidate: dict[str, Any] | None) -> bool:
@@ -1708,12 +1721,22 @@ def style_background_job(candidate: dict[str, Any] | None) -> dict[str, Any]:
     if style_sample_is_real(candidate):
         return {"status": "reused", "provider": "library", "action": "LibraryStyleSample"}
     status = str((candidate or {}).get("generationStatus") or "pending")
-    provider = str((candidate or {}).get("generationProvider") or (candidate or {}).get("aiProvider") or ("tencent-hunyuan" if tencent_ready() else "local-demo"))
-    action = str((candidate or {}).get("generationAction") or ("GenerateStyleBackground" if status in {"pending", "failed"} else "LocalFallback"))
+    provider = str((candidate or {}).get("generationProvider") or (candidate or {}).get("aiProvider") or "tencent-hunyuan")
+    action = str(
+        (candidate or {}).get("generationAction")
+        or ("WaitingForProvider" if status == "queued" else "GenerateStyleBackground" if status in {"pending", "failed"} else "Cached")
+    )
     job = {"status": status, "provider": provider, "action": action}
-    error = str((candidate or {}).get("error") or "")
+    error = str((candidate or {}).get("error") or (candidate or {}).get("provider_error") or (candidate or {}).get("providerError") or "")
     if error:
         job["error"] = error
+        job["provider_error"] = error
+        job["providerError"] = error
+    tencent = (candidate or {}).get("tencent") if isinstance((candidate or {}).get("tencent"), dict) else {}
+    for key in ("requestId", "jobId", "endpoint"):
+        value = tencent.get(key)
+        if value:
+            job[key] = value
     return job
 
 
@@ -1724,6 +1747,24 @@ def style_sample_candidate(style_id: str) -> dict[str, Any]:
     return style_background_candidate(style_id)
 
 
+def style_background_fill_candidate(style_id: str, generated_attempts: int, max_attempts: int) -> tuple[dict[str, Any], int]:
+    if tencent_ready() and generated_attempts >= max_attempts:
+        return (
+            style_background_placeholder_candidate(
+                style_id,
+                "queued",
+                "GenerateStyleBackground",
+                "已达到本次背景生成安全上限，等待后续补图",
+            ),
+            generated_attempts,
+        )
+    candidate = style_background_candidate(style_id)
+    status = str(candidate.get("generationStatus") or "")
+    if tencent_ready() and status in {"succeeded", "failed", "queued"}:
+        generated_attempts += 1
+    return candidate, generated_attempts
+
+
 def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str, Any] | None:
     if not style_id:
         return None
@@ -1731,12 +1772,27 @@ def generated_preview_candidate(item: dict[str, Any], style_id: str) -> dict[str
     if not target.exists():
         return None
     metadata = load_ai_output_metadata(target)
-    if tencent_ready() and not successful_model_metadata(metadata):
+    if not usable_ai_output_metadata(metadata):
         return None
     candidate = candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
     if metadata:
         candidate_generation_metadata(candidate, metadata)
     return candidate
+
+
+def queued_generation_payload(action: str = "WaitingForProvider") -> dict[str, Any]:
+    return {
+        "status": generation_engine.STATUS_QUEUED,
+        "provider": "tencent-hunyuan",
+        "action": action,
+        "provider_error": generation_engine.WAITING_FOR_PROVIDER_ERROR,
+        "providerError": generation_engine.WAITING_FOR_PROVIDER_ERROR,
+        "error": generation_engine.WAITING_FOR_PROVIDER_ERROR,
+        "retryable": True,
+        "refund_required": False,
+        "refundRequired": False,
+        "reason": generation_engine.STRATEGY_WAITING_FOR_PROVIDER,
+    }
 
 
 def materialize_preview_candidate(item: dict[str, Any], selected_style: str, quality: str | None = "standard") -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -1752,11 +1808,10 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
             "jobId": tencent_detail.get("jobId"),
             "error": cached.get("error"),
         }
-    same_style = reusable_selected_style_preview_candidate(item, selected_style)
-    if same_style:
-        return same_style, {"status": "reused", "provider": "library", "action": "Reuse"}
     source_candidate = source_candidate_for_preview_generation(item)
-    result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
+    result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan", "action": "Preview"}
+    if not tencent_ready():
+        return None, queued_generation_payload()
     if tencent_ready():
         try:
             if source_candidate:
@@ -1823,15 +1878,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                     "fallbackFrom": "tencent-hunyuan",
                 }
             return None, result
-    if allow_local_image_fallback():
-        draw_demo_image(target, item["name"], selected_style)
-        metadata = {"status": "fallback", "provider": "local-demo", "action": "LocalFallback", "reason": "free_style_preview"}
-        write_ai_output_metadata(target, metadata)
-        candidate = candidate_from_path(target, item["name"], selected_style, "generated-preview", 80.0)
-        candidate_generation_metadata(candidate, metadata)
-        return candidate, {"status": "fallback", "provider": "local-demo", "action": "LocalFallback"}
-    result.update({"status": "pending", "action": "WaitingForModelConfig"})
-    return None, result
+    return None, queued_generation_payload()
 
 
 def ai_output_candidate(item: dict[str, Any], style_id: str, quality: str | None, source: str) -> tuple[dict[str, Any], Path]:
@@ -1946,8 +1993,11 @@ def materialization_reason(row: dict[str, Any], selected_style: str) -> str | No
     sources = source_candidates_for_generation(row)
     if row.get("kind") == "套餐/组合":
         return "combo"
-    if reusable_selected_style_candidate(row, selected_style):
+    selected_candidate = reusable_selected_style_candidate(row, selected_style)
+    if selected_candidate and generation_engine.candidate_is_model_output(selected_candidate):
         return None
+    if selected_candidate:
+        return "same_style_unify"
     if not sources:
         return "missing_image"
     if any(not c.get("reusable", True) for c in sources):
@@ -2032,6 +2082,17 @@ def generation_row_result(row: dict[str, Any], provider: str, action: str, reaso
     }
 
 
+def apply_queued_generation_row(row: dict[str, Any], item_result: dict[str, Any], reason: str | None = None) -> None:
+    item_result.update(queued_generation_payload())
+    item_result["reason"] = reason or generation_engine.STRATEGY_WAITING_FOR_PROVIDER
+    item_result["attempted"] = False
+    item_result["succeeded"] = False
+    row["backgroundAction"] = "待正式生成"
+    row["publicStatus"] = "待正式生成"
+    row["generationStatus"] = generation_engine.STATUS_QUEUED
+    row["generation"] = item_result
+
+
 def bump_generation_action(generation: dict[str, Any], action: str) -> None:
     actions = generation.setdefault("actions", {})
     actions[action] = int(actions.get(action) or 0) + 1
@@ -2112,6 +2173,13 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
             generation["items"].append(item_result)
             continue
 
+        if not status["configured"]:
+            generation["pending"] += 1
+            apply_queued_generation_row(row, item_result, reason)
+            bump_generation_action(generation, "WaitingForProvider")
+            generation["items"].append(item_result)
+            continue
+
         used_tencent = False
         detail: dict[str, Any] | None = None
         replace_error: Exception | None = None
@@ -2181,12 +2249,8 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                 continue
             if not allow_local_image_fallback():
                 generation["pending"] += 1
-                item_result.update({"provider": "local", "action": "WaitingForModelConfig", "status": "pending"})
-                row["backgroundAction"] = "等待模型配置"
-                row["publicStatus"] = "等待模型配置"
-                row["generationStatus"] = "pending"
-                row["generation"] = item_result
-                bump_generation_action(generation, "WaitingForModelConfig")
+                apply_queued_generation_row(row, item_result, reason)
+                bump_generation_action(generation, "WaitingForProvider")
                 generation["items"].append(item_result)
                 continue
             draw_demo_image(target, row["name"], selected_style)
@@ -2264,6 +2328,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen_signatures: set[str] = set()
     used_style_ids: set[str] = set()
     total = max(1, len(results))
+    generated_attempts = 0
     for style_id in style_ids:
         if len(options) >= PREVIEW_SAMPLE_COUNT:
             break
@@ -2284,7 +2349,11 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 review += 1
             else:
                 bg_replace += 1
-        sample = style_sample_candidate(style_id) or sample
+        library_sample = style_representative_candidate(style_id)
+        if library_sample:
+            sample = library_sample
+        else:
+            sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
         signature = candidate_background_signature(sample)
         signatures = candidate_background_signatures(sample)
         if signature and not signatures:
@@ -2293,7 +2362,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             signature = style_id
             signatures = signatures or {f"bg:{style_id}"}
         if signatures & seen_signatures:
-            fallback_sample = style_background_candidate(style_id)
+            fallback_sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
             fallback_signature = candidate_background_signature(fallback_sample)
             fallback_signatures = candidate_background_signatures(fallback_sample)
             if fallback_signature and not fallback_signatures:
@@ -2329,12 +2398,12 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         used_style_ids.add(style_id)
         seen_signatures.update(signatures)
     fallback_index = 1
-    while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= 80:
+    while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= PREVIEW_SAMPLE_COUNT:
         style_id = f"generated-style-fallback-{fallback_index}"
         fallback_index += 1
         if style_id in used_style_ids:
             continue
-        sample = style_background_candidate(style_id)
+        sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
         signature = candidate_background_signature(sample)
         signatures = candidate_background_signatures(sample)
         if signature and not signatures:
@@ -2618,16 +2687,22 @@ class AppGenerationProvider:
         candidate = request_data.source_candidate or {}
         if candidate:
             promote_candidate(request_data.row, candidate)
-        request_data.row["backgroundAction"] = "背景一致，直接复用"
+        provider = str(candidate.get("aiProvider") or candidate.get("generationProvider") or "library")
+        action = str(candidate.get("generationAction") or ("Cached" if provider == "tencent-hunyuan" else "Reuse"))
+        tencent = candidate.get("tencent") if isinstance(candidate.get("tencent"), dict) else {}
+        request_data.row["backgroundAction"] = "正式生成" if provider == "tencent-hunyuan" else "背景一致，直接复用"
         request_data.row["publicStatus"] = "已生成"
-        request_data.row["generationStatus"] = "reused"
+        request_data.row["generationStatus"] = "cached" if provider == "tencent-hunyuan" else "reused"
         return {
-            "provider": "library",
-            "action": "Reuse",
+            "provider": provider,
+            "action": action,
             "promptType": "reuse",
             "candidate": candidate,
             "path": candidate.get("path") or "",
-            "reason": "same_dish_same_style",
+            "reason": "cached_model_output" if provider == "tencent-hunyuan" else "same_dish_same_style",
+            "requestId": tencent.get("requestId"),
+            "jobId": tencent.get("jobId"),
+            "endpoint": tencent.get("endpoint"),
         }
 
     def replace_background(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
@@ -2719,6 +2794,10 @@ def run_formal_generation_item(
         "refundRequired": result.refund_required,
         "refund_required": result.refund_required,
     }
+    for key in ("requestId", "jobId", "submitRequestId", "queryRequestId", "endpoint"):
+        value = result_payload.get(key) or result.metadata.get(key)
+        if value:
+            row["generation"][key] = value
     if result.candidate:
         row["generation"]["candidate"] = result.candidate
     return {"result": result_payload, "row": row}
@@ -2747,6 +2826,8 @@ def generation_job_item_runner(style: str, quality: str, platforms: list[str] | 
             "provider": item_result.get("provider"),
             "action": item_result.get("action"),
             "reason": item_result.get("reason"),
+            "requestId": item_result.get("requestId"),
+            "jobId": item_result.get("jobId"),
             "error": item_result.get("error") or item_result.get("provider_error"),
             "provider_error": item_result.get("provider_error") or item_result.get("providerError"),
             "providerError": item_result.get("provider_error") or item_result.get("providerError"),
@@ -2866,10 +2947,20 @@ def preview_sample_entries() -> list[dict[str, Any]]:
 def preview_sample_job_payload(generation: dict[str, Any]) -> dict[str, Any]:
     job = {
         "status": str(generation.get("status") or "pending"),
-        "provider": str(generation.get("provider") or ""),
+        "provider": str(generation.get("provider") or "tencent-hunyuan"),
         "action": str(generation.get("action") or "Preview"),
     }
-    for key in ("error", "reason", "fallbackFrom", "fallbackMessage", "promptType", "requestId", "jobId"):
+    for key in (
+        "error",
+        "provider_error",
+        "providerError",
+        "reason",
+        "fallbackFrom",
+        "fallbackMessage",
+        "promptType",
+        "requestId",
+        "jobId",
+    ):
         value = generation.get(key)
         if value:
             job[key] = value
@@ -2889,12 +2980,12 @@ def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any]
         generation = (
             {"status": "cached", "provider": candidate.get("aiProvider") or "tencent-hunyuan", "action": candidate.get("generationAction") or "Cached"}
             if candidate
-            else {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
+            else queued_generation_payload() if not tencent_ready() else {"status": "pending", "provider": "tencent-hunyuan", "action": "Preview"}
         )
     public_status = "免费样图"
     if generation.get("status") == "failed":
         public_status = "样图生成失败"
-    elif generation.get("status") in {"pending", "limited"}:
+    elif generation.get("status") in {"pending", "limited", "queued"}:
         public_status = "等待生成"
     job = preview_sample_job_payload(generation)
     return {
@@ -2907,7 +2998,7 @@ def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any]
         "job": job,
         "sampleJob": job,
         "status": job["status"],
-        "error": job.get("error", ""),
+        "error": job.get("error") or job.get("provider_error") or "",
         "points": 0,
         "publicStatus": public_status,
     }
@@ -2920,7 +3011,7 @@ def preview_sample_payload(selected_style: str, index: int, generate: bool = Tru
     return preview_sample_payload_from_entry(selected_style, entries[index], generate=generate)
 
 
-def preview_samples(selected_style: str, generate: bool = False) -> dict[str, Any]:
+def preview_samples(selected_style: str, generate: bool = True) -> dict[str, Any]:
     entries = preview_sample_entries()
     samples = [preview_sample_payload_from_entry(selected_style, entry, generate=generate) for entry in entries]
     return {
@@ -2965,14 +3056,12 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         elif chosen.get("generated"):
             action = "智能统一风格"
         else:
-            action = "背景一致，直接复用" if chosen["styleId"] == selected_style else "需抠图换背景"
+            action = "智能统一风格" if chosen["styleId"] == selected_style else "需抠图换背景"
         row["backgroundAction"] = action
         if not chosen:
             public_status = "待补图"
         elif not chosen.get("reusable", True):
             public_status = "待处理"
-        elif action == "背景一致，直接复用":
-            public_status = "已生成"
         elif chosen.get("generated") and chosen.get("generationStatus") in {"succeeded", "cached"}:
             public_status = "已生成"
         elif action in {"智能统一风格", "需抠图换背景", "智能补图", "需要定制/生成", "套餐组合生成"}:
@@ -3257,7 +3346,7 @@ def api_style_preview():
     style = request.args.get("style", "")
     if not style:
         return jsonify({"error": "请先选择风格"}), 400
-    return jsonify(preview_samples(style, generate=False))
+    return jsonify(preview_samples(style, generate=True))
 
 
 @app.get("/api/style-preview-sample")
