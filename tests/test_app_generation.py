@@ -626,18 +626,18 @@ class AppGenerationTests(unittest.TestCase):
         self.assertIn("%E8%BE%A3%E6%A4%92%E7%82%92%E8%82%89", url)
         self.assertTrue(url.startswith("https://waimai.example.test/media/"))
 
-    def test_model_input_public_url_copies_to_ascii_public_path(self) -> None:
+    def test_model_input_public_url_uploads_local_path_to_cos(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "中文菜名.jpg"
             save_image(source)
             with (
-                app_module.app.test_request_context(base_url="https://waimai.example.test"),
                 mock.patch.object(app_module, "MODEL_INPUT_DIR", root / "model_inputs"),
+                mock.patch.object(app_module, "upload_model_input_to_cos", return_value="https://cos.example.test/model-input.jpg"),
             ):
                 url = app_module.model_input_public_url({"path": str(source), "url": "/media/中文菜名.jpg"})
 
-            self.assertRegex(url, r"^https://waimai\.example\.test/model-inputs/[a-f0-9]{24}\.jpg$")
+            self.assertEqual(url, "https://cos.example.test/model-input.jpg")
             self.assertTrue((root / "model_inputs").exists())
 
     def test_export_api_rejects_missing_style_and_empty_exports(self) -> None:

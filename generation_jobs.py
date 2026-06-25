@@ -63,8 +63,10 @@ DEFERRED_RESULT_STATUSES = {
     "created",
     "pending",
     "queued",
+    "running",
     "limited",
     "waiting",
+    "waiting_for_provider",
 }
 FAILED_RESULT_STATUSES = {"failed", "error"}
 
@@ -620,6 +622,7 @@ def run_job(
 
         item_status, error = _item_status_from_runner_result(result)
         if item_status == ITEM_FAILED:
+            provider_error = _optional_text(result.get("provider_error") or result.get("providerError") or error or result.get("error"))
             record_item_status(
                 clean_job_id,
                 index,
@@ -628,7 +631,7 @@ def run_job(
                 action=_optional_text(result.get("action")),
                 reason=_optional_text(result.get("reason")),
                 error=error or _optional_text(result.get("error")),
-                provider_error=_optional_text(result.get("provider_error") or result.get("providerError")),
+                provider_error=provider_error,
                 retryable=_optional_bool(result.get("retryable")),
                 refund_required=_optional_bool(result.get("refund_required") if "refund_required" in result else result.get("refundRequired")),
                 result=result,
