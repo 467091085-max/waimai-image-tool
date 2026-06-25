@@ -308,6 +308,27 @@ class ProductFlowSmokeTests(unittest.TestCase):
         markdown = smoke.render_markdown_report(report)
         self.assertIn('style="color:red"', markdown)
 
+    def test_formal_evidence_reads_nested_generation_candidate(self) -> None:
+        item = {
+            "status": "completed",
+            "payload": {
+                "generation": {
+                    "status": "succeeded",
+                    "provider": "tencent-hunyuan",
+                    "action": "ReplaceBackground",
+                    "candidate": {
+                        "source": "tencent-ReplaceBackground",
+                        "url": "/media/_ai_outputs/style-1/standard/0003_农家一碗香盖码饭.jpg",
+                    },
+                }
+            },
+        }
+
+        evidence = smoke.formal_result_evidence(item, provider_configured=True)
+
+        self.assertEqual(evidence["imageUrl"], "/media/_ai_outputs/style-1/standard/0003_农家一碗香盖码饭.jpg")
+        self.assertFalse(evidence["mockOrSeed"])
+
 
 if __name__ == "__main__":
     unittest.main()

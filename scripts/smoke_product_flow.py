@@ -410,7 +410,7 @@ def run_product_flow(
         selected_preview_sample_count = 0
         preview_style_ids = present[:6] if len(present) >= 6 else STYLE_IDS
         for style_id in preview_style_ids:
-            preview = request_json(client, "GET", "/api/style-preview", query={"style": style_id})
+            preview = request_json(client, "GET", "/api/style-preview", query={"style": style_id}, retries=2)
             preview_data = preview["data"] if isinstance(preview["data"], dict) else {}
             samples = preview_data.get("samples")
             sample_jobs = []
@@ -525,6 +525,12 @@ def run_product_flow(
             run_response = request_json(client, "POST", f"/api/jobs/{job_id}/run", payload=run_payload)
             run_data = run_response["data"] if isinstance(run_response["data"], dict) else {}
             run_job = run_data.get("job") if isinstance(run_data.get("job"), dict) else {}
+            if not run_response["error"] and job_id:
+                refreshed = request_json(client, "GET", f"/api/jobs/{job_id}", retries=2)
+                refreshed_data = refreshed["data"] if isinstance(refreshed["data"], dict) else {}
+                refreshed_job = refreshed_data.get("job") if isinstance(refreshed_data.get("job"), dict) else {}
+                if refreshed_job:
+                    run_job = refreshed_job
             first_item = first_job_item(run_job)
             formal_evidence = formal_result_evidence(first_item, provider_configured=provider_configured)
             run_fields = {
@@ -779,14 +785,16 @@ def run_export_check(
         "scope": scope,
     }
     if exported["error"]:
-        skippable = not live_generate and exported["status"] == 400 and "可导出" in str(exported["error"])
+        skippable = exported["status"] == 400 and "可导出" in str(exported["error"]) and (not live_generate or scope == "combo")
         return {
             "ok": bool(skippable),
             "skipped": bool(skippable),
             "httpStatus": exported["status"],
             "fields": export_fields,
             "reason": (
-                "dry-run has no formal image for this export scope; run live smoke to validate this ZIP"
+                "live smoke only materialized one image and no combo image was available for this ZIP"
+                if live_generate and scope == "combo"
+                else "dry-run has no formal image for this export scope; run live smoke to validate this ZIP"
                 if skippable
                 else exported["error"]
             ),
@@ -929,21 +937,43 @@ def request_json(
     *,
     payload: dict[str, Any] | None = None,
     query: dict[str, Any] | None = None,
+    retries: int = 0,
 ) -> dict[str, Any]:
     method = method.upper()
-    if method == "GET":
-        result = safe_request(lambda: client.get(path, query=query))
-    elif method == "POST":
-        result = safe_request(lambda: client.post_json(path, payload or {}))
-    else:
-        raise ValueError(f"unsupported method: {method}")
-    resp = result["response"]
-    if resp is None:
-        return {"status": None, "data": None, "error": result["error"]}
-    data = parse_response_json(resp)
-    parse_error = "" if data is not None else "invalid JSON response"
-    error_message = response_error(resp, data) or parse_error
-    return {"status": resp.status_code, "data": data, "error": error_message}
+    attempts = max(1, int(retries) + 1)
+    last: dict[str, Any] = {"status": None, "data": None, "error": "request was not attempted"}
+    for attempt in range(attempts):
+        if method == "GET":
+            result = safe_request(lambda: client.get(path, query=query))
+        elif method == "POST":
+            result = safe_request(lambda: client.post_json(path, payload or {}))
+        else:
+            raise ValueError(f"unsupported method: {method}")
+        resp = result["response"]
+        if resp is None:
+            last = {"status": None, "data": None, "error": result["error"]}
+        else:
+            data = parse_response_json(resp)
+            parse_error = "" if data is not None else "invalid JSON response"
+            error_message = response_error(resp, data) or parse_error
+            last = {"status": resp.status_code, "data": data, "error": error_message}
+            if not error_message:
+                return last
+        if attempt < attempts - 1 and should_retry_response(last):
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        return last
+    return last
+
+
+def should_retry_response(result: dict[str, Any]) -> bool:
+    status = result.get("status")
+    if status is None:
+        return True
+    try:
+        return int(status) >= 500
+    except Exception:
+        return False
 
 
 def safe_request(fn: Any) -> dict[str, Any]:
@@ -1009,6 +1039,9 @@ def first_job_item(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_image_url(item: dict[str, Any]) -> str:
+    found = find_url(item)
+    if found:
+        return found
     candidates: list[Any] = [
         item.get("result"),
         item.get("generation"),
