@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from image_pipeline import (
     PLATFORMS,
@@ -18,6 +18,7 @@ from image_pipeline import (
     fit_to_platform,
     make_logo_watermark,
     make_text_watermark,
+    normalize_image_format,
     platform_extra_points,
     prepare_platform_image,
     safe_filename,
@@ -30,6 +31,13 @@ def png_data_url(img: Image.Image) -> str:
     img.save(buf, "PNG")
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def jpg_data_url(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=92)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 class ImagePipelineTest(unittest.TestCase):
@@ -63,6 +71,13 @@ class ImagePipelineTest(unittest.TestCase):
         prepared = prepare_platform_image(src, "meituan", {"enabled": True, "type": "text", "text": "很长的测试品牌水印" * 10})
         self.assertEqual(prepared.size, (800, 600))
 
+    def test_format_normalization_defaults_and_jpeg_alias(self) -> None:
+        self.assertEqual(normalize_image_format(None, "meituan"), ("jpg", ".jpg", "JPEG"))
+        self.assertEqual(normalize_image_format("png", "taobao"), ("png", ".png", "PNG"))
+        self.assertEqual(normalize_image_format("jpeg", "jd"), ("jpeg", ".jpeg", "JPEG"))
+        self.assertEqual(normalize_image_format("jpeg", "meituan"), ("jpg", ".jpg", "JPEG"))
+        self.assertEqual(normalize_image_format("webp", "jd"), ("jpg", ".jpg", "JPEG"))
+
     def test_text_and_png_logo_watermarks_keep_transparent_backgrounds(self) -> None:
         text_mark = make_text_watermark("测试品牌", 800)
         self.assertEqual(text_mark.mode, "RGBA")
@@ -84,6 +99,50 @@ class ImagePipelineTest(unittest.TestCase):
         self.assertEqual(out.mode, "RGBA")
         self.assertEqual(out.getpixel((24, 24)), base.getpixel((24, 24)))
         self.assertNotEqual(out.getpixel((44, 44)), base.getpixel((44, 44)))
+
+        jpg_logo = Image.new("RGB", (80, 50), (245, 245, 245))
+        draw = ImageDraw.Draw(jpg_logo)
+        draw.rectangle((8, 8, 71, 41), fill=(20, 80, 220))
+        jpg_mark = make_logo_watermark(jpg_data_url(jpg_logo), 800)
+        self.assertIsNotNone(jpg_mark)
+        assert jpg_mark is not None
+        self.assertEqual(jpg_mark.mode, "RGBA")
+        self.assertEqual(jpg_mark.getpixel((0, 0))[3], 255)
+        self.assertLessEqual(jpg_mark.width, 160)
+        self.assertLessEqual(jpg_mark.height, 100)
+
+    def test_corner_text_watermarks_stay_inside_safe_area_without_background_panel(self) -> None:
+        base = Image.new("RGBA", (320, 240), (214, 220, 224, 255))
+        margin = max(24, base.width // 34)
+        positions = {
+            "top-left": ("left", "top"),
+            "top-right": ("right", "top"),
+            "bottom-left": ("left", "bottom"),
+            "bottom-right": ("right", "bottom"),
+        }
+
+        mark = make_text_watermark("WM", base.width, "white")
+        self.assertEqual(mark.getpixel((0, 0))[3], 0)
+
+        for position, edges in positions.items():
+            with self.subTest(position=position):
+                out = apply_watermark(base, {"enabled": True, "type": "text", "text": "WM", "color": "white", "position": position})
+                bbox = ImageChops.difference(base.convert("RGB"), out.convert("RGB")).getbbox()
+                self.assertIsNotNone(bbox)
+                assert bbox is not None
+                left, top, right, bottom = bbox
+                self.assertGreaterEqual(left, margin)
+                self.assertGreaterEqual(top, margin)
+                self.assertLessEqual(right, base.width - margin)
+                self.assertLessEqual(bottom, base.height - margin)
+                if "left" in edges:
+                    self.assertLess(left, base.width // 2)
+                if "right" in edges:
+                    self.assertGreater(right, base.width // 2)
+                if "top" in edges:
+                    self.assertLess(top, base.height // 2)
+                if "bottom" in edges:
+                    self.assertGreater(bottom, base.height // 2)
 
     def test_export_zip_outputs_rgb_jpgs_under_limits_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +199,54 @@ class ImagePipelineTest(unittest.TestCase):
                 self.assertEqual(len(report), 4)
                 self.assertIn("待补图", set(report["图片状态"]))
 
+                for name in image_names:
+                    platform_id = name.split("/")[1].split("_", 1)[0]
+                    spec = PLATFORMS[platform_id]
+                    payload = zf.read(name)
+                    img = Image.open(io.BytesIO(payload))
+                    self.assertEqual(img.format, "JPEG")
+                    self.assertEqual(img.mode, "RGB")
+                    self.assertEqual(img.size, (spec["width"], spec["height"]))
+                    self.assertLessEqual(len(payload), spec["maxKB"] * 1024)
+
+    def test_export_supports_jpeg_option_and_jpg_logo_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            src = Image.new("RGB", (900, 700), (242, 238, 232))
+            draw = ImageDraw.Draw(src)
+            draw.rectangle((120, 120, 780, 600), fill=(214, 72, 58))
+            src.save(source, "JPEG", quality=95)
+
+            logo = Image.new("RGB", (90, 54), (250, 250, 250))
+            draw = ImageDraw.Draw(logo)
+            draw.rectangle((10, 10, 80, 44), fill=(20, 80, 220))
+
+            result = export_delivery_zip(
+                [
+                    {
+                        "name": "JPEG选项测试菜",
+                        "category": "热销",
+                        "kind": "单品",
+                        "points": 0,
+                        "backgroundAction": "背景一致，直接复用",
+                        "candidates": [{"path": str(source)}],
+                    }
+                ],
+                root / "exports",
+                image_format="jpeg",
+                platforms=["meituan", "jd"],
+                watermark={"enabled": True, "type": "logo", "logoData": jpg_data_url(logo), "position": "top-left"},
+                run_name="jpeg_logo",
+            )
+
+            self.assertEqual(result["images"], 2)
+            zip_path = root / "exports" / result["download"].split("/download/", 1)[1]
+            with zipfile.ZipFile(zip_path) as zf:
+                image_names = sorted(name for name in zf.namelist() if name.startswith("images/"))
+                self.assertEqual(len(image_names), 2)
+                self.assertTrue(any("/meituan_" in name and name.endswith(".jpg") for name in image_names))
+                self.assertTrue(any("/jd_" in name and name.endswith(".jpeg") for name in image_names))
                 for name in image_names:
                     platform_id = name.split("/")[1].split("_", 1)[0]
                     spec = PLATFORMS[platform_id]

@@ -556,6 +556,11 @@ function hasExportableRows(scope = "all", selectedRows = []) {
   return exportableRows(scope, selectedRows).length > 0;
 }
 
+function exportImageFormat() {
+  const value = String($("#formatSelect")?.value || "jpg").toLowerCase();
+  return ["jpg", "png", "jpeg"].includes(value) ? value : "jpg";
+}
+
 function formalPlanStats(plan = state.plan) {
   const rows = Array.isArray(plan?.results) ? plan.results : [];
   const generation = plan?.generation || {};
@@ -1800,10 +1805,11 @@ async function exportImages() {
   if (!platforms.length) return;
   const token = beginBusy("export-zip", "正在打包 ZIP", "正在按平台尺寸生成下载包，请勿重复点击");
   try {
+    const imageFormat = exportImageFormat();
     const data = await api("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ style: state.style, scope, selectedRows, format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
+      body: JSON.stringify({ style: state.style, scope, selectedRows, format: imageFormat, imageFormat: imageFormat, watermark: watermarkPayload(), platforms, quality: state.quality })
     });
     toast(`已打包 ${data.images} 张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
     location.href = data.download;
@@ -1824,10 +1830,11 @@ async function exportSingle(rowNo, button = null) {
   const token = beginBusy("export-single", "正在准备单张保存", `${row?.name || "单张图片"} · 正在生成下载文件`);
   setButtonLoading(button, true, "保存中");
   try {
+    const imageFormat = exportImageFormat();
     const data = await api("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: $("#formatSelect").value, watermark: watermarkPayload(), platforms, quality: state.quality })
+      body: JSON.stringify({ style: state.style, scope: "selected", selectedRows: [rowNo], format: imageFormat, imageFormat: imageFormat, watermark: watermarkPayload(), platforms, quality: state.quality })
     });
     toast(`已准备单张图片，${data.platforms.length} 个平台${data.watermark ? "，已添加品牌水印" : ""}`);
     location.href = data.download;

@@ -3578,6 +3578,7 @@ def api_export():
     platforms = payload.get("platforms") or ["meituan"]
     quality = str(payload.get("quality", "standard"))
     style = str(payload.get("style", ""))
+    image_format = str(payload.get("format") or payload.get("imageFormat") or "jpg")
     if not style:
         return jsonify({"error": "请先选择风格并生成正式图片"}), 400
     try:
@@ -3589,7 +3590,7 @@ def api_export():
             scope=str(payload.get("scope", "all")),
             selected_rows=selected_rows,
             selected_ids=[str(item) for item in selected_ids],
-            image_format=str(payload.get("format", "jpg")),
+            image_format=image_format,
             watermark=watermark,
             platforms=platforms,
         )
@@ -3623,7 +3624,15 @@ def model_inputs(name: str):
 
 @app.get("/download/<path:name>")
 def download(name: str):
-    return send_file(EXPORT_DIR / name, as_attachment=True)
+    try:
+        export_root = EXPORT_DIR.resolve()
+        target = (EXPORT_DIR / name).resolve()
+        target.relative_to(export_root)
+    except (OSError, ValueError):
+        return jsonify({"error": "下载文件不存在或已失效", "code": "download_not_found"}), 404
+    if not target.is_file():
+        return jsonify({"error": "下载文件不存在或已失效", "code": "download_not_found"}), 404
+    return send_file(target, as_attachment=True, download_name=target.name)
 
 
 app.register_blueprint(

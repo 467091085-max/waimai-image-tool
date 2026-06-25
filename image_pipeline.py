@@ -223,15 +223,20 @@ def platform_extra_points(platforms: list[str] | str | None, extra_points: int =
 def normalize_image_format(image_format: str | None, platform_id: str) -> tuple[str, str, str]:
     spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
     requested = str(image_format or spec.get("defaultFormat") or "jpg").lower().strip().lstrip(".")
-    if requested == "jpeg":
-        requested = "jpg"
-    allowed = {"jpg" if item == "jpeg" else str(item).lower() for item in spec.get("formats", ["jpg"])}
-    if requested not in allowed:
+    if requested in {"image/jpg", "image/jpeg"}:
+        requested = requested.split("/", 1)[1]
+    allowed = {str(item).lower() for item in spec.get("formats", ["jpg"])}
+    requested_is_supported_jpeg = requested in {"jpg", "jpeg"} and bool(allowed.intersection({"jpg", "jpeg"}))
+    if requested == "png" and "png" not in allowed:
         requested = str(spec.get("defaultFormat") or "jpg").lower()
-    if requested == "jpeg":
-        requested = "jpg"
+    elif requested in {"jpg", "jpeg"} and not requested_is_supported_jpeg:
+        requested = str(spec.get("defaultFormat") or "jpg").lower()
+    elif requested not in allowed and not requested_is_supported_jpeg:
+        requested = str(spec.get("defaultFormat") or "jpg").lower()
     if requested == "png":
         return "png", ".png", "PNG"
+    if requested == "jpeg" and "jpeg" in allowed:
+        return "jpeg", ".jpeg", "JPEG"
     return "jpg", ".jpg", "JPEG"
 
 
@@ -309,12 +314,12 @@ def save_platform_image(img: Image.Image, target: Path, max_kb: int, image_forma
     max_bytes = max(64, int(max_kb)) * 1024
     rgb = img.convert("RGB")
     if str(image_format).lower() == "png":
-        rgb.save(target, "PNG", optimize=True)
+        rgb.save(target, "PNG", optimize=True, compress_level=9)
         if target.stat().st_size > max_bytes:
-            rgb.quantize(colors=256).convert("RGB").save(target, "PNG", optimize=True)
+            rgb.quantize(colors=256).convert("RGB").save(target, "PNG", optimize=True, compress_level=9)
         return target.stat().st_size
 
-    for quality in list(range(92, 34, -5)) + [30, 25, 20]:
+    for quality in list(range(92, 34, -5)) + [30, 25, 20, 15, 10, 5]:
         rgb.save(target, "JPEG", quality=quality, optimize=True, progressive=True, subsampling=2)
         if target.stat().st_size <= max_bytes:
             return target.stat().st_size
