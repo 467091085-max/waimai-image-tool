@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -49,6 +51,9 @@ class GenerationJobStateTests(unittest.TestCase):
         self.assertEqual(job["totalItems"], 2)
         self.assertEqual(job["pendingItems"], 2)
         self.assertEqual(job["progress"]["percent"], 0)
+        self.assertEqual([stage["label"] for stage in job["stages"]], ["菜单解析", "风格准备", "样图生成", "正式生图", "导出打包"])
+        self.assertEqual(job["stage"]["id"], generation_jobs.JOB_STAGE_FORMAL_GENERATION)
+        self.assertEqual(job["stage"]["status"], generation_jobs.STAGE_PENDING)
         self.assertEqual([item["status"] for item in job["items"]], [generation_jobs.ITEM_PENDING, generation_jobs.ITEM_PENDING])
         self.assertEqual(job["items"][0]["payload"]["name"], "菜品1")
 
@@ -264,17 +269,97 @@ class GenerationJobApiTests(unittest.TestCase):
                 self.assertEqual(created_body["job"]["status"], generation_jobs.JOB_PAID)
                 self.assertEqual(created_body["poll"]["url"], f"/api/jobs/{job_id}")
 
-                run = client.post(f"/api/jobs/{job_id}/run", json={"limit": 2})
+                run = client.post(f"/api/jobs/{job_id}/run", json={"limit": 2, "sync": True})
                 self.assertEqual(run.status_code, 200)
                 run_body = run.get_json()
+                self.assertEqual(run_body["mode"], "sync")
                 self.assertEqual(run_body["job"]["status"], generation_jobs.JOB_COMPLETED)
                 self.assertEqual(run_body["job"]["progress"]["completed"], 2)
+                self.assertEqual(run_body["job"]["stages"][3]["status"], generation_jobs.STAGE_COMPLETED)
 
                 polled = client.get(f"/api/jobs/{job_id}")
                 self.assertEqual(polled.status_code, 200)
                 item = polled.get_json()["job"]["items"][0]
                 self.assertEqual(item["result"]["generation"]["action"], "SubmitTextToImageJob")
                 self.assertFalse(item["refundRequired"])
+
+    def test_job_run_defaults_to_async_and_rejects_duplicate_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            release = threading.Event()
+            plan = {
+                "menu": {"count": 1},
+                "summary": {"total": 1, "points": 10},
+                "selectedStyle": "style-1",
+                "quality": {"id": "standard"},
+                "pricing": {},
+                "pipeline": {},
+                "results": [menu_item(1, "辣椒炒肉")],
+            }
+
+            def slow_fake_run(row: dict[str, object], *, style: str, quality: str | None = "standard", platforms=None, watermark=False) -> dict[str, object]:
+                release.wait(2)
+                row["generation"] = {
+                    "row": row["row"],
+                    "dish": row["name"],
+                    "status": "succeeded",
+                    "provider": "fake",
+                    "action": "SubmitTextToImageJob",
+                    "succeeded": True,
+                }
+                row["publicStatus"] = "已生成"
+                return {"result": row["generation"], "row": row}
+
+            with (
+                app_module._ACTIVE_GENERATION_JOB_LOCK,
+            ):
+                app_module._ACTIVE_GENERATION_JOB_THREADS.clear()
+
+            try:
+                with (
+                    mock.patch.dict(os.environ, {"GENERATION_JOBS_DB_PATH": str(db_path)}),
+                    mock.patch.object(app_module, "build_plan", return_value=plan),
+                    mock.patch.object(app_module, "run_formal_generation_item", side_effect=slow_fake_run),
+                ):
+                    client = app_module.app.test_client()
+                    created = client.post("/api/jobs", json={"style": "style-1", "quality": "standard", "orderId": "debit-async"})
+                    self.assertEqual(created.status_code, 201)
+                    job_id = created.get_json()["job"]["id"]
+
+                    started_at = time.monotonic()
+                    run = client.post(f"/api/jobs/{job_id}/run", json={"waitMs": 10})
+                    elapsed = time.monotonic() - started_at
+                    self.assertEqual(run.status_code, 200)
+                    run_body = run.get_json()
+                    self.assertEqual(run_body["mode"], "async")
+                    self.assertTrue(run_body["started"])
+                    self.assertLess(elapsed, 0.5)
+                    self.assertIn(run_body["job"]["status"], {generation_jobs.JOB_QUEUED, generation_jobs.JOB_RUNNING})
+
+                    duplicate = client.post(f"/api/jobs/{job_id}/run", json={"waitMs": 0})
+                    duplicate_body = duplicate.get_json()
+                    self.assertEqual(duplicate.status_code, 200)
+                    self.assertTrue(duplicate_body["alreadyRunning"])
+                    self.assertFalse(duplicate_body["started"])
+
+                    release.set()
+                    completed = None
+                    for _ in range(60):
+                        polled = client.get(f"/api/jobs/{job_id}")
+                        body = polled.get_json()
+                        if body["job"]["status"] == generation_jobs.JOB_COMPLETED:
+                            completed = body["job"]
+                            break
+                        time.sleep(0.05)
+
+                    self.assertIsNotNone(completed)
+                    assert completed is not None
+                    self.assertEqual(completed["progress"]["completed"], 1)
+                    self.assertEqual(completed["stages"][3]["status"], generation_jobs.STAGE_COMPLETED)
+            finally:
+                release.set()
+                with app_module._ACTIVE_GENERATION_JOB_LOCK:
+                    app_module._ACTIVE_GENERATION_JOB_THREADS.clear()
 
 
 if __name__ == "__main__":

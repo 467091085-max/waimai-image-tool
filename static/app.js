@@ -815,7 +815,6 @@ function jobRunDeferredOnly(job) {
 
 async function pollGenerationJob(jobId, options = {}) {
   const token = options.token;
-  const orderId = options.orderId || "";
   let initialDeferred = jobRunDeferredOnly(options.initial?.job);
   if (options.initial?.job && token) {
     updateGenerationJobProgress(options.initial.job, token);
@@ -826,18 +825,13 @@ async function pollGenerationJob(jobId, options = {}) {
   for (let attempt = 0; attempt < maxPolls; attempt += 1) {
     const job = response.job;
     if (isGenerationJobTerminal(job) || initialDeferred) return response;
-    if (shouldRunGenerationJob(job)) {
-      response = await runGenerationJob(jobId, { paid: true, orderId });
-      if (token) updateGenerationJobProgress(response.job, token);
-      if (jobRunDeferredOnly(response.job)) {
-        initialDeferred = true;
-      }
-      continue;
-    }
     const interval = Math.max(500, Math.min(5000, Number(response.poll?.intervalMs || 1500)));
     await sleep(interval);
     response = await getGenerationJob(jobId);
     if (token) updateGenerationJobProgress(response.job, token);
+    if (jobRunDeferredOnly(response.job)) {
+      initialDeferred = true;
+    }
   }
   throw new Error("生成任务轮询超时");
 }
