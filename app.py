@@ -189,7 +189,7 @@ STYLE_BACKGROUND_VARIANTS = (
 )
 
 NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，手，低清晰度，模糊，变形，裁切主体，脏乱背景"
-STRICT_MATCH_MIN_SCORE = 0.45
+STRICT_MATCH_MIN_SCORE = 0.70
 BEVERAGE_WORDS = (
     "可乐",
     "雪碧",
@@ -1748,6 +1748,22 @@ def style_background_job(candidate: dict[str, Any] | None) -> dict[str, Any]:
     return job
 
 
+def style_background_manifest(style_id: str, label: str, sample: dict[str, Any] | None) -> dict[str, Any] | None:
+    if style_sample_is_real(sample):
+        return None
+    job = style_background_job(sample)
+    return {
+        "type": "style_background",
+        "styleId": style_id,
+        "label": label,
+        "status": job["status"],
+        "provider": job["provider"],
+        "action": job["action"],
+        "prompt": prompt_for_style_background(style_id),
+        "reason": job.get("error") or "图库背景不足，需要 AI 补齐不同背景",
+    }
+
+
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
     library_sample = style_representative_candidate(style_id)
     if library_sample:
@@ -1947,7 +1963,11 @@ def is_generated_candidate(candidate: dict[str, Any] | None) -> bool:
 
 
 def source_candidates_for_generation(row: dict[str, Any]) -> list[dict[str, Any]]:
-    return [c for c in row.get("candidates") or [] if c.get("path") and not is_generated_candidate(c)]
+    return [
+        c
+        for c in row.get("candidates") or []
+        if c.get("path") and not is_generated_candidate(c) and candidate_matches_item(row, c)
+    ]
 
 
 def source_candidate_for_generation(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -1977,6 +1997,14 @@ def strip_nonfinal_generated_candidates(row: dict[str, Any]) -> None:
     row["candidates"] = [
         c for c in row.get("candidates") or []
         if not is_generated_candidate(c) or c.get("aiProvider") == "tencent-hunyuan" or str(c.get("source") or "").startswith("tencent")
+    ]
+
+
+def strip_mismatched_source_candidates(row: dict[str, Any]) -> None:
+    row["candidates"] = [
+        c
+        for c in row.get("candidates") or []
+        if is_generated_candidate(c) or not c.get("path") or candidate_matches_item(row, c)
     ]
 
 
@@ -2304,6 +2332,7 @@ def style_option_payload(
     color = style_color_for(style_id)
     needs_generated = not style_sample_is_real(sample)
     image_url = str((sample or {}).get("url") or "")
+    fill_manifest = style_background_manifest(style_id, label, sample)
     return {
         "id": style_id,
         "label": label,
@@ -2315,6 +2344,9 @@ def style_option_payload(
         "dedupe_signature": signature,
         "needsGeneratedBackground": needs_generated,
         "needs_generated_background": needs_generated,
+        "needsAiFill": needs_generated,
+        "aiFillManifest": fill_manifest,
+        "generationManifest": fill_manifest,
         "backgroundJob": style_background_job(sample),
         "count": count,
         "sample": sample,
@@ -2353,8 +2385,10 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sample = sample or same
             if same and same.get("reusable", True) and row.get("status") == "直接可用":
                 direct += 1
-            elif same:
+            elif same and float(same.get("score") or same.get("confidence") or 0) >= 70:
                 review += 1
+            elif same:
+                custom += 1
             else:
                 bg_replace += 1
         library_sample = style_representative_candidate(style_id)
@@ -2478,9 +2512,7 @@ def status_for(candidates: list[dict[str, Any]]) -> str:
         return "未找到"
     if candidates[0]["score"] >= 70:
         return "直接可用"
-    if candidates[0]["score"] >= 45:
-        return "需人工确认"
-    return "弱匹配"
+    return "需生成"
 
 
 def machine_status_for_candidates(candidates: list[dict[str, Any]]) -> str:
@@ -2489,8 +2521,6 @@ def machine_status_for_candidates(candidates: list[dict[str, Any]]) -> str:
     score = float(candidates[0].get("score") or candidates[0].get("confidence") or 0)
     if score >= 70:
         return "direct"
-    if score >= 45:
-        return "review"
     return "needs_generation"
 
 
@@ -2810,6 +2840,7 @@ def run_formal_generation_item(
     watermark: bool | dict[str, Any] = False,
 ) -> dict[str, Any]:
     strip_nonfinal_generated_candidates(row)
+    strip_mismatched_source_candidates(row)
     if isinstance(watermark, dict):
         row["watermark"] = watermark
     request_data = generation_engine.request_from_row(row, style=style, quality=quality, platforms=platforms, watermark=watermark)
@@ -3096,8 +3127,11 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
             elif same:
                 candidates.insert(0, candidates.pop(candidates.index(same)))
         chosen = candidates[0] if candidates else None
+        chosen_score = float((chosen or {}).get("score") or (chosen or {}).get("confidence") or 0)
         if not chosen:
             action = "需要定制/生成"
+        elif chosen_score < 70:
+            action = "智能补图"
         elif not chosen.get("reusable", True):
             action = "需去水印/重绘"
         elif row["kind"] == "套餐/组合" and detect_kind(str(chosen.get("dishName") or ""), "") != "套餐/组合":
@@ -3141,6 +3175,7 @@ def build_plan(selected_style: str = "", quality: str | None = "standard") -> di
         "standardization": standardization_report(menu),
         "assetLayer": {"libraryImages": len(library), "libraryStores": len({x.store for x in library}), "menus": menu_count},
         "styles": styles,
+        "styleFillManifests": [style["aiFillManifest"] for style in styles if style.get("aiFillManifest")],
         "selectedStyle": selected_style,
         "summary": summary,
         "account": account_payload(),
