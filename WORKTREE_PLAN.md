@@ -62,6 +62,34 @@ root: /Users/guiguixiaxia/Documents/Codex/2026-06-15/33-excel-excel-300-5-4/work
 3. 主线按“模块先行、`app.py` 最后”的顺序合并，解决冲突后统一跑全量测试。
 4. 合并通过后推送 `main`，Render 自动部署，再做线上烟测。
 
+## V4 Real Product Build
+
+V4 是“真实可跑通产品”的下一阶段并行入口，重点补齐线上真实图库、COS 索引、混元真实生成、远程图导出和端到端验收。
+
+```text
+base commit: fd9f05e Add delivery report for v3 parallel build
+root: /Users/guiguixiaxia/Documents/Codex/2026-06-15/33-excel-excel-300-5-4/worktrees-v4
+```
+
+| 子任务 | Branch | Worktree | 写入边界 |
+|---|---|---|---|
+| COS 图库同步 | `feature/v4-cos-gallery-sync` | `worktrees-v4/cos-gallery-sync` | `scripts/sync_gallery_to_cos.py`, `library_index.py`, `tests/test_cos_gallery_sync.py`, `README.md`/`DELIVERY_REPORT.md` 的同步说明 |
+| 线上远程图库运行时 | `feature/v4-remote-gallery-runtime` | `worktrees-v4/remote-gallery-runtime` | `app.py` 的图库索引读取、远程媒体 URL、`/api/library-status`，`tests/test_remote_gallery_runtime.py` |
+| 混元真实联调 | `feature/v4-hunyuan-live-integration` | `worktrees-v4/hunyuan-live-integration` | `generation_engine.py`, `generation_jobs.py`, `app.py` 小范围 job/provider 适配，`scripts/smoke_hunyuan_live.py`, tests |
+| 客户端进度和错误反馈 | `feature/v4-customer-progress-ui` | `worktrees-v4/customer-progress-ui` | `templates/index.html`, `static/app.js`, `static/styles.css` |
+| 远程图导出交付 | `feature/v4-export-remote-media` | `worktrees-v4/export-remote-media` | `image_pipeline.py`, `tests/test_export_remote_media.py`, 导出 smoke |
+| 支付/积分产品化准备 | `feature/v4-billing-payment-readiness` | `worktrees-v4/billing-payment-readiness` | `billing.py`, `admin_panel.py`, payment webhook skeleton, billing/admin tests |
+| 端到端验收 | `feature/v4-e2e-product-qa` | `worktrees-v4/e2e-product-qa` | `scripts/smoke_product_flow.py`, `tests/test_product_flow.py`, `DELIVERY_REPORT.md` 验收清单 |
+
+集成顺序：
+
+1. 先合 `cos-gallery-sync`，拿到可上传 COS 的真实图库索引。
+2. 再合 `remote-gallery-runtime`，让 Render 能读取 COS 索引。
+3. 合 `export-remote-media`，保证远程 COS 图片也能打包导出。
+4. 合 `hunyuan-live-integration` 和 `customer-progress-ui`，完成真实生成与前端状态闭环。
+5. 合 `billing-payment-readiness`，把扣费、退款、后台流水和后续支付回调打通。
+6. 最后合 `e2e-product-qa`，跑真实菜单端到端验收。
+
 ## 子任务细分
 
 ### 1. 图库资产层
