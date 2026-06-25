@@ -283,6 +283,14 @@ STYLE_SAMPLE_BAD_WORDS = tuple(
 PREVIEW_SAMPLE_BAD_WORDS = STYLE_SAMPLE_BAD_WORDS + (
     "盛夏",
     "冰沙",
+    "提示图",
+    "小料",
+    "配料",
+    "加菜",
+    "餐盒",
+    "主食",
+    "白米饭",
+    "白饭",
     "汤圆",
     "茶叶蛋",
     "卤蛋",
@@ -1197,6 +1205,8 @@ def style_representative_candidate(style_id: str) -> dict[str, Any] | None:
         return None
     candidate = candidate_from_library_image(images[0], 100.0)
     candidate["styleSampleSource"] = "library"
+    candidate["needsGeneratedBackground"] = False
+    candidate["needs_generated_background"] = False
     return candidate
 
 
@@ -1298,6 +1308,21 @@ def background_signature_for_path(path_text: str) -> str:
         return ""
 
 
+@lru_cache(maxsize=512)
+def image_hash_signature_for_path(path_text: str) -> str:
+    path = Path(path_text)
+    try:
+        with Image.open(path) as raw:
+            image = ImageOps.exif_transpose(raw).convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
+            pixels = list(image.getdata())
+            if not pixels:
+                return ""
+            quantized = bytes(channel // 16 for pixel in pixels for channel in pixel)
+            return hashlib.sha1(quantized).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 def candidate_background_signature(candidate: dict[str, Any] | None) -> str:
     if not candidate:
         return ""
@@ -1311,22 +1336,60 @@ def candidate_background_signature(candidate: dict[str, Any] | None) -> str:
     return color or style_id
 
 
+def candidate_background_signatures(candidate: dict[str, Any] | None) -> set[str]:
+    signatures: set[str] = set()
+    primary = candidate_background_signature(candidate)
+    if primary:
+        signatures.add(f"bg:{primary}")
+    path = str((candidate or {}).get("path") or "")
+    if path:
+        image_hash = image_hash_signature_for_path(path)
+        if image_hash:
+            signatures.add(f"img:{image_hash}")
+    return signatures
+
+
+def annotate_generated_style_background(candidate: dict[str, Any], status: str, provider: str, action: str, error: str = "") -> dict[str, Any]:
+    candidate["generated"] = True
+    candidate["styleSampleSource"] = "cache" if status == "cached" else "generated"
+    candidate["needsGeneratedBackground"] = True
+    candidate["needs_generated_background"] = True
+    candidate["generationStatus"] = status
+    candidate["generationProvider"] = provider
+    candidate["generationAction"] = action
+    if error:
+        candidate["error"] = error[:220]
+    return candidate
+
+
+def style_background_placeholder_candidate(style_id: str, status: str, action: str, error: str = "") -> dict[str, Any]:
+    target = style_background_target(style_id)
+    candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 0.0)
+    candidate["url"] = ""
+    candidate["path"] = ""
+    provider = "tencent-hunyuan" if tencent_ready() else "local-demo"
+    return annotate_generated_style_background(candidate, status, provider, action, error)
+
+
 def style_background_candidate(style_id: str) -> dict[str, Any]:
     target = style_background_target(style_id)
-    metadata = load_ai_output_metadata(target) if target.exists() else None
-    if target.exists() and not tencent_style_backgrounds_enabled():
+    metadata = load_ai_output_metadata(target)
+    if target.exists() and successful_model_metadata(metadata):
+        candidate = candidate_from_path(target, "背景风格样图", style_id, "tencent-style-sample", 100.0)
+        assert metadata is not None
+        candidate_generation_metadata(candidate, metadata)
+        return annotate_generated_style_background(candidate, "cached", "tencent-hunyuan", str(metadata.get("action") or "Cached"))
+    if target.exists() and not tencent_ready():
         candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
         if metadata:
             candidate_generation_metadata(candidate, metadata)
-        return candidate
-    if target.exists() and (successful_model_metadata(metadata) or not tencent_ready()):
-        candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 100.0)
-        if metadata:
-            candidate_generation_metadata(candidate, metadata)
-        return candidate
-    if not target.exists():
-        draw_demo_image(target, "背景风格样图", style_id)
-    if tencent_ready() and tencent_style_backgrounds_enabled():
+        return annotate_generated_style_background(
+            candidate,
+            str(candidate.get("generationStatus") or "fallback"),
+            str(candidate.get("generationProvider") or "local-demo"),
+            str(candidate.get("generationAction") or "LocalFallback"),
+        )
+    if tencent_ready():
         try:
             detail = tencent_style_background(style_id, target)
             metadata = {
@@ -1340,13 +1403,49 @@ def style_background_candidate(style_id: str) -> dict[str, Any]:
             write_ai_output_metadata(target, metadata)
             candidate = candidate_from_path(target, "背景风格样图", style_id, "tencent-style-sample", 100.0)
             candidate_generation_metadata(candidate, metadata)
-            return candidate
+            return annotate_generated_style_background(candidate, "succeeded", "tencent-hunyuan", detail["action"])
         except Exception as exc:
-            candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 80.0)
-            candidate["generationStatus"] = "failed"
-            candidate["error"] = str(exc)[:220]
-            return candidate
-    return candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
+            return style_background_placeholder_candidate(style_id, "failed", "ReplaceBackground", str(exc))
+    if not target.exists():
+        draw_demo_image(target, "背景风格样图", style_id)
+    candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 90.0)
+    return annotate_generated_style_background(candidate, "fallback", "local-demo", "LocalFallback")
+
+
+def style_sample_is_real(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    source = str(candidate.get("source") or "")
+    return bool(
+        candidate.get("styleSampleSource") == "library"
+        or (
+            source in {"internal", "clean", "external"}
+            and candidate.get("reusable", True)
+            and not candidate.get("generated")
+            and not candidate.get("generationStatus")
+        )
+    )
+
+
+def style_card_source(candidate: dict[str, Any] | None) -> str:
+    if style_sample_is_real(candidate):
+        return "real"
+    if candidate and (candidate.get("styleSampleSource") == "cache" or candidate.get("generationStatus") == "cached"):
+        return "cache"
+    return "generated"
+
+
+def style_background_job(candidate: dict[str, Any] | None) -> dict[str, Any]:
+    if style_sample_is_real(candidate):
+        return {"status": "reused", "provider": "library", "action": "LibraryStyleSample"}
+    status = str((candidate or {}).get("generationStatus") or "pending")
+    provider = str((candidate or {}).get("generationProvider") or (candidate or {}).get("aiProvider") or ("tencent-hunyuan" if tencent_ready() else "local-demo"))
+    action = str((candidate or {}).get("generationAction") or ("GenerateStyleBackground" if status in {"pending", "failed"} else "LocalFallback"))
+    job = {"status": status, "provider": provider, "action": action}
+    error = str((candidate or {}).get("error") or "")
+    if error:
+        job["error"] = error
+    return job
 
 
 def style_sample_candidate(style_id: str) -> dict[str, Any]:
@@ -1375,11 +1474,19 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
     target = LIBRARY_DIR / "_generated_previews" / selected_style / f"{int(item['row']):04d}_{safe_filename(item['name'])}.jpg"
     cached = generated_preview_candidate(item, selected_style)
     if cached:
-        return cached, {"status": "cached", "provider": cached.get("aiProvider") or "tencent-hunyuan", "action": cached.get("generationAction") or "Cached"}
-    same_style = reusable_selected_style_candidate(item, selected_style)
+        tencent_detail = cached.get("tencent") if isinstance(cached.get("tencent"), dict) else {}
+        return cached, {
+            "status": "cached",
+            "provider": cached.get("aiProvider") or "tencent-hunyuan",
+            "action": cached.get("generationAction") or "Cached",
+            "requestId": tencent_detail.get("requestId"),
+            "jobId": tencent_detail.get("jobId"),
+            "error": cached.get("error"),
+        }
+    same_style = reusable_selected_style_preview_candidate(item, selected_style)
     if same_style:
         return same_style, {"status": "reused", "provider": "library", "action": "Reuse"}
-    source_candidate = source_candidate_for_generation(item)
+    source_candidate = source_candidate_for_preview_generation(item)
     result: dict[str, Any] = {"status": "pending", "provider": "tencent-hunyuan" if tencent_ready() else "local-demo", "action": "Preview"}
     if tencent_ready():
         try:
@@ -1416,7 +1523,14 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
             write_ai_output_metadata(target, metadata)
             candidate = candidate_from_path(target, item["name"], selected_style, f"tencent-preview-{detail['action']}", 100.0)
             candidate_generation_metadata(candidate, metadata)
-            return candidate, {"status": "succeeded", "provider": "tencent-hunyuan", "action": detail["action"]}
+            return candidate, {
+                "status": "succeeded",
+                "provider": "tencent-hunyuan",
+                "action": detail["action"],
+                "promptType": detail.get("promptType"),
+                "requestId": detail.get("requestId"),
+                "jobId": detail.get("jobId"),
+            }
         except Exception as exc:
             result.update({"status": "failed", "action": "Failed", "error": str(exc)[:220]})
             if allow_local_image_fallback():
@@ -1517,6 +1631,24 @@ def source_candidate_for_generation(row: dict[str, Any]) -> dict[str, Any] | Non
     return next((c for c in candidates if c.get("reusable", True)), candidates[0] if candidates else None)
 
 
+def candidate_matches_item(row: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    menu_name = str(row.get("name") or "")
+    image_name = str(candidate.get("dishName") or "")
+    menu_norm = str(row.get("norm") or normalize(menu_name))
+    image_norm = normalize(image_name)
+    if not menu_name or not image_name or not menu_norm or not image_norm:
+        return False
+    score = similarity(menu_name, image_name, menu_norm, image_norm, grams(menu_norm), grams(image_norm))
+    return strict_match_allowed(menu_name, image_name, menu_norm, image_norm, score)
+
+
+def source_candidate_for_preview_generation(row: dict[str, Any]) -> dict[str, Any] | None:
+    for candidate in source_candidates_for_generation(row):
+        if candidate.get("reusable", True) and candidate_matches_item(row, candidate):
+            return candidate
+    return None
+
+
 def strip_nonfinal_generated_candidates(row: dict[str, Any]) -> None:
     row["candidates"] = [
         c for c in row.get("candidates") or []
@@ -1526,6 +1658,17 @@ def strip_nonfinal_generated_candidates(row: dict[str, Any]) -> None:
 
 def reusable_selected_style_candidate(row: dict[str, Any], selected_style: str) -> dict[str, Any] | None:
     return next((c for c in source_candidates_for_generation(row) if c.get("styleId") == selected_style and c.get("reusable", True)), None)
+
+
+def reusable_selected_style_preview_candidate(row: dict[str, Any], selected_style: str) -> dict[str, Any] | None:
+    return next(
+        (
+            c
+            for c in source_candidates_for_generation(row)
+            if c.get("styleId") == selected_style and c.get("reusable", True) and candidate_matches_item(row, c)
+        ),
+        None,
+    )
 
 
 def materialization_reason(row: dict[str, Any], selected_style: str) -> str | None:
@@ -1594,6 +1737,8 @@ def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str,
     candidate["generationStatus"] = str(metadata.get("status") or "")
     candidate["generationAction"] = str(metadata.get("action") or "")
     candidate["generationProvider"] = str(metadata.get("provider") or "")
+    if metadata.get("error"):
+        candidate["error"] = str(metadata.get("error"))[:220]
     if isinstance(metadata.get("tencent"), dict):
         candidate["tencent"] = metadata["tencent"]
 
@@ -1801,6 +1946,49 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
     return generation
 
 
+def style_option_payload(
+    style_id: str,
+    label: str,
+    raw_name: str,
+    sample: dict[str, Any] | None,
+    signature: str,
+    count: int,
+    direct: int,
+    review: int,
+    bg_replace: int,
+    custom: int,
+    total: int,
+    estimated_points: int,
+) -> dict[str, Any]:
+    color = style_color_for(style_id)
+    needs_generated = not style_sample_is_real(sample)
+    image_url = str((sample or {}).get("url") or "")
+    return {
+        "id": style_id,
+        "label": label,
+        "name": label,
+        "rawName": raw_name,
+        "imageUrl": image_url,
+        "source": style_card_source(sample),
+        "dedupeSignature": signature,
+        "dedupe_signature": signature,
+        "needsGeneratedBackground": needs_generated,
+        "needs_generated_background": needs_generated,
+        "backgroundJob": style_background_job(sample),
+        "count": count,
+        "sample": sample,
+        "color": f"rgb({color[0]},{color[1]},{color[2]})",
+        "direct": direct,
+        "review": review,
+        "bgReplace": bg_replace,
+        "custom": custom,
+        "directRate": round(direct / total * 100, 1),
+        "processingRate": round((review + bg_replace) / total * 100, 1),
+        "customRate": round(custom / total * 100, 1),
+        "estimatedPoints": estimated_points,
+    }
+
+
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = ordered_style_ids(results)
     options = []
@@ -1829,39 +2017,48 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 bg_replace += 1
         sample = style_sample_candidate(style_id) or sample
         signature = candidate_background_signature(sample)
-        if signature and signature in seen_signatures:
+        signatures = candidate_background_signatures(sample)
+        if signature and not signatures:
+            signatures = {f"bg:{signature}"}
+        if not signature:
+            signature = style_id
+            signatures = signatures or {f"bg:{style_id}"}
+        if signatures & seen_signatures:
             fallback_sample = style_background_candidate(style_id)
             fallback_signature = candidate_background_signature(fallback_sample)
-            if fallback_signature and fallback_signature not in seen_signatures:
+            fallback_signatures = candidate_background_signatures(fallback_sample)
+            if fallback_signature and not fallback_signatures:
+                fallback_signatures = {f"bg:{fallback_signature}"}
+            if not fallback_signature:
+                fallback_signature = style_id
+                fallback_signatures = fallback_signatures or {f"bg:{style_id}"}
+            if not (fallback_signatures & seen_signatures):
                 sample = fallback_sample
                 signature = fallback_signature
+                signatures = fallback_signatures
             else:
                 continue
         style_name = style_name_for(style_id)
         display_index = len(options) + 1
-        display_name = BACKGROUND_LABELS[display_index - 1] if display_index <= len(BACKGROUND_LABELS) else f"{display_index}号背景"
-        color = style_color_for(style_id)
+        display_name = BACKGROUND_LABELS[display_index - 1]
         options.append(
-            {
-                "id": style_id,
-                "name": display_name,
-                "rawName": style_name,
-                "count": sum(1 for r in results for c in r["candidates"] if c["styleId"] == style_id),
-                "sample": sample,
-                "color": f"rgb({color[0]},{color[1]},{color[2]})",
-                "direct": direct,
-                "review": review,
-                "bgReplace": bg_replace,
-                "custom": custom,
-                "directRate": round(direct / total * 100, 1),
-                "processingRate": round((review + bg_replace) / total * 100, 1),
-                "customRate": round(custom / total * 100, 1),
-                "estimatedPoints": direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
-            }
+            style_option_payload(
+                style_id,
+                display_name,
+                style_name,
+                sample,
+                signature,
+                sum(1 for r in results for c in r["candidates"] if c["styleId"] == style_id),
+                direct,
+                review,
+                bg_replace,
+                custom,
+                total,
+                direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
+            )
         )
         used_style_ids.add(style_id)
-        if signature:
-            seen_signatures.add(signature)
+        seen_signatures.update(signatures)
     fallback_index = 1
     while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= 80:
         style_id = f"generated-style-fallback-{fallback_index}"
@@ -1870,31 +2067,63 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         sample = style_background_candidate(style_id)
         signature = candidate_background_signature(sample)
-        if signature and signature in seen_signatures:
+        signatures = candidate_background_signatures(sample)
+        if signature and not signatures:
+            signatures = {f"bg:{signature}"}
+        if not signature:
+            signature = style_id
+            signatures = signatures or {f"bg:{style_id}"}
+        if signatures & seen_signatures:
             continue
-        color = style_color_for(style_id)
         display_index = len(options) + 1
         options.append(
-            {
-                "id": style_id,
-                "name": BACKGROUND_LABELS[display_index - 1] if display_index <= len(BACKGROUND_LABELS) else f"{display_index}号背景",
-                "rawName": style_name_for(style_id),
-                "count": 0,
-                "sample": sample,
-                "color": f"rgb({color[0]},{color[1]},{color[2]})",
-                "direct": 0,
-                "review": 0,
-                "bgReplace": total,
-                "custom": 0,
-                "directRate": 0,
-                "processingRate": 100.0,
-                "customRate": 0,
-                "estimatedPoints": total * 18,
-            }
+            style_option_payload(
+                style_id,
+                BACKGROUND_LABELS[display_index - 1],
+                style_name_for(style_id),
+                sample,
+                signature,
+                0,
+                0,
+                0,
+                total,
+                0,
+                total,
+                total * 18,
+            )
         )
         used_style_ids.add(style_id)
-        if signature:
-            seen_signatures.add(signature)
+        seen_signatures.update(signatures)
+    pending_index = 1
+    while len(options) < PREVIEW_SAMPLE_COUNT:
+        style_id = f"generated-style-needed-{pending_index}"
+        pending_index += 1
+        if style_id in used_style_ids:
+            continue
+        sample = style_background_placeholder_candidate(style_id, "pending", "GenerateStyleBackground", "图库背景不足，等待生成不同背景")
+        signature = candidate_background_signature(sample) or style_id
+        signatures = candidate_background_signatures(sample) or {f"bg:{signature}"}
+        if signatures & seen_signatures:
+            continue
+        display_index = len(options) + 1
+        options.append(
+            style_option_payload(
+                style_id,
+                BACKGROUND_LABELS[display_index - 1],
+                style_name_for(style_id),
+                sample,
+                signature,
+                0,
+                0,
+                0,
+                total,
+                0,
+                total,
+                total * 18,
+            )
+        )
+        used_style_ids.add(style_id)
+        seen_signatures.update(signatures)
     return options
 
 
@@ -2117,17 +2346,33 @@ def preview_sample_rank(item: dict[str, Any], candidates: list[dict[str, Any]]) 
     return score
 
 
+def preview_sample_item_allowed(item: dict[str, Any]) -> bool:
+    name = str(item.get("name") or "")
+    norm = str(item.get("norm") or normalize(name))
+    if item.get("kind") != "单品":
+        return False
+    if detect_kind(name, "") != "单品":
+        return False
+    if semantic_family(name, norm) != "food":
+        return False
+    if has_sample_bad_word(name, PREVIEW_SAMPLE_BAD_WORDS):
+        return False
+    if has_sample_bad_word(name, STYLE_SAMPLE_SIDE_WORDS):
+        return False
+    return bool(norm)
+
+
 def preview_sample_entries() -> list[dict[str, Any]]:
     menu = parse_menu()
     library = library_images()
     scored_entries: list[tuple[int, int, dict[str, Any], list[dict[str, Any]]]] = []
     seen_norms: set[str] = set()
     for order, raw_item in enumerate(menu["items"]):
-        if raw_item.get("kind") != "单品":
-            continue
         item = dict(raw_item)
         if not item.get("norm"):
             item["norm"] = normalize(str(item.get("name") or ""))
+        if not preview_sample_item_allowed(item):
+            continue
         norm = str(item.get("norm") or "")
         if not norm or norm in seen_norms:
             continue
@@ -2139,7 +2384,7 @@ def preview_sample_entries() -> list[dict[str, Any]]:
     if len(entries) < PREVIEW_SAMPLE_COUNT:
         existing_norms = {entry["item"].get("norm") for entry in entries}
         for item in demo_menu_items():
-            if item.get("kind") != "单品" or item.get("norm") in existing_norms:
+            if not preview_sample_item_allowed(item) or item.get("norm") in existing_norms:
                 continue
             demo_item = {**item, "category": "风格样图"}
             existing_norms.add(demo_item.get("norm"))
@@ -2148,6 +2393,19 @@ def preview_sample_entries() -> list[dict[str, Any]]:
             if len(entries) >= PREVIEW_SAMPLE_COUNT:
                 break
     return entries
+
+
+def preview_sample_job_payload(generation: dict[str, Any]) -> dict[str, Any]:
+    job = {
+        "status": str(generation.get("status") or "pending"),
+        "provider": str(generation.get("provider") or ""),
+        "action": str(generation.get("action") or "Preview"),
+    }
+    for key in ("error", "reason", "fallbackFrom", "fallbackMessage", "promptType", "requestId", "jobId"):
+        value = generation.get(key)
+        if value:
+            job[key] = value
+    return job
 
 
 def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any], generate: bool = True) -> dict[str, Any]:
@@ -2170,7 +2428,21 @@ def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any]
         public_status = "样图生成失败"
     elif generation.get("status") in {"pending", "limited"}:
         public_status = "等待生成"
-    return {**item, "candidate": candidate, "sourceCandidates": candidates[:3], "generation": generation, "points": 0, "publicStatus": public_status}
+    job = preview_sample_job_payload(generation)
+    return {
+        **item,
+        "styleId": selected_style,
+        "styleName": style_name_for(selected_style),
+        "candidate": candidate,
+        "sourceCandidates": candidates[:3],
+        "generation": generation,
+        "job": job,
+        "sampleJob": job,
+        "status": job["status"],
+        "error": job.get("error", ""),
+        "points": 0,
+        "publicStatus": public_status,
+    }
 
 
 def preview_sample_payload(selected_style: str, index: int, generate: bool = True) -> dict[str, Any]:

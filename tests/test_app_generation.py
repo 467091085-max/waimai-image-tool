@@ -420,6 +420,66 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(len(signatures), len(set(signatures)))
             self.assertIn("generated-style-sample", {style["sample"]["source"] for style in styles})
 
+    def test_style_options_return_six_fixed_labels_unique_signatures_and_api_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "真店A" / "style-a" / "辣椒炒肉盖码饭.jpg"
+            second = root / "真店B" / "style-b" / "小炒黄牛肉盖码饭.jpg"
+            save_image(first, (190, 120, 80))
+            save_image(second, (190, 120, 80))
+            library = [
+                app_module.LibraryImage("real-a", first, "真店A", "辣椒炒肉盖码饭", app_module.normalize("辣椒炒肉盖码饭"), app_module.grams(app_module.normalize("辣椒炒肉盖码饭")), "real-style-a", "clean", True),
+                app_module.LibraryImage("real-b", second, "真店B", "小炒黄牛肉盖码饭", app_module.normalize("小炒黄牛肉盖码饭"), app_module.grams(app_module.normalize("小炒黄牛肉盖码饭")), "real-style-b", "clean", True),
+            ]
+            rows = [
+                menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(first, "辣椒炒肉盖码饭", "real-style-a")]),
+                menu_row(2, "小炒黄牛肉盖码饭", "单品", [candidate(second, "小炒黄牛肉盖码饭", "real-style-b")]),
+            ]
+
+            app_module.background_signature_for_path.cache_clear()
+            app_module.image_hash_signature_for_path.cache_clear()
+            try:
+                with (
+                    mock.patch.object(app_module, "LIBRARY_DIR", root),
+                    mock.patch.object(app_module, "library_images", return_value=library),
+                    mock.patch.object(app_module, "tencent_ready", return_value=False),
+                ):
+                    styles = app_module.style_options(rows)
+            finally:
+                app_module.background_signature_for_path.cache_clear()
+                app_module.image_hash_signature_for_path.cache_clear()
+
+            self.assertEqual(len(styles), app_module.PREVIEW_SAMPLE_COUNT)
+            self.assertEqual([style["label"] for style in styles], list(app_module.BACKGROUND_LABELS))
+            self.assertEqual([style["name"] for style in styles], list(app_module.BACKGROUND_LABELS))
+            self.assertEqual(len({style["dedupeSignature"] for style in styles}), app_module.PREVIEW_SAMPLE_COUNT)
+            for style in styles:
+                self.assertIn(style["source"], {"real", "generated", "cache"})
+                self.assertIn("imageUrl", style)
+                self.assertIn("backgroundJob", style)
+                self.assertEqual(style["needs_generated_background"], style["needsGeneratedBackground"])
+            self.assertTrue(any(style["source"] == "real" for style in styles))
+            self.assertTrue(any(style["needsGeneratedBackground"] for style in styles))
+
+    def test_style_background_generation_failure_does_not_return_local_fake_when_tencent_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_style_background", side_effect=RuntimeError("hunyuan quota exhausted")),
+                mock.patch.object(app_module, "draw_demo_image") as draw_demo,
+            ):
+                style_candidate = app_module.style_background_candidate("style-5")
+
+            draw_demo.assert_not_called()
+            self.assertEqual(style_candidate["generationStatus"], "failed")
+            self.assertEqual(style_candidate["generationProvider"], "tencent-hunyuan")
+            self.assertTrue(style_candidate["needs_generated_background"])
+            self.assertEqual(style_candidate["url"], "")
+            self.assertEqual(style_candidate["path"], "")
+            self.assertIn("hunyuan quota exhausted", style_candidate["error"])
+
     def test_style_background_sample_can_use_tencent_when_explicitly_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -547,6 +607,60 @@ class AppGenerationTests(unittest.TestCase):
         materialize.assert_not_called()
         self.assertEqual(manifest["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
         self.assertEqual(manifest["samples"][0]["generation"]["status"], "pending")
+
+    def test_preview_sample_entries_filter_drinks_sides_rice_prompts_and_combos(self) -> None:
+        items = [
+            menu_row(1, "百事可乐", "单品", []),
+            menu_row(2, "一碗米饭", "单品", []),
+            menu_row(3, "辣椒包", "单品", []),
+            menu_row(4, "温馨提示勿点", "单品", []),
+            menu_row(5, "红烧肉套餐", "套餐/组合", []),
+            menu_row(6, "辣椒炒肉盖码饭", "单品", []),
+            menu_row(7, "小炒黄牛肉盖码饭", "单品", []),
+        ]
+        for item in items:
+            item["norm"] = app_module.normalize(str(item["name"]))
+
+        with (
+            mock.patch.object(app_module, "parse_menu", return_value={"items": items}),
+            mock.patch.object(app_module, "library_images", return_value=[]),
+        ):
+            entries = app_module.preview_sample_entries()
+
+        names = [entry["item"]["name"] for entry in entries]
+        self.assertEqual(len(entries), app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertIn("辣椒炒肉盖码饭", names)
+        self.assertIn("小炒黄牛肉盖码饭", names)
+        for banned in ("可乐", "米饭", "辣椒包", "提示", "套餐"):
+            self.assertFalse(any(banned in name for name in names))
+        self.assertTrue(all(app_module.preview_sample_item_allowed(entry["item"]) for entry in entries))
+
+    def test_preview_generation_uses_text_to_image_when_source_candidate_does_not_match_dish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong_source = root / "wrong.jpg"
+            save_image(wrong_source)
+            row = menu_row(1, "辣椒炒肉盖码饭", "单品", [candidate(wrong_source, "百事可乐", "style-2")])
+            row["norm"] = app_module.normalize(str(row["name"]))
+
+            def fake_text(row_arg: dict[str, object], style_id: str, quality: str | None, target: Path) -> dict[str, object]:
+                save_image(target, (90, 140, 180))
+                return {"provider": "tencent-hunyuan", "action": "TextToImageLite", "promptType": "text_to_image", "requestId": "txt-preview"}
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_replace_background") as replace,
+                mock.patch.object(app_module, "tencent_text_to_image", side_effect=fake_text) as text_to_image,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            replace.assert_not_called()
+            text_to_image.assert_called_once()
+            self.assertIsNotNone(preview_candidate)
+            self.assertEqual(generation["status"], "succeeded")
+            self.assertEqual(generation["action"], "TextToImageLite")
+            self.assertEqual(preview_candidate["dishName"], "辣椒炒肉盖码饭")
 
 
 if __name__ == "__main__":
