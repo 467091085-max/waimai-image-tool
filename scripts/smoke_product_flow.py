@@ -526,12 +526,8 @@ def run_product_flow(
             run_data = run_response["data"] if isinstance(run_response["data"], dict) else {}
             run_job = run_data.get("job") if isinstance(run_data.get("job"), dict) else {}
             if not run_response["error"] and job_id:
-                refreshed = request_json(client, "GET", f"/api/jobs/{job_id}", retries=2)
-                refreshed_data = refreshed["data"] if isinstance(refreshed["data"], dict) else {}
-                refreshed_job = refreshed_data.get("job") if isinstance(refreshed_data.get("job"), dict) else {}
-                if refreshed_job:
-                    run_job = refreshed_job
-            first_item = first_job_item(run_job)
+                run_job = poll_job_for_formal_result(client, job_id, run_job, provider_configured=provider_configured)
+            first_item = formal_job_item(run_job, provider_configured=provider_configured)
             formal_evidence = formal_result_evidence(first_item, provider_configured=provider_configured)
             run_fields = {
                 "jobId": job_id,
@@ -1036,6 +1032,40 @@ def first_job_item(job: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict):
             return item
     return {}
+
+
+def formal_job_item(job: dict[str, Any], *, provider_configured: bool) -> dict[str, Any]:
+    items = job.get("items") if isinstance(job, dict) else []
+    if isinstance(items, list):
+        completed = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            evidence = formal_result_evidence(item, provider_configured=provider_configured)
+            if evidence.get("imageUrl") and not evidence.get("mockOrSeed"):
+                return item
+            if str(item.get("status") or "").lower() in {"completed", "succeeded"}:
+                completed.append(item)
+        if completed:
+            return completed[0]
+    return first_job_item(job)
+
+
+def poll_job_for_formal_result(client: Any, job_id: str, initial_job: dict[str, Any], *, provider_configured: bool) -> dict[str, Any]:
+    job = initial_job if isinstance(initial_job, dict) else {}
+    for attempt in range(6):
+        item = formal_job_item(job, provider_configured=provider_configured)
+        evidence = formal_result_evidence(item, provider_configured=provider_configured)
+        if evidence.get("imageUrl") or str(job.get("status") or "").lower() in {"failed", "cancelled", "succeeded"}:
+            return job
+        if attempt:
+            time.sleep(2.5)
+        refreshed = request_json(client, "GET", f"/api/jobs/{job_id}", retries=1)
+        refreshed_data = refreshed["data"] if isinstance(refreshed["data"], dict) else {}
+        refreshed_job = refreshed_data.get("job") if isinstance(refreshed_data.get("job"), dict) else {}
+        if refreshed_job:
+            job = refreshed_job
+    return job
 
 
 def extract_image_url(item: dict[str, Any]) -> str:
