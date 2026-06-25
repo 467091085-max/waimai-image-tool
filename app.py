@@ -3950,6 +3950,7 @@ def api_gallery_upload_publish():
     key = gallery_index_key(str(cos["prefix"]))
     client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(data), Key=key, ContentType="application/x-ndjson; charset=utf-8")
     index_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
+    library_images.cache_clear()
     return jsonify(
         {
             "ok": True,

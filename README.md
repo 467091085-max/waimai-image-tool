@@ -181,7 +181,9 @@ PYTHONPATH=.codex_deps:. python3 scripts/push_gallery_via_app.py \
   --base-url https://waimai-image-tool-1.onrender.com \
   --token 你在Render设置的GALLERY_UPLOAD_TOKEN \
   --limit 3 \
-  --publish
+  --publish \
+  --wait-ready 300 \
+  --verify-library
 ```
 
 成功后脚本会输出 `publish.renderEnv.COS_LIBRARY_INDEX_URL`。把这个 URL 填到 Render 的 `COS_LIBRARY_INDEX_URL` 环境变量，重启服务；线上 `/api/library-status` 应显示 `remoteIndex=true`。确认小批量没问题后，再去掉 `--limit 3` 做全量上传。
