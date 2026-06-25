@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -678,13 +679,21 @@ class AppGenerationTests(unittest.TestCase):
                 mock.patch.object(app_module, "EXPORT_DIR", root / "exports"),
                 mock.patch.object(app_module, "build_plan", return_value=plan),
             ):
-                response = client.post("/api/export", json={"style": "style-1", "platforms": ["meituan", "jd"], "format": "jpg"})
+                response = client.post("/api/export", json={"style": "style-1", "platforms": ["meituan", "jd"], "imageFormat": "jpeg"})
+                self.assertEqual(response.status_code, 200)
+                body = response.get_json()
+                download = client.get(body["download"])
 
-            self.assertEqual(response.status_code, 200)
-            body = response.get_json()
             self.assertEqual(body["images"], 2)
             self.assertEqual(body["platforms"], ["meituan", "jd"])
             self.assertRegex(body["download"], r"^/download/export_.*?/result\.zip$")
+            self.assertEqual(download.status_code, 200)
+            self.assertEqual(download.headers["Content-Disposition"].split("filename=", 1)[1], "result.zip")
+            zip_path = root / "exports" / body["download"].split("/download/", 1)[1]
+            with zipfile.ZipFile(zip_path) as zf:
+                image_names = sorted(name for name in zf.namelist() if name.startswith("images/"))
+                self.assertTrue(any("/meituan_" in name and name.endswith(".jpg") for name in image_names))
+                self.assertTrue(any("/jd_" in name and name.endswith(".jpeg") for name in image_names))
 
     def test_export_api_returns_stable_json_when_zip_fails(self) -> None:
         plan = {"results": [menu_row(1, "辣椒炒肉盖码饭", "单品", [])]}
@@ -703,6 +712,22 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(body["code"], "export_failed")
         self.assertIn("导出失败", body["error"])
         self.assertNotIn("is not valid", body["error"])
+
+    def test_download_returns_json_for_missing_or_invalid_export_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "exports").mkdir()
+            app_module.app.config["TESTING"] = True
+            client = app_module.app.test_client()
+
+            with mock.patch.object(app_module, "EXPORT_DIR", root / "exports"):
+                missing = client.get("/download/missing/result.zip")
+                traversal = client.get("/download/../secret.zip")
+
+            self.assertEqual(missing.status_code, 404)
+            self.assertEqual(missing.get_json()["code"], "download_not_found")
+            self.assertEqual(traversal.status_code, 404)
+            self.assertEqual(traversal.get_json()["code"], "download_not_found")
 
     def test_style_preview_manifest_does_not_generate_synchronously(self) -> None:
         with (
