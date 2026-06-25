@@ -338,11 +338,12 @@ def match_category_for(dish: str, norm: str, tags: Iterable[str] | None = None) 
 
 
 def source_bucket(source: str) -> str:
+    raw = str(source or "").lower()
     normalized = normalize(source)
-    if "watermark" in normalized or "watermarkpic" in normalized:
-        return "watermark"
-    if "clean" in normalized or "cleanpic" in normalized:
+    if "clean" in normalized or "cleanpic" in normalized or re.search(r"无.{0,4}水印", raw):
         return "clean"
+    if "watermark" in normalized or "watermarkpic" in normalized or "有水印" in raw or "水印" in raw:
+        return "watermark"
     return source or "unknown"
 
 
@@ -777,6 +778,7 @@ def build_record(
     record.update(flags)
     record["watermark"] = watermark_state_for_record(record)
     record["watermark_state"] = record["watermark"]
+    record["watermark_status"] = record["watermark"]
     return record
 
 

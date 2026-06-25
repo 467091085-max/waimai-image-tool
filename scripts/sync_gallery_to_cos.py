@@ -34,6 +34,8 @@ DEFAULT_QUALITY = 84
 INDEX_RELATIVE_KEY = "index/library_index.jsonl"
 CONTENT_TYPE_JPEG = "image/jpeg"
 CONTENT_TYPE_JSONL = "application/x-ndjson; charset=utf-8"
+UPLOAD_STATE_DRY_RUN = "dry_run_planned"
+UPLOAD_STATE_UPLOADED = "uploaded"
 
 _KEY_UNSAFE_RE = re.compile(r"[\\/:*?\"<>|\r\n\t]+")
 _SPACE_RE = re.compile(r"\s+")
@@ -106,6 +108,10 @@ def default_region() -> str:
     return first_env("TENCENT_COS_REGION", "TENCENTCLOUD_REGION", "TENCENT_REGION", "COS_REGION", default="ap-guangzhou")
 
 
+def default_prefix() -> str:
+    return first_env("TENCENT_COS_PREFIX", "COS_PREFIX", default=DEFAULT_PREFIX)
+
+
 def default_secret_id() -> str:
     return first_env("TENCENTCLOUD_SECRET_ID", "TENCENT_SECRET_ID", "COS_SECRET_ID")
 
@@ -133,7 +139,9 @@ def validate_upload_config(bucket: str, region: str) -> None:
         raise RuntimeError(
             "COS upload is disabled because Tencent Cloud configuration is incomplete; "
             f"missing: {', '.join(missing)}. "
-            "Run without --no-dry-run to scan and write the JSONL index locally."
+            "Set these values in .env.cos or the shell before using --no-dry-run. "
+            "Run with --dry-run to scan and write the JSONL index locally. "
+            "No COS objects were uploaded."
         )
 
 
@@ -254,12 +262,15 @@ def build_index_record(
         "local_path": str(record.get("local_path") or record.get("path") or ""),
         "relative_path": record.get("relative_path"),
         "cos_key": key,
+        "object_key": key,
         "cos_bucket": bucket,
         "cos_region": region,
         "url": public_url,
         "public_url": public_url,
+        "remote_url": public_url,
         "watermark": watermark,
         "watermark_state": watermark,
+        "watermark_status": watermark,
         "width": prepared.width,
         "height": prepared.height,
         "original_width": record.get("width"),
@@ -328,8 +339,14 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     bucket = str(config.bucket or "").strip()
     region = str(config.region or "").strip() or "ap-guangzhou"
     limit = config.limit if config.limit and config.limit > 0 else None
+    warnings: list[str] = []
     if not config.dry_run:
         validate_upload_config(bucket, region)
+    elif not bucket:
+        warnings.append(
+            "Dry-run generated deterministic cos_key values, but url/public_url are empty because "
+            "TENCENT_COS_BUCKET/COS_BUCKET or --bucket is not set."
+        )
     result = scan_library(
         clean_dir=config.clean_dir,
         watermark_dir=config.watermark_dir,
@@ -355,6 +372,11 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
             if client is not None:
                 upload_bytes(client, bucket, str(index_record["cos_key"]), prepared.data, CONTENT_TYPE_JPEG)
                 uploaded_images += 1
+                index_record["upload_state"] = UPLOAD_STATE_UPLOADED
+                index_record["uploaded"] = True
+            else:
+                index_record["upload_state"] = UPLOAD_STATE_DRY_RUN
+                index_record["uploaded"] = False
             index_records.append(index_record)
         except Exception as exc:
             sync_errors.append(
@@ -367,12 +389,24 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
 
     index_path = write_index(index_records, output)
     index_uploaded = False
+    index_upload_error = ""
     if client is not None:
-        upload_bytes(client, bucket, index_key(prefix), index_path.read_bytes(), CONTENT_TYPE_JSONL)
-        index_uploaded = True
+        if sync_errors:
+            index_upload_error = (
+                "Skipped COS index upload because one or more gallery images failed to upload or prepare. "
+                "The remote index was not changed."
+            )
+            warnings.append(index_upload_error)
+        else:
+            try:
+                upload_bytes(client, bucket, index_key(prefix), index_path.read_bytes(), CONTENT_TYPE_JSONL)
+                index_uploaded = True
+            except Exception as exc:
+                index_upload_error = mask_configured_secrets(str(exc))
+                warnings.append(f"COS index upload failed: {index_upload_error}")
 
     scan_summary = result.summary()
-    fatal_errors = bool(sync_errors) and not config.dry_run
+    fatal_errors = bool(sync_errors or index_upload_error) and not config.dry_run
     reusable_images = int(scan_summary.get("reusable") or 0)
     watermarked_reference_images = int(
         scan_summary.get("watermark")
@@ -390,6 +424,16 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     dry_run_upload_skipped = len(index_records) if config.dry_run else 0
     skipped_images = limit_skipped + dry_run_upload_skipped
     error_images = len(result.errors) + len(sync_errors)
+    remote_ready = bool(index_uploaded and not sync_errors and not config.dry_run)
+    if config.dry_run:
+        upload_status = "dry_run"
+        message = "Dry-run complete: local JSONL and summary were written; no COS objects were uploaded."
+    elif remote_ready:
+        upload_status = "uploaded"
+        message = "COS upload complete: images and remote JSONL index were uploaded."
+    else:
+        upload_status = "failed"
+        message = "COS upload failed or was incomplete; remote JSONL index was not published."
     sync_counts = {
         "totalImages": result.total,
         "processedImages": len(index_records),
@@ -402,10 +446,15 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
         "limitSkipped": limit_skipped,
         "skippedImages": skipped_images,
         "errorImages": error_images,
+        "indexUploaded": index_uploaded,
     }
     summary = {
         "ok": not fatal_errors,
         "dryRun": bool(config.dry_run),
+        "uploadMode": "dry-run" if config.dry_run else "live",
+        "uploadStatus": upload_status,
+        "remoteReady": remote_ready,
+        "message": message,
         "bucket": bucket,
         "region": region,
         "prefix": prefix,
@@ -431,10 +480,12 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
         "uploadedImages": uploaded_images,
         "wouldUploadImages": len(index_records) if config.dry_run else 0,
         "indexUploaded": index_uploaded,
+        "indexUploadError": index_upload_error,
         "scanErrorCount": len(result.errors),
         "syncErrorCount": len(sync_errors),
         "scanErrors": result.errors[:20],
         "syncErrors": sync_errors[:20],
+        "warnings": warnings,
         "sync": sync_counts,
         "scan": scan_summary,
     }
@@ -454,7 +505,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--watermark-dir", default=str(DEFAULT_WATERMARK_DIR), help="local watermarkpic directory")
     parser.add_argument("--bucket", default=default_bucket(), help="Tencent COS bucket, e.g. waimai-image-tool-125xxxx")
     parser.add_argument("--region", default=default_region(), help="Tencent COS region, e.g. ap-guangzhou")
-    parser.add_argument("--prefix", default=DEFAULT_PREFIX, help="COS key prefix")
+    parser.add_argument("--prefix", default=default_prefix(), help="COS key prefix")
     parser.add_argument("--limit", type=int, default=0, help="max images to index/upload; 0 means all")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="local JSONL index output path")
     parser.add_argument("--max-side", type=int, default=DEFAULT_MAX_SIDE, help="max uploaded JPEG edge; 0 disables resizing")

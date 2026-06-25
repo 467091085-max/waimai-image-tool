@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import urllib.parse
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -156,6 +157,62 @@ class RemoteGalleryRuntimeTests(unittest.TestCase):
                 self.assertEqual(status["indexError"], "")
                 self.assertEqual(status["sources"]["clean"], 1)
                 self.assertEqual(status["sources"]["watermark"], 1)
+
+    def test_cos_key_bucket_region_are_enough_for_remote_gallery_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            library_dir = root / "library"
+            library_dir.mkdir()
+            index_path = root / "library_index.jsonl"
+            cos_key = "waimai-gallery/clean/云端湘菜馆/abcdef1234567890.jpg"
+            expected_url = (
+                "https://demo-gallery-1250000000.cos.ap-guangzhou.myqcloud.com/"
+                f"{urllib.parse.quote(cos_key, safe='/%')}"
+            )
+            write_jsonl(
+                index_path,
+                [
+                    {
+                        "id": "remote-cos-key-001",
+                        "source": "clean",
+                        "store": "云端湘菜馆",
+                        "dish": "红烧牛肉",
+                        "canonical_norm": "红烧牛肉",
+                        "match_family": "meat",
+                        "match_kind": "单品",
+                        "match_category": "single",
+                        "style_id": "cos-style-key-only",
+                        "cos_key": cos_key,
+                        "cos_bucket": "demo-gallery-1250000000",
+                        "cos_region": "ap-guangzhou",
+                        "reusable": True,
+                        "watermark": "none",
+                    },
+                ],
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "LIBRARY_INDEX_PATH": str(index_path),
+                        "LIBRARY_SOURCE_DIRS": str(root / "missing-source"),
+                    },
+                ),
+                mock.patch.object(app_module, "LIBRARY_DIR", library_dir),
+                mock.patch.object(app_module, "ensure_demo_data"),
+            ):
+                app_module.library_images.cache_clear()
+                library = app_module.library_images()
+                remote = next(image for image in library if image.image_id == "remote-cos-key-001")
+
+                self.assertEqual(remote.remote_url, expected_url)
+                self.assertEqual(remote.cos_key, cos_key)
+                self.assertTrue(remote.reusable)
+
+                status = app_module.app.test_client().get("/api/library-status").get_json()
+                self.assertEqual(status["remoteImages"], 1)
+                self.assertEqual(status["indexImages"], 1)
 
     def test_index_failure_keeps_status_endpoint_alive_with_seed_gallery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

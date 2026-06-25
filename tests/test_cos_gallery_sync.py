@@ -12,8 +12,10 @@ from unittest import mock
 
 from PIL import Image
 
+from library_index import source_bucket
 from scripts.sync_gallery_to_cos import (
     SyncConfig,
+    UPLOAD_STATE_DRY_RUN,
     cos_key_for_record,
     load_env_file,
     main,
@@ -65,6 +67,8 @@ class CosGallerySyncTest(unittest.TestCase):
 
             self.assertTrue(summary["ok"])
             self.assertTrue(summary["dryRun"])
+            self.assertEqual(summary["uploadStatus"], "dry_run")
+            self.assertFalse(summary["remoteReady"])
             self.assertEqual(summary["indexedTotal"], 2)
             self.assertEqual(summary["uploadedImages"], 0)
             self.assertEqual(summary["wouldUploadImages"], 2)
@@ -72,6 +76,7 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertEqual(summary["reusableImages"], 1)
             self.assertEqual(summary["watermarkedReferenceImages"], 1)
             self.assertEqual(summary["uploadedSuccess"], 0)
+            self.assertFalse(summary["indexUploaded"])
             self.assertEqual(summary["skippedImages"], 2)
             self.assertEqual(summary["errorImages"], 0)
             self.assertEqual(summary["sync"]["uploadSkipped"], 2)
@@ -103,12 +108,17 @@ class CosGallerySyncTest(unittest.TestCase):
                 "local_path",
                 "relative_path",
                 "cos_key",
+                "object_key",
                 "cos_bucket",
                 "cos_region",
                 "url",
                 "public_url",
+                "remote_url",
+                "upload_state",
+                "uploaded",
                 "watermark",
                 "watermark_state",
+                "watermark_status",
                 "width",
                 "height",
                 "sha1",
@@ -122,6 +132,12 @@ class CosGallerySyncTest(unittest.TestCase):
             for record in records:
                 self.assertGreaterEqual(record.keys(), required)
                 self.assertTrue(record["public_url"].startswith("https://demo-gallery-1250000000.cos.ap-guangzhou.myqcloud.com/"))
+                self.assertEqual(record["url"], record["public_url"])
+                self.assertEqual(record["remote_url"], record["public_url"])
+                self.assertEqual(record["object_key"], record["cos_key"])
+                self.assertEqual(record["upload_state"], UPLOAD_STATE_DRY_RUN)
+                self.assertFalse(record["uploaded"])
+                self.assertEqual(record["watermark_status"], record["watermark_state"])
 
             clean = next(record for record in records if record["source"] == "clean")
             self.assertEqual((clean["width"], clean["height"]), (80, 40))
@@ -193,6 +209,63 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertIn("Tencent Cloud configuration is incomplete", payload["error"])
             self.assertIn("TENCENTCLOUD_SECRET_ID", payload["error"])
             self.assertIn("TENCENTCLOUD_SECRET_KEY", payload["error"])
+            self.assertIn("No COS objects were uploaded", payload["error"])
+
+    def test_live_upload_failure_does_not_publish_remote_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clean_dir = root / "cleanpic"
+            watermark_dir = root / "watermarkpic"
+            output = root / "library_index.jsonl"
+            make_image(clean_dir / "测试门店" / "招牌牛肉.png")
+            watermark_dir.mkdir()
+            upload_calls: list[str] = []
+
+            def fail_image_upload(_client, _bucket, key, _data, _content_type):
+                upload_calls.append(key)
+                raise RuntimeError("simulated image upload failure")
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "TENCENTCLOUD_SECRET_ID": "secret-id",
+                        "TENCENTCLOUD_SECRET_KEY": "secret-key",
+                    },
+                    clear=True,
+                ),
+                mock.patch("scripts.sync_gallery_to_cos.create_cos_client", return_value=object()),
+                mock.patch("scripts.sync_gallery_to_cos.upload_bytes", side_effect=fail_image_upload),
+            ):
+                summary = sync_gallery(
+                    SyncConfig(
+                        clean_dir=clean_dir,
+                        watermark_dir=watermark_dir,
+                        bucket="demo-gallery-1250000000",
+                        region="ap-guangzhou",
+                        dry_run=False,
+                        output=output,
+                    )
+                )
+
+            self.assertFalse(summary["ok"])
+            self.assertEqual(summary["uploadStatus"], "failed")
+            self.assertFalse(summary["remoteReady"])
+            self.assertFalse(summary["indexUploaded"])
+            self.assertEqual(summary["indexedTotal"], 0)
+            self.assertEqual(summary["uploadedSuccess"], 0)
+            self.assertEqual(summary["syncErrorCount"], 1)
+            self.assertIn("remote JSONL index was not published", summary["message"])
+            self.assertTrue(any("remote index was not changed" in warning for warning in summary["warnings"]))
+            self.assertEqual(len(upload_calls), 1)
+            self.assertTrue(output.exists())
+            self.assertEqual(output.read_text(encoding="utf-8"), "")
+
+    def test_source_bucket_understands_chinese_watermark_labels(self) -> None:
+        self.assertEqual(source_bucket("无水印图库"), "clean")
+        self.assertEqual(source_bucket("无品牌水印菜品图"), "clean")
+        self.assertEqual(source_bucket("有水印图库"), "watermark")
+        self.assertEqual(source_bucket("watermarkpic"), "watermark")
 
     def test_cos_key_naming_is_stable(self) -> None:
         record = {"source": "clean", "store": "A 店", "sha1": "a" * 40}
