@@ -29,13 +29,13 @@
       <div class="hero-copy">
         <span class="eyebrow">整店出图</span>
         <h2>把一张菜单，变成一套统一风格的菜品图</h2>
-        <p>你只需要走三步：上传菜单、免费预览 6 张风格样图、扣积分生成正式图。费用按图片张数结算。</p>
+        <p>上传菜单后自动解析，选择背景并生成 6 张免费样图，满意后再扣积分生成正式图，最后按平台尺寸导出。</p>
       </div>
       <div class="action-rail">
         <button id="chooseMenuBtn" class="round-step active" type="button">
           <i>1</i>
           <span class="step-copy">
-            <b>选择菜单</b>
+            <b>上传菜单</b>
             <span>XLS / XLSX 上传后自动分析</span>
           </span>
           <em>点击上传</em>
@@ -43,13 +43,29 @@
         <button id="startJobBtn" class="round-step" type="button" disabled>
           <i>2</i>
           <span class="step-copy">
-            <b>风格预览</b>
-            <span>自动展示 6 张免费样图</span>
+            <b>选择风格</b>
+            <span>展示 6 张背景卡</span>
           </span>
-          <em>菜单后自动开始</em>
+          <em>等待菜单</em>
+        </button>
+        <button id="sampleShortcutBtn" class="round-step" type="button" disabled>
+          <i>3</i>
+          <span class="step-copy">
+            <b>免费样图</b>
+            <span>生成 6 张单品预览</span>
+          </span>
+          <em>选择背景后可用</em>
+        </button>
+        <button id="formalShortcutBtn" class="round-step" type="button" disabled>
+          <i>4</i>
+          <span class="step-copy">
+            <b>正式出图</b>
+            <span>确认扣积分生成</span>
+          </span>
+          <em>样图后可用</em>
         </button>
         <button id="exportShortcutBtn" class="round-step" type="button" disabled>
-          <i>3</i>
+          <i>5</i>
           <span class="step-copy">
             <b>导出图片</b>
             <span>单张保存或打包 ZIP</span>
@@ -60,7 +76,7 @@
       </div>
       <div class="upload-helper">
         <a class="template-link" href="/download-menu-template">下载标准菜单模板</a>
-        <span>建议按模板填写，系统会更稳定地识别菜品名、分类、价格和套餐。</span>
+        <span>建议按模板填写，系统会更稳定地识别菜品名、分类、套餐和备注。</span>
       </div>
       <div id="menuStatus" class="menu-status">等待选择菜单</div>
     </section>
@@ -104,6 +120,13 @@
             <em>6 张 · 两行三列</em>
           </div>
           <div id="styleBox" class="style-grid"></div>
+          <div id="styleSampleAction" class="sample-action">
+            <div>
+              <b id="sampleActionTitle">先选择一个背景</b>
+              <p id="sampleActionHint">选中后点击按钮，系统会生成 6 张免费单品样图。</p>
+            </div>
+            <button id="generateSamplesBtn" class="primary" type="button" disabled>确认该背景，生成6张免费样图</button>
+          </div>
         </div>
         <div class="visual-block free-sample-block">
           <div class="visual-block-head">
@@ -120,18 +143,18 @@
           <div class="quality-head">
             <div>
               <b>出图质量</b>
-              <p>普通图适合快速上架；精修图适合对质感要求更高的客户。</p>
+              <p>普通出图适合快速上架；精修出图适合需要更高质感的图片。</p>
             </div>
-            <span id="qualityChargeHint">普通出图 · 10积分/张</span>
+            <span id="qualityChargeHint">普通出图 · 100积分/张</span>
           </div>
           <div class="quality-options">
             <label class="quality-option">
               <input class="quality-radio" type="radio" name="quality" value="standard" checked>
-              <span><b>普通出图</b><em>10积分/张</em></span>
+              <span><b>普通出图</b><em>100积分/张</em></span>
             </label>
             <label class="quality-option premium">
               <input class="quality-radio" type="radio" name="quality" value="premium">
-              <span><b>精修出图</b><em>20积分/张</em></span>
+              <span><b>精修出图</b><em>200积分/张</em></span>
             </label>
           </div>
         </div>
@@ -139,22 +162,22 @@
           <div class="platform-head">
             <div>
               <b>交付平台和尺寸</b>
-              <p>任选 1 个平台免费；每多选 1 个平台，额外 100 积分/单。</p>
+              <p>任选 1 个平台不加价；第二、第三个平台各 +100 积分。</p>
             </div>
             <span id="platformChargeHint">请选择至少 1 个平台</span>
           </div>
           <div id="platformOptions" class="platform-options">
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="meituan">
-              <span><b>美团外卖</b><em>800×600 · ≤5MB · 选中免费</em></span>
+              <span><b>美团</b><em>800x600，4:3，<=5MB，首个平台不加积分</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="taobao">
-              <span><b>淘宝外卖/饿了么</b><em>800×800 · ≤20MB · 加选 +100积分</em></span>
+              <span><b>淘宝/饿了么</b><em>800x800，1:1，<=20MB，首个平台不加积分</em></span>
             </label>
             <label class="platform-option">
               <input class="platform-check" type="checkbox" value="jd">
-              <span><b>京东外卖/京东秒送</b><em>800×800 · ≤5MB · 加选 +100积分</em></span>
+              <span><b>京东</b><em>800x800，1:1，<=5MB，首个平台不加积分</em></span>
             </label>
           </div>
         </div>
@@ -179,8 +202,9 @@
                 <option value="white">白色</option>
               </select>
             </label>
-            <label id="watermarkLogoWrap">上传 Logo
+            <label id="watermarkLogoWrap">上传 Logo（透明 PNG）
               <input id="watermarkLogo" type="file" accept="image/png,.png">
+              <small>预览只显示 Logo 本体，不添加外圈或底块。</small>
             </label>
             <label>位置
               <select id="watermarkPosition">
@@ -199,16 +223,16 @@
             </label>
           </div>
           <div id="watermarkDemo" class="watermark-demo">
-            <span>水印预览 · 美团外卖 800×600</span>
+            <span>水印预览 · 美团 800x600</span>
             <div class="watermark-preview-canvas"></div>
           </div>
         </div>
-        <div class="style-confirm">
+        <div id="styleConfirmBox" class="style-confirm">
           <div>
             <b id="selectedStyleHint">还没有选择风格</b>
-            <p id="confirmChargeHint">确认后会扣除本单积分，并生成全部正式图。</p>
+            <p id="confirmChargeHint">先生成 6 张免费样图，确认满意后再扣积分生成全部正式图。</p>
           </div>
-          <button id="confirmStyleBtn" class="primary" disabled>确认风格，生成正式图</button>
+          <button id="confirmStyleBtn" class="primary" disabled>确认扣积分，生成正式图</button>
         </div>
       </div>
     </section>
@@ -241,8 +265,8 @@
           <select id="platformSelect">
             <option value="purchased">导出已选平台</option>
             <option value="meituan">只导出美团</option>
-            <option value="taobao">只导出淘宝外卖/饿了么</option>
-            <option value="jd">只导出京东外卖/京东秒送</option>
+            <option value="taobao">只导出淘宝/饿了么</option>
+            <option value="jd">只导出京东</option>
           </select>
         </label>
         <label>导出范围
@@ -255,8 +279,9 @@
         </label>
         <label>图片格式
           <select id="formatSelect">
-            <option value="jpg">JPG</option>
+            <option value="jpg">JPG/PNG/JPEG 兼容（默认 JPG）</option>
           </select>
+          <span class="field-note">JPG/PNG/JPEG 兼容，默认导出 JPG。</span>
         </label>
         <button id="exportZipBtn" class="primary" disabled>打包导出 ZIP</button>
       </div>
@@ -269,7 +294,7 @@
       <button id="closeRechargeBtn" class="modal-close">×</button>
       <span class="eyebrow">充值中心</span>
       <h3>充值积分</h3>
-      <p id="rateText">1 元 = 10 积分</p>
+      <p id="rateText">选择积分包，充值后即可生成正式图片</p>
       <div id="rechargePackages" class="recharge-grid"></div>
       <div class="custom-recharge">
         <div>
@@ -293,7 +318,7 @@
       <p>填写你想要修改的要求，例如“加小米辣”“去掉葱花”“换成白色餐具”。</p>
       <textarea id="refinePrompt" class="prompt-input" rows="5" placeholder="请输入精修要求"></textarea>
       <div class="modal-actions">
-        <span id="refinePrice">自定义修改：10 积分/张</span>
+        <span id="refinePrice">自定义修改：150 积分/张</span>
         <button id="submitRefineBtn" class="primary">确认修改</button>
       </div>
       <p class="small-note">适合加小米辣、去葱花、换餐具、背景更亮等一句话能说清的修改。</p>
