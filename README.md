@@ -161,6 +161,31 @@ PYTHONPATH=.codex_deps:. python3 scripts/sync_gallery_to_cos.py \
 
 小批量成功后，确认 summary 里 `uploadStatus=uploaded`、`remoteReady=true`、`indexUploaded=true`，再把 `renderEnv.COS_LIBRARY_INDEX_URL` 填到 Render，然后重启服务或等待自动部署；线上 `/api/library-status` 应显示 `remoteIndex=true` 且 `remoteImages/indexImages` 大于 0。正式全量上传前先检查 `*.summary.json`，脚本不会打印 SecretId/SecretKey。COS 桶如果是私有读，线上读取索引后还需要按业务侧策略生成签名 URL 或通过后端代理读取。
 
+如果腾讯云 Secret 只配置在 Render，不想放到 Mac 本地，可以用 Render 代传 COS：
+
+1. 在 Render 环境变量里增加 `GALLERY_UPLOAD_TOKEN`，值用一串随机密码，例如 32 位以上。
+2. 等 Render 自动部署完成后，在 Mac 本地先小批量 dry-run：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 scripts/push_gallery_via_app.py \
+  --base-url https://waimai-image-tool-1.onrender.com \
+  --token 你在Render设置的GALLERY_UPLOAD_TOKEN \
+  --limit 3 \
+  --dry-run
+```
+
+3. 小批量真实上传并发布索引：
+
+```bash
+PYTHONPATH=.codex_deps:. python3 scripts/push_gallery_via_app.py \
+  --base-url https://waimai-image-tool-1.onrender.com \
+  --token 你在Render设置的GALLERY_UPLOAD_TOKEN \
+  --limit 3 \
+  --publish
+```
+
+成功后脚本会输出 `publish.renderEnv.COS_LIBRARY_INDEX_URL`。把这个 URL 填到 Render 的 `COS_LIBRARY_INDEX_URL` 环境变量，重启服务；线上 `/api/library-status` 应显示 `remoteIndex=true`。确认小批量没问题后，再去掉 `--limit 3` 做全量上传。
+
 从 Mac 的 `cleanpic` 生成线上真实种子图库：
 
 ```bash

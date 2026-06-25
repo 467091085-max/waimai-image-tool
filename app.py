@@ -48,7 +48,8 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 LIBRARY_DIR = DATA_DIR / "library"
 EXPORT_DIR = DATA_DIR / "exports"
 MODEL_INPUT_DIR = DATA_DIR / "model_inputs"
-for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR, MODEL_INPUT_DIR):
+GALLERY_UPLOAD_DIR = DATA_DIR / "gallery_uploads"
+for folder in (UPLOAD_DIR, LIBRARY_DIR, EXPORT_DIR, MODEL_INPUT_DIR, GALLERY_UPLOAD_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -91,6 +92,7 @@ GENERATION_JOB_SYNC_BATCH_SIZE = int(os.environ.get("GENERATION_JOB_SYNC_BATCH_S
 GENERATION_JOB_ASYNC_RETURN_GRACE_MS = int(os.environ.get("GENERATION_JOB_ASYNC_RETURN_GRACE_MS", "50"))
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
 DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
+DEFAULT_GALLERY_COS_PREFIX = "waimai-gallery"
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
 _ACTIVE_GENERATION_JOB_THREADS: dict[str, threading.Thread] = {}
@@ -668,6 +670,69 @@ def upload_model_input_to_cos(target: Path) -> str:
     with target.open("rb") as file_obj:
         client.put_object(Bucket=cos["bucket"], Body=file_obj, Key=key, ContentType="image/jpeg")
     return client.get_presigned_url(Method="GET", Bucket=cos["bucket"], Key=key, Expired=3600)
+
+
+def create_cos_client_from_config(cos: dict[str, Any]):
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+    except Exception as exc:
+        raise RuntimeError("COS upload requires cos-python-sdk-v5") from exc
+    config = CosConfig(Region=cos["region"], SecretId=cos["secret_id"], SecretKey=cos["secret_key"], Scheme="https")
+    return CosS3Client(config)
+
+
+def public_cos_url(bucket: str, region: str, key: str) -> str:
+    if not bucket or not region or not key:
+        return ""
+    return f"https://{bucket}.cos.{region}.myqcloud.com/{urllib.parse.quote(key.lstrip('/'), safe='/%')}"
+
+
+def gallery_cos_prefix() -> str:
+    return (os.environ.get("TENCENT_COS_GALLERY_PREFIX") or os.environ.get("GALLERY_COS_PREFIX") or DEFAULT_GALLERY_COS_PREFIX).strip().strip("/") or DEFAULT_GALLERY_COS_PREFIX
+
+
+def gallery_index_key(prefix: str | None = None) -> str:
+    return f"{(prefix or gallery_cos_prefix()).strip().strip('/')}/index/library_index.jsonl"
+
+
+def gallery_upload_token() -> str:
+    return os.environ.get("GALLERY_UPLOAD_TOKEN", "").strip()
+
+
+def gallery_upload_session_id(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", text):
+        return hashlib.sha1(f"{time.time()}:{text}".encode("utf-8")).hexdigest()[:18]
+    return text
+
+
+def gallery_upload_session_path(session: str) -> Path:
+    return GALLERY_UPLOAD_DIR / f"{gallery_upload_session_id(session)}.jsonl"
+
+
+def gallery_upload_auth_error(payload: dict[str, Any] | None = None):
+    expected = gallery_upload_token()
+    if not expected:
+        return "未配置 GALLERY_UPLOAD_TOKEN，图库远程上传接口已关闭"
+    supplied = (
+        request.headers.get("X-Gallery-Upload-Token")
+        or request.headers.get("X-Admin-Upload-Token")
+        or str((payload or {}).get("token") or "")
+    ).strip()
+    auth = request.headers.get("Authorization", "").strip()
+    if not supplied and auth.lower().startswith("bearer "):
+        supplied = auth.split(" ", 1)[1].strip()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return "图库上传 token 无效"
+    return ""
+
+
+def ensure_gallery_cos_ready() -> dict[str, Any]:
+    cos = tencent_cos_config()
+    if not cos["ready"]:
+        raise RuntimeError("Render 未配置腾讯云 COS Secret/Bucket/Region，无法代传真实图库")
+    cos["prefix"] = gallery_cos_prefix()
+    return cos
 
 
 def external_image_path(image_id_with_ext: str) -> Path | None:
@@ -3774,6 +3839,127 @@ def api_library_status():
 @app.get("/api/tencent-status")
 def api_tencent_status():
     return jsonify(tencent_status_payload())
+
+
+@app.get("/api/admin/gallery-upload/status")
+def api_gallery_upload_status():
+    cos = tencent_cos_config()
+    prefix = gallery_cos_prefix()
+    index_url = public_cos_url(cos.get("bucket", ""), cos.get("region", ""), gallery_index_key(prefix)) if cos.get("bucket") else ""
+    return jsonify(
+        {
+            "enabled": bool(gallery_upload_token()),
+            "cosReady": bool(cos.get("ready")),
+            "bucket": cos.get("bucket") if cos.get("ready") else "",
+            "region": cos.get("region"),
+            "prefix": prefix,
+            "indexKey": gallery_index_key(prefix),
+            "indexUrl": index_url,
+            "renderEnv": {"COS_LIBRARY_INDEX_URL": index_url} if index_url else {},
+        }
+    )
+
+
+@app.post("/api/admin/gallery-upload/batch")
+def api_gallery_upload_batch():
+    payload = request.get_json(silent=True) or {}
+    auth_error = gallery_upload_auth_error(payload)
+    if auth_error:
+        return jsonify({"error": auth_error, "code": "gallery_upload_auth_failed"}), 403
+    try:
+        cos = ensure_gallery_cos_ready()
+        client = create_cos_client_from_config(cos)
+    except Exception as exc:
+        return jsonify({"error": str(exc), "code": "gallery_cos_not_ready"}), 503
+
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return jsonify({"error": "records 不能为空", "code": "empty_gallery_batch"}), 400
+    session = gallery_upload_session_id(str(payload.get("session") or "default"))
+    session_path = gallery_upload_session_path(session)
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    uploaded: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    prefix = str(cos["prefix"]).strip().strip("/")
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            errors.append({"index": str(index), "error": "record item must be an object"})
+            continue
+        record = item.get("record") if isinstance(item.get("record"), dict) else {}
+        image_b64 = str(item.get("image") or "")
+        key = str(record.get("cos_key") or record.get("object_key") or "").strip().lstrip("/")
+        if not key or not key.startswith(f"{prefix}/"):
+            errors.append({"index": str(index), "error": f"invalid cos_key: {key[:80]}"})
+            continue
+        try:
+            image_bytes = base64.b64decode(image_b64, validate=True)
+            if not image_bytes:
+                raise ValueError("empty image")
+            content_type = str(item.get("contentType") or "image/jpeg")
+            client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(image_bytes), Key=key, ContentType=content_type)
+            remote_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
+            record.update(
+                {
+                    "cos_bucket": cos["bucket"],
+                    "cos_region": cos["region"],
+                    "cos_key": key,
+                    "object_key": key,
+                    "url": remote_url,
+                    "public_url": remote_url,
+                    "remote_url": remote_url,
+                    "upload_state": "uploaded",
+                    "uploaded": True,
+                }
+            )
+            uploaded.append(record)
+        except Exception as exc:
+            errors.append({"index": str(index), "cos_key": key, "error": str(exc)[:300]})
+    if uploaded:
+        with session_path.open("a", encoding="utf-8") as handle:
+            for record in uploaded:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    return jsonify(
+        {
+            "ok": not errors,
+            "session": session,
+            "uploaded": len(uploaded),
+            "errors": errors,
+            "sessionRecords": sum(1 for _ in session_path.open("r", encoding="utf-8")) if session_path.exists() else 0,
+        }
+    ), 207 if errors else 200
+
+
+@app.post("/api/admin/gallery-upload/publish")
+def api_gallery_upload_publish():
+    payload = request.get_json(silent=True) or {}
+    auth_error = gallery_upload_auth_error(payload)
+    if auth_error:
+        return jsonify({"error": auth_error, "code": "gallery_upload_auth_failed"}), 403
+    try:
+        cos = ensure_gallery_cos_ready()
+        client = create_cos_client_from_config(cos)
+    except Exception as exc:
+        return jsonify({"error": str(exc), "code": "gallery_cos_not_ready"}), 503
+    session = gallery_upload_session_id(str(payload.get("session") or "default"))
+    session_path = gallery_upload_session_path(session)
+    if not session_path.exists():
+        return jsonify({"error": "上传 session 不存在，请先上传 batch", "code": "gallery_session_missing"}), 404
+    data = session_path.read_bytes()
+    if not data.strip():
+        return jsonify({"error": "上传 session 没有索引记录", "code": "gallery_session_empty"}), 400
+    key = gallery_index_key(str(cos["prefix"]))
+    client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(data), Key=key, ContentType="application/x-ndjson; charset=utf-8")
+    index_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
+    return jsonify(
+        {
+            "ok": True,
+            "session": session,
+            "records": len([line for line in data.decode("utf-8", errors="ignore").splitlines() if line.strip()]),
+            "indexKey": key,
+            "indexUrl": index_url,
+            "renderEnv": {"COS_LIBRARY_INDEX_URL": index_url},
+        }
+    )
 
 
 @app.post("/api/jobs")
