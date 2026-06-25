@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 SMOKE_DISH = "招牌辣椒炒肉"
 SMOKE_PROMPT_NOTE = "同菜名、统一背景、外卖主图、无文字/水印/logo/价格、不裁切主体"
+LIVE_ENV_VAR = "WAIMAI_ACCEPTANCE_LIVE"
 
 
 def smoke_item(dish: str = SMOKE_DISH) -> dict[str, Any]:
@@ -240,6 +242,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.live and args.limit != 1:
         parser.error("真实调用必须显式传 --live --limit 1，避免批量消耗额度")
+    if args.live and str(os.environ.get(LIVE_ENV_VAR) or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        parser.error(f"真实调用还必须设置 {LIVE_ENV_VAR}=1，避免误消耗混元额度")
     return args
 
 

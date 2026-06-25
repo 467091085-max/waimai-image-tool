@@ -1,75 +1,80 @@
-# V5 E2E Acceptance Delivery Report
+# V6 E2E Render QA Delivery Report
 
-更新时间：2026-06-25
+更新时间：2026-06-26
 
-## 本次交付
+本模块负责 `feature/v6-e2e-render-qa` 的端到端验收脚本、Render 发布检查文档和小范围测试适配，不修改主业务实现。
 
-本 worker 负责 `feature/v5-e2e-acceptance` 的验收脚本和交付报告，不改核心业务逻辑。
-
-改动范围：
+## 改动范围
 
 ```text
 scripts/smoke_product_flow.py
-scripts/smoke_export.py
+scripts/smoke_hunyuan_live.py
 tests/test_product_flow.py
+tests/test_v6_acceptance_docs.py
+README.md
 PRODUCT_ACCEPTANCE.md
 DELIVERY_REPORT.md
-requirements.txt
 ```
 
 ## 已实现
 
-- `smoke_product_flow.py` 支持 `--base-url local`、`--base-url render` 和完整 URL；`local` 会解析为 `http://127.0.0.1:8790`，不会再把错误字符串当真实 URL 打出去。
-- 验收流程覆盖 `.xls/.xlsx` 菜单上传、单品/套餐/总数/积分、六个风格卡、选风格、六张免费样图槽、正式 job 创建、live 正式出图校验、单品/套餐/all 分组导出 ZIP。
-- live 模式会检查正式结果是否为 seed/mock/local fallback；provider configured=true 但返回假图时，JSON 失败且 Markdown 用红色标出。
-- provider 未配置时，报告会明确说明正式生图真实性卡在 provider 配置前。
-- 默认输出简洁 stdout，同时写完整 JSON 和 Markdown 到 `data/exports/acceptance/`。
-- `smoke_export.py` 增加 ZIP 内容摘要：`zipBytes`、`zipEntries`、`zipImages`、`hasDeliveryReport`。
+- `scripts/smoke_product_flow.py` 增加 V6 gate：上传菜单、六张风格图、六张免费样图、正式生图 job、图片预览契约、单张保存、单张修改扣费、打包导出、积分扣费、library-status。
+- 默认 `--no-live-generate` 不调用 `/api/jobs/<id>/run`，不会消耗真实混元额度。
+- live 正式生图必须同时设置 `WAIMAI_ACCEPTANCE_LIVE=1` 并传 `--live-generate --limit 1`；缺任一条件直接退出。
+- `scripts/smoke_hunyuan_live.py` 同步增加 `WAIMAI_ACCEPTANCE_LIVE=1` 保护。
+- dry-run 会用专用 smoke 用户执行一次充值、正式出图扣费、自定义修改扣费，校验余额变化；这只触发本地账本 API，不触发真实支付。
+- 导出检查新增 `scope=selected` 单张保存 gate，并继续检查 `all/single/combo` ZIP 中的 `delivery_report.xlsx` 和图片数量。
+- live 报告继续检查正式结果是否出现 seed/mock/placeholder/local fallback；命中 red flag 阻塞发布。
+- 文档测试覆盖 README、PRODUCT_ACCEPTANCE、DELIVERY_REPORT 是否包含启动、Render env、smoke 命令、live 安全开关和关键接口。
 
-## 本地验证结果
+## 启动与部署
 
-```bash
-python3 -m py_compile scripts/smoke_product_flow.py scripts/smoke_export.py tests/test_product_flow.py
-python3 -m pytest tests/test_product_flow.py -q
-python3 -m pytest tests/test_image_pipeline.py tests/test_export_remote_media.py -q
-python3 scripts/smoke_export.py
-python3 scripts/smoke_product_flow.py --base-url http://127.0.0.1:8797 --style-first --limit 1 --no-live-generate --stdout summary
-```
-
-结果：
-
-```text
-py_compile: passed
-tests/test_product_flow.py: 6 passed
-tests/test_image_pipeline.py + tests/test_export_remote_media.py: 8 passed
-smoke_export: rows=9, images=9, zipImages=9, hasDeliveryReport=true
-no-live product acceptance: ok=true, passed=21, failed=0, skipped=3
-```
-
-本地 no-live 验收产物：
-
-```text
-data/exports/acceptance/product_acceptance_127.0.0.1_8797_20260625T153431Z.json
-data/exports/acceptance/product_acceptance_127.0.0.1_8797_20260625T153431Z.md
-```
-
-本地可以读取这些目录，线上服务器不可以。当前分支已提供 `scripts/sync_gallery_to_cos.py`：默认 dry-run 扫描 `cleanpic` / `watermarkpic`，生成可上传 COS 的 JSONL 索引和 summary；`cleanpic` 标为可复用，`watermarkpic` 标为 `reference_only` 且不会进入直接复用候选。上线前还需要主线程拿生产 COS 环境变量执行真实全量上传。
-
-说明：本地环境未配置腾讯正式生图凭证，no-live 模式跳过 `/api/jobs/<id>/run`，所以正式出图真实性需要主线程在 Render 或已配置腾讯/COS 的环境跑 live smoke。
-
-## 主线程合并后建议命令
-
-安装依赖：
+本地启动：
 
 ```bash
 python3 -m pip install -r requirements.txt
+PORT=8790 PYTHONPATH=. python3 app.py
 ```
+
+Render Start Command：
+
+```bash
+gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180
+```
+
+Render 环境变量：
+
+```text
+TENCENT_HUNYUAN_ENABLED=true
+TENCENTCLOUD_SECRET_ID=你的 SecretId
+TENCENTCLOUD_SECRET_KEY=你的 SecretKey
+TENCENTCLOUD_REGION=ap-guangzhou
+PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
+TENCENT_HUNYUAN_MODE=auto
+TENCENT_HUNYUAN_SYNC_LIMIT=6
+TENCENT_IMAGE3_ENABLED=true
+TENCENT_IMAGE3_POLL_TIMEOUT=150
+TENCENT_IMAGE3_POLL_INTERVAL=3
+TENCENT_IMAGE3_FALLBACK_TO_LITE=true
+TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
+TENCENT_COS_REGION=ap-guangzhou
+TENCENT_COS_PREFIX=waimai-model-inputs
+COS_LIBRARY_INDEX_URL=https://<bucket>.cos.<region>.myqcloud.com/waimai-gallery/index/library_index.jsonl
+```
+
+部署后先检查：
+
+```bash
+curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+curl https://waimai-image-tool-1.onrender.com/api/library-status
+```
+
+## 验收命令
 
 本地 dry-run：
 
 ```bash
-PORT=8797 PYTHONPATH=. python3 app.py
-python3 scripts/smoke_product_flow.py --base-url http://127.0.0.1:8797 --style-first --limit 1 --no-live-generate
+python3 scripts/smoke_product_flow.py --base-url local --style-first --limit 1 --no-live-generate
 ```
 
 Render dry-run：
@@ -81,25 +86,26 @@ python3 scripts/smoke_product_flow.py --base-url render --style-first --limit 1 
 Render live one-image gate：
 
 ```bash
-python3 scripts/smoke_product_flow.py --base-url render --style-first --live-generate --limit 1
+WAIMAI_ACCEPTANCE_LIVE=1 python3 scripts/smoke_product_flow.py --base-url render --style-first --live-generate --limit 1
 ```
 
-导出 ZIP smoke：
+独立 ZIP 和混元检查：
 
 ```bash
 python3 scripts/smoke_export.py
+python3 scripts/smoke_hunyuan_live.py
+WAIMAI_ACCEPTANCE_LIVE=1 python3 scripts/smoke_hunyuan_live.py --base-url https://waimai-image-tool-1.onrender.com --live --limit 1
 ```
 
 测试：
 
 ```bash
-python3 -m pytest tests/test_product_flow.py tests/test_image_pipeline.py tests/test_export_remote_media.py -q
+python3 -m py_compile scripts/smoke_product_flow.py scripts/smoke_hunyuan_live.py scripts/smoke_export.py tests/test_product_flow.py tests/test_v6_acceptance_docs.py
+python3 -m unittest tests.test_product_flow tests.test_v6_acceptance_docs
 ```
 
-## 上线前必须完成
+## 当前线上阻塞项
 
-1. 用 `scripts/sync_gallery_to_cos.py --no-dry-run --limit 3` 先做 COS 小批量 live check。
-2. 确认 summary 和 COS 对象后执行真实图库全量上传。
-3. 在线上读取 COS 图库索引，而不是只读仓库内置 seed 图。
-4. 用 1 个真实菜单在线上生成 6 张样图，确认混元真实出图质量和成本。
-5. 再做支付和登录。
+- live one-image gate 必须在 Render 已配置腾讯云密钥和 COS 后执行；仅 dry-run 通过不能证明混元正式出图真实性。
+- `/api/library-status` 若未显示远程 `COS_LIBRARY_INDEX_URL` 成功读取，说明生产图库仍依赖内置 seed 或本地目录，不能作为最终商用发布通过条件。
+- 真实支付、登录、PostgreSQL、后台异步队列仍是产品化阻塞项；本模块只验证现有 MVP 账本和同步 job 链路。

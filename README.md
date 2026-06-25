@@ -101,6 +101,16 @@ PYTHONPATH=.codex_deps:. python3 -m unittest discover -s tests
 PYTHONPATH=.codex_deps:. python3 test_matching_engine.py
 ```
 
+V6 Render 发布验收：
+
+```bash
+PYTHONPATH=. python3 scripts/smoke_product_flow.py --base-url local --style-first --limit 1 --no-live-generate
+PYTHONPATH=. python3 scripts/smoke_product_flow.py --base-url render --style-first --limit 1 --no-live-generate
+WAIMAI_ACCEPTANCE_LIVE=1 PYTHONPATH=. python3 scripts/smoke_product_flow.py --base-url render --style-first --live-generate --limit 1
+```
+
+默认 `--no-live-generate` 只覆盖上传菜单、六张风格图、六张免费样图槽、正式生图 job 创建、图片预览、单张修改扣费、单张保存、打包导出、积分扣费和 `/api/library-status`，不会调用混元正式生图。真实 live 检查必须同时具备 `WAIMAI_ACCEPTANCE_LIVE=1`、`--live-generate` 和 `--limit 1`，避免误消耗混元额度。
+
 真实菜单解析审计：
 
 ```bash

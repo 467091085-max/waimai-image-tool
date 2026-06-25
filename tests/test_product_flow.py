@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 import zipfile
-from io import BytesIO
+from contextlib import redirect_stderr
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from flask import Flask, jsonify, request
 
@@ -54,7 +56,7 @@ def plan_payload(styles: list[dict[str, Any]] | None = None, selected_style: str
         "selectedStyle": selected_style,
         "styles": styles if styles is not None else style_cards(),
         "summary": {"total": 2, "direct": 0, "review": 2, "missing": 0, "points": 200},
-        "pricing": {"standardPoints": 100, "premiumPoints": 200, "customEditPoints": 150},
+        "pricing": {"standardPoints": 100, "premiumPoints": 200, "customEditPoints": 150, "customEditCash": 15, "previewFreeImages": 6},
         "quote": {"points": 200, "cash": 20, "rate": "1 yuan = 10 points"},
         "results": [
             {
@@ -88,7 +90,13 @@ def make_mock_app(
     live_result: str = "tencent",
 ) -> tuple[Flask, dict[str, Any]]:
     app = Flask(__name__)
-    state: dict[str, Any] = {"job_requests": [], "run_requests": [], "export_requests": []}
+    state: dict[str, Any] = {
+        "job_requests": [],
+        "run_requests": [],
+        "export_requests": [],
+        "billing_requests": [],
+        "balances": {},
+    }
 
     @app.get("/")
     def index() -> str:
@@ -102,9 +110,59 @@ def make_mock_app(
     def account():
         return jsonify({"account": {"userId": "smoke-user", "balance": 1200}})
 
+    @app.post("/api/recharge")
+    def recharge():
+        payload = request.get_json() or {}
+        user_id = str(payload.get("userId") or "smoke-user")
+        points = int(payload.get("points") or 0)
+        state["balances"][user_id] = int(state["balances"].get(user_id, 0)) + points
+        transaction = {
+            "orderId": payload.get("orderId"),
+            "eventType": "account_credit",
+            "points": points,
+            "balance": state["balances"][user_id],
+        }
+        state["billing_requests"].append({"kind": "recharge", "payload": payload, "transaction": transaction})
+        return jsonify({"ok": True, "transaction": transaction, "account": {"userId": user_id, "balance": state["balances"][user_id]}})
+
+    @app.post("/api/debit")
+    def debit():
+        payload = request.get_json() or {}
+        user_id = str(payload.get("userId") or "smoke-user")
+        points = int(payload.get("points") or 0)
+        balance = int(state["balances"].get(user_id, 0))
+        if points <= 0:
+            return jsonify({"error": "points required"}), 400
+        if balance < points:
+            return jsonify({"error": "insufficient balance"}), 402
+        state["balances"][user_id] = balance - points
+        transaction = {
+            "orderId": payload.get("orderId"),
+            "eventType": "account_debit",
+            "description": payload.get("description"),
+            "points": points,
+            "balance": state["balances"][user_id],
+        }
+        state["billing_requests"].append({"kind": "debit", "payload": payload, "transaction": transaction})
+        return jsonify({"ok": True, "transaction": transaction, "account": {"userId": user_id, "balance": state["balances"][user_id]}})
+
     @app.get("/api/library-status")
     def library_status():
-        return jsonify({"total": 42, "reusable": 40, "stores": 3, "styles": 6, "sources": {"seed": 42}, "externalDirs": ["/mock/library"]})
+        return jsonify(
+            {
+                "total": 42,
+                "reusable": 40,
+                "stores": 3,
+                "styles": 6,
+                "sources": {"seed": 42},
+                "externalDirs": ["/mock/library"],
+                "remoteIndex": True,
+                "remoteImages": 12,
+                "indexImages": 12,
+                "indexSource": "https://cdn.example.test/library_index.jsonl",
+                "indexError": "",
+            }
+        )
 
     @app.post("/api/upload-menu")
     def upload_menu():
@@ -222,14 +280,23 @@ class ProductFlowSmokeTests(unittest.TestCase):
         self.assertEqual(state["job_requests"][0]["style"], "style-1")
         self.assertEqual(state["job_requests"][0]["selectedRows"], [2])
         self.assertEqual(state["run_requests"], [])
-        self.assertEqual([request["scope"] for request in state["export_requests"]], ["all", "single", "combo"])
+        self.assertEqual([request["scope"] for request in state["export_requests"]], ["selected", "all", "single", "combo"])
+        self.assertEqual([entry["kind"] for entry in state["billing_requests"]], ["recharge", "debit", "debit"])
+        self.assertEqual(state["billing_requests"][1]["payload"]["description"], "正式出图验收扣费")
+        self.assertEqual(state["billing_requests"][2]["payload"]["description"], "自定义修改验收扣费")
         steps = {step["name"]: step for step in report["steps"]}
         self.assertEqual(steps["job_run_live"]["status"], "skipped")
         self.assertEqual(steps["upload_menu:xls"]["status"], "ok")
         self.assertEqual(steps["upload_menu:xlsx"]["status"], "ok")
         self.assertEqual(steps["menu_summary"]["fields"]["combo"], 1)
+        self.assertEqual(steps["single_modify_contract"]["fields"]["customEditPoints"], 150)
+        self.assertEqual(steps["result_preview_contract"]["fields"]["rowsWithAction"], 2)
+        self.assertEqual(steps["billing_formal_debit"]["fields"]["points"], 200)
+        self.assertEqual(steps["single_modify_debit"]["fields"]["points"], 150)
+        self.assertEqual(steps["single_image_export"]["status"], "ok")
         self.assertEqual(steps["free_sample_slots"]["fields"]["sampleCount"], 6)
         self.assertEqual(steps["style_catalog"]["fields"]["fixedMissing"], [])
+        self.assertEqual(steps["library_status"]["fields"]["remoteIndex"], True)
         self.assertIn("style_preview:style-6", steps)
 
     def test_live_generate_runs_one_image_and_reports_export_and_image_url(self) -> None:
@@ -291,6 +358,13 @@ class ProductFlowSmokeTests(unittest.TestCase):
         self.assertIn("resolved", render_note)
         self.assertEqual(bare_url, "https://example.onrender.com")
         self.assertIn("https://", bare_note)
+
+    def test_live_cli_requires_environment_gate_and_limit_one(self) -> None:
+        errors = StringIO()
+        with mock.patch.dict("os.environ", {}, clear=True), redirect_stderr(errors):
+            self.assertEqual(smoke.main(["--base-url", "local", "--live-generate", "--limit", "1"]), 2)
+        with mock.patch.dict("os.environ", {smoke.LIVE_ENV_VAR: "1"}, clear=True), redirect_stderr(errors):
+            self.assertEqual(smoke.main(["--base-url", "local", "--live-generate", "--limit", "2"]), 2)
 
     def test_provider_configured_but_local_fallback_result_is_red_flagged(self) -> None:
         app, _state = make_mock_app(live_result="local-fallback")
