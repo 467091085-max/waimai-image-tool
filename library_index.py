@@ -302,6 +302,17 @@ def source_bucket(source: str) -> str:
     return source or "unknown"
 
 
+def watermark_state_for_record(record: Mapping[str, Any]) -> str:
+    source = source_bucket(str(record.get("source") or record.get("source_kind") or ""))
+    if bool(record.get("has_brand_watermark")) or source == "watermark":
+        return "brand_watermark"
+    if bool(record.get("has_dish_text_watermark")):
+        return "dish_text_watermark"
+    if bool(record.get("suspected_watermark")) or bool(record.get("has_dish_text")):
+        return "suspected_watermark"
+    return "none"
+
+
 def sha1_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha1()
     with path.open("rb") as handle:
@@ -641,6 +652,7 @@ def build_record(
     if make_thumbs and thumb_path is not None:
         make_thumbnail(path, thumb_path, thumb_size)
 
+    style_id = style_id_for_item(store, dish, digest)
     record = {
         "id": digest[:18],
         "sha1": digest,
@@ -649,14 +661,22 @@ def build_record(
         "source_root": str(root),
         "store": store,
         "category_path": category_path,
+        "category": category_path,
         "dish": dish,
+        "name": dish,
         "norm": norm,
-        "style_id": style_id_for_item(store, dish, digest),
+        "canonical": norm,
+        "canonical_dish": norm,
+        "style_id": style_id,
+        "style": style_id,
+        "background": style_id,
+        "background_id": style_id,
         "suffix": path.suffix.lower(),
         "size": stat.st_size,
         "width": width,
         "height": height,
         "path": str(path),
+        "local_path": str(path),
         "relative_path": rel.as_posix(),
         "thumb_path": str(thumb_path) if thumb_path else "",
     }
@@ -677,6 +697,8 @@ def build_record(
         record["is_low_quality_name"] = bool(record.get("is_low_quality_name")) or "low_quality" in extra_tags
     record["is_low_quality"] = "low_quality" in set(record.get("tags") or [])
     record.update(flags)
+    record["watermark"] = watermark_state_for_record(record)
+    record["watermark_state"] = record["watermark"]
     return record
 
 

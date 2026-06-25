@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import io
 import json
 import tempfile
@@ -13,6 +14,7 @@ from PIL import Image
 from scripts.sync_gallery_to_cos import (
     SyncConfig,
     cos_key_for_record,
+    main,
     prepare_jpeg,
     summary_path_for,
     sync_gallery,
@@ -64,22 +66,39 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertEqual(summary["indexedTotal"], 2)
             self.assertEqual(summary["uploadedImages"], 0)
             self.assertEqual(summary["wouldUploadImages"], 2)
+            self.assertEqual(summary["totalImages"], 2)
+            self.assertEqual(summary["reusableImages"], 1)
+            self.assertEqual(summary["watermarkedReferenceImages"], 1)
+            self.assertEqual(summary["uploadedSuccess"], 0)
+            self.assertEqual(summary["skippedImages"], 2)
+            self.assertEqual(summary["errorImages"], 0)
+            self.assertEqual(summary["sync"]["uploadSkipped"], 2)
             self.assertTrue(output.exists())
             self.assertTrue(summary_path_for(output).exists())
 
             records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
             required = {
                 "id",
+                "canonical",
+                "canonical_dish",
                 "dish",
+                "name",
                 "norm",
                 "store",
+                "category",
+                "style",
+                "background",
                 "source",
                 "reusable",
                 "reference_only",
                 "style_id",
+                "local_path",
                 "relative_path",
                 "cos_key",
+                "url",
                 "public_url",
+                "watermark",
+                "watermark_state",
                 "width",
                 "height",
                 "sha1",
@@ -99,12 +118,47 @@ class CosGallerySyncTest(unittest.TestCase):
             self.assertEqual(clean["cos_key"], f"waimai-gallery/clean/测试门店/{clean['sha1']}.jpg")
             self.assertFalse(clean["reference_only"])
             self.assertTrue(clean["reusable"])
+            self.assertEqual(clean["watermark"], "none")
+            self.assertTrue(clean["local_path"].endswith("招牌牛肉.png"))
 
             watermark = next(record for record in records if record["source"] == "watermark")
             self.assertEqual(watermark["cos_key"], f"waimai-gallery/watermark/品牌门店/{watermark['sha1']}.jpg")
             self.assertTrue(watermark["reference_only"])
             self.assertFalse(watermark["reusable"])
             self.assertTrue(watermark["has_brand_watermark"])
+            self.assertEqual(watermark["watermark"], "brand_watermark")
+
+    def test_no_dry_run_missing_cos_env_returns_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clean_dir = root / "cleanpic"
+            watermark_dir = root / "watermarkpic"
+            output = root / "library_index.jsonl"
+            make_image(clean_dir / "测试门店" / "招牌牛肉.png")
+            watermark_dir.mkdir()
+
+            stderr = io.StringIO()
+            with mock.patch.dict("os.environ", {}, clear=True), contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        "--clean-dir",
+                        str(clean_dir),
+                        "--watermark-dir",
+                        str(watermark_dir),
+                        "--bucket",
+                        "demo-gallery-1250000000",
+                        "--output",
+                        str(output),
+                        "--no-dry-run",
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(stderr.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertIn("Tencent Cloud configuration is incomplete", payload["error"])
+            self.assertIn("TENCENTCLOUD_SECRET_ID", payload["error"])
+            self.assertIn("TENCENTCLOUD_SECRET_KEY", payload["error"])
 
     def test_cos_key_naming_is_stable(self) -> None:
         record = {"source": "clean", "store": "A 店", "sha1": "a" * 40}

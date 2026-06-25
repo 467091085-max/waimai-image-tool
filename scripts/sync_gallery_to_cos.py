@@ -21,6 +21,7 @@ from library_index import (
     scan_library,
     source_bucket,
     style_id_for_item,
+    watermark_state_for_record,
     write_index,
 )
 
@@ -82,6 +83,29 @@ def default_secret_id() -> str:
 
 def default_secret_key() -> str:
     return first_env("TENCENTCLOUD_SECRET_KEY", "TENCENT_SECRET_KEY", "COS_SECRET_KEY")
+
+
+def missing_upload_config(bucket: str, region: str) -> list[str]:
+    missing = []
+    if not str(bucket or "").strip():
+        missing.append("--bucket/TENCENT_COS_BUCKET/COS_BUCKET")
+    if not str(region or "").strip():
+        missing.append("--region/TENCENT_COS_REGION/COS_REGION")
+    if not default_secret_id():
+        missing.append("TENCENTCLOUD_SECRET_ID/TENCENT_SECRET_ID/COS_SECRET_ID")
+    if not default_secret_key():
+        missing.append("TENCENTCLOUD_SECRET_KEY/TENCENT_SECRET_KEY/COS_SECRET_KEY")
+    return missing
+
+
+def validate_upload_config(bucket: str, region: str) -> None:
+    missing = missing_upload_config(bucket, region)
+    if missing:
+        raise RuntimeError(
+            "COS upload is disabled because Tencent Cloud configuration is incomplete; "
+            f"missing: {', '.join(missing)}. "
+            "Run without --no-dry-run to scan and write the JSONL index locally."
+        )
 
 
 def mask_configured_secrets(message: str) -> str:
@@ -171,22 +195,36 @@ def build_index_record(
     public_url = public_url_for_key(bucket, region, key)
     source = source_bucket(str(record.get("source") or "unknown"))
     style_id = str(record.get("style_id") or style_id_for_item(str(record.get("store") or ""), str(record.get("dish") or ""), str(record.get("sha1") or "")))
+    dish = str(record.get("dish") or record.get("name") or "")
+    category = str(record.get("category_path") or record.get("category") or "")
+    canonical = str(record.get("canonical") or record.get("canonical_dish") or record.get("norm") or dish)
+    watermark = watermark_state_for_record(record)
     return {
         "id": record.get("id"),
-        "dish": record.get("dish"),
+        "canonical": canonical,
+        "canonical_dish": canonical,
+        "dish": dish,
+        "name": dish,
         "norm": record.get("norm"),
         "store": record.get("store"),
-        "category_path": record.get("category_path", ""),
+        "category": category,
+        "category_path": category,
+        "style": style_id,
+        "background": str(record.get("background") or record.get("background_id") or style_id),
+        "background_id": str(record.get("background_id") or record.get("background") or style_id),
         "source": source,
         "source_kind": source,
         "reusable": bool(record.get("reusable")),
         "reference_only": bool(record.get("reference_only")),
         "direct_delivery_allowed": bool(record.get("direct_delivery_allowed")),
         "style_id": style_id,
+        "local_path": str(record.get("local_path") or record.get("path") or ""),
         "relative_path": record.get("relative_path"),
         "cos_key": key,
         "url": public_url,
         "public_url": public_url,
+        "watermark": watermark,
+        "watermark_state": watermark,
         "width": prepared.width,
         "height": prepared.height,
         "original_width": record.get("width"),
@@ -225,8 +263,6 @@ def build_index_record(
 def create_cos_client(region: str):
     secret_id = default_secret_id()
     secret_key = default_secret_key()
-    if not secret_id or not secret_key:
-        raise RuntimeError("COS upload requires TENCENTCLOUD_SECRET_ID/TENCENTCLOUD_SECRET_KEY or compatible env vars")
     try:
         from qcloud_cos import CosConfig, CosS3Client
     except Exception as exc:
@@ -257,6 +293,8 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     bucket = str(config.bucket or "").strip()
     region = str(config.region or "").strip() or "ap-guangzhou"
     limit = config.limit if config.limit and config.limit > 0 else None
+    if not config.dry_run:
+        validate_upload_config(bucket, region)
     result = scan_library(
         clean_dir=config.clean_dir,
         watermark_dir=config.watermark_dir,
@@ -266,8 +304,6 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     records = result.records[:limit] if limit else result.records
     client = None
     if not config.dry_run:
-        if not bucket:
-            raise RuntimeError("COS upload requires --bucket or TENCENT_COS_BUCKET")
         client = create_cos_client(region)
 
     index_records: list[dict[str, Any]] = []
@@ -302,6 +338,36 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
 
     scan_summary = result.summary()
     fatal_errors = bool(sync_errors) and not config.dry_run
+    reusable_images = int(scan_summary.get("reusable") or 0)
+    watermarked_reference_images = int(
+        scan_summary.get("watermark")
+        or (scan_summary.get("cleaning") or {}).get("watermarkRisk")
+        or (scan_summary.get("cleaning") or {}).get("referenceOnly")
+        or 0
+    )
+    processed_reusable_images = sum(1 for record in index_records if bool(record.get("reusable")))
+    processed_watermarked_reference_images = sum(
+        1
+        for record in index_records
+        if bool(record.get("has_brand_watermark")) or str(record.get("source")) == "watermark" or bool(record.get("reference_only"))
+    )
+    limit_skipped = max(0, result.total - len(records))
+    dry_run_upload_skipped = len(index_records) if config.dry_run else 0
+    skipped_images = limit_skipped + dry_run_upload_skipped
+    error_images = len(result.errors) + len(sync_errors)
+    sync_counts = {
+        "totalImages": result.total,
+        "processedImages": len(index_records),
+        "reusableImages": reusable_images,
+        "watermarkedReferenceImages": watermarked_reference_images,
+        "processedReusableImages": processed_reusable_images,
+        "processedWatermarkedReferenceImages": processed_watermarked_reference_images,
+        "uploadedSuccess": uploaded_images,
+        "uploadSkipped": dry_run_upload_skipped,
+        "limitSkipped": limit_skipped,
+        "skippedImages": skipped_images,
+        "errorImages": error_images,
+    }
     summary = {
         "ok": not fatal_errors,
         "dryRun": bool(config.dry_run),
@@ -316,6 +382,12 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
         "limit": limit or 0,
         "scannedTotal": result.total,
         "indexedTotal": len(index_records),
+        "totalImages": result.total,
+        "reusableImages": reusable_images,
+        "watermarkedReferenceImages": watermarked_reference_images,
+        "uploadedSuccess": uploaded_images,
+        "skippedImages": skipped_images,
+        "errorImages": error_images,
         "uploadedImages": uploaded_images,
         "wouldUploadImages": len(index_records) if config.dry_run else 0,
         "indexUploaded": index_uploaded,
@@ -323,6 +395,7 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
         "syncErrorCount": len(sync_errors),
         "scanErrors": result.errors[:20],
         "syncErrors": sync_errors[:20],
+        "sync": sync_counts,
         "scan": scan_summary,
     }
     write_summary(summary, index_path)
