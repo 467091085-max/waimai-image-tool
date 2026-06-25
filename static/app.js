@@ -18,7 +18,7 @@ const state = {
   stylePreview: null,
   stylePreviewError: null,
   watermark: defaultWatermark(),
-  deliveryPlatforms: ["meituan"],
+  deliveryPlatforms: [],
   quality: "standard",
   exportStatus: {
     tone: "idle",
@@ -151,7 +151,6 @@ function platformBrief(id) {
 
 function ensureDeliveryPlatform() {
   state.deliveryPlatforms = state.deliveryPlatforms.filter(id => platformMeta[id]);
-  if (!state.deliveryPlatforms.length) state.deliveryPlatforms = ["meituan"];
 }
 
 function styleDisplayName(index) {
@@ -1790,7 +1789,7 @@ async function uploadMenu() {
     state.stylePreview = null;
     state.stylePreviewError = null;
     state.watermark = defaultWatermark();
-    state.deliveryPlatforms = ["meituan"];
+    state.deliveryPlatforms = [];
     state.selectedRows.clear();
     renderWaiting();
     shouldAutoStart = true;
