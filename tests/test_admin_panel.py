@@ -182,6 +182,7 @@ class AdminPanelTests(unittest.TestCase):
                 job_id="job-1",
                 db_path=billing_db,
             )
+            billing.create_payment_order("u1", "pay-49", cash_amount=49, db_path=billing_db)
             generation_jobs.create_job(
                 user_id="u1",
                 style="style-1",
@@ -203,7 +204,13 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(data["summary"]["refundCount"], 1)
         self.assertEqual(data["summary"]["refundPoints"], 100)
         self.assertEqual(data["summary"]["generationJobCount"], 1)
+        self.assertEqual(data["summary"]["paymentOrderCount"], 1)
+        self.assertEqual(data["summary"]["pendingPaymentOrders"], 1)
+        self.assertFalse(data["summary"]["realPaymentConfigured"])
+        self.assertEqual(data["summary"]["paymentMode"], "mock")
         self.assertEqual(data["billing"]["summary"]["ledgerCount"], 3)
+        self.assertEqual(data["billing"]["paymentOrders"][0]["status"], "pending")
+        self.assertEqual(data["paymentReadiness"]["webhookSignature"], "mock-stub")
         self.assertEqual(data["billing"]["refunds"][0]["sourceOrderId"], "order-1")
         self.assertEqual(data["generation"]["jobs"][0]["id"], "job-1")
         self.assertNotIn(str(root), json.dumps(data, ensure_ascii=False))

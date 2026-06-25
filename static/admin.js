@@ -113,22 +113,41 @@ function renderOperations(data) {
   const summary = data.summary || {};
   const billing = data.billing || {};
   const generation = data.generation || {};
+  const readiness = data.paymentReadiness || billing.paymentReadiness || {};
   const ledger = billing.ledger || [];
   const refunds = billing.refunds || [];
+  const payments = billing.paymentOrders || [];
   const jobs = generation.jobs || [];
 
   setText("#opsBalance", summary.totalBalance ?? 0);
   setText("#opsOrders", summary.orderCount ?? 0);
   setText("#opsRefunds", `${summary.refundCount ?? 0} / ${summary.refundPoints ?? 0}`);
   setText("#opsJobs", summary.generationJobCount ?? 0);
+  setText("#opsPayments", `${summary.paymentOrderCount ?? 0} / ${summary.paidPaymentOrders ?? 0}`);
+  setText("#opsPaymentReady", readiness.realPaymentConfigured ? "真实已配" : "Mock / 未接真实");
   setText(
     "#operationsHint",
-    `流水 ${summary.ledgerCount ?? 0} 条，运行中 ${summary.runningJobs ?? 0} 个，失败 ${summary.failedJobs ?? 0} 个`
+    `流水 ${summary.ledgerCount ?? 0} 条，运行中 ${summary.runningJobs ?? 0} 个，失败 ${summary.failedJobs ?? 0} 个，支付 ${readiness.mode || "mock"}`
   );
 
+  renderOperationPayments(payments);
   renderOperationJobs(jobs);
   renderOperationLedger(ledger);
   renderOperationRefunds(refunds);
+}
+
+function renderOperationPayments(payments) {
+  $("#opsPaymentRows").innerHTML = payments.length ? payments.map(payment => (
+    `<tr>
+      <td>${esc(shortId(payment.paymentOrderId || "-"))}</td>
+      <td><span class="status-pill">${esc(payment.status || "-")}</span></td>
+      <td>${esc(payment.provider || "-")}</td>
+      <td>${esc(payment.cashAmount ?? payment.cash ?? 0)}</td>
+      <td>${esc(payment.points ?? 0)}</td>
+    </tr>`
+  )).join("") : (
+    '<tr><td colspan="5">暂无支付订单</td></tr>'
+  );
 }
 
 function renderOperationJobs(jobs) {
@@ -158,7 +177,7 @@ function renderOperationLedger(ledger) {
         <td><span class="ledger-direction ${signClass}">${esc(entry.direction || "-")}</span></td>
         <td>${esc(signed)}</td>
         <td>${esc(entry.balanceAfter ?? 0)}</td>
-        <td>${esc(entry.description || entry.orderId || "-")}</td>
+        <td>${esc(entry.eventType || entry.description || entry.orderId || "-")}</td>
       </tr>`
     );
   }).join("") : (

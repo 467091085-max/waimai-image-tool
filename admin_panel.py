@@ -153,6 +153,7 @@ def operations_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, An
     generation_payload = generation_status_payload(deps.jobs_db_path, limit=limit)
     billing_summary = billing_payload.get("summary", {}) if isinstance(billing_payload, Mapping) else {}
     generation_summary = generation_payload.get("summary", {}) if isinstance(generation_payload, Mapping) else {}
+    payment_readiness = billing_payload.get("paymentReadiness", {}) if isinstance(billing_payload, Mapping) else {}
     ok = bool(billing_payload.get("ok")) and bool(generation_payload.get("ok"))
     return {
         "ok": ok,
@@ -165,7 +166,15 @@ def operations_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, An
             "generationJobCount": int(generation_summary.get("jobCount", 0) or 0),
             "runningJobs": int(generation_summary.get("runningJobs", 0) or 0),
             "failedJobs": int(generation_summary.get("failedJobs", 0) or 0),
+            "paymentOrderCount": int(billing_summary.get("paymentOrderCount", 0) or 0),
+            "pendingPaymentOrders": int(billing_summary.get("pendingPaymentOrders", 0) or 0),
+            "paidPaymentOrders": int(billing_summary.get("paidPaymentOrders", 0) or 0),
+            "failedPaymentOrders": int(billing_summary.get("failedPaymentOrders", 0) or 0),
+            "paymentWebhookEventCount": int(billing_summary.get("paymentWebhookEventCount", 0) or 0),
+            "realPaymentConfigured": bool(payment_readiness.get("realPaymentConfigured", False)),
+            "paymentMode": str(payment_readiness.get("mode") or "mock"),
         },
+        "paymentReadiness": payment_readiness,
         "billing": billing_payload,
         "generation": generation_payload,
     }

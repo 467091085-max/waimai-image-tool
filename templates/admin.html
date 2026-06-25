@@ -81,8 +81,33 @@
           <span>生成任务</span>
           <b id="opsJobs">-</b>
         </article>
+        <article>
+          <span>支付订单</span>
+          <b id="opsPayments">-</b>
+        </article>
+        <article>
+          <span>支付接入</span>
+          <b id="opsPaymentReady">-</b>
+        </article>
       </div>
       <div class="ops-layout">
+        <div>
+          <h3>支付订单</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>订单</th>
+                  <th>状态</th>
+                  <th>渠道</th>
+                  <th>金额</th>
+                  <th>积分</th>
+                </tr>
+              </thead>
+              <tbody id="opsPaymentRows"></tbody>
+            </table>
+          </div>
+        </div>
         <div>
           <h3>生成状态</h3>
           <div class="table-wrap">
