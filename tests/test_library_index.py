@@ -36,12 +36,17 @@ class LibraryIndexTest(unittest.TestCase):
             self.assertEqual(record["store"], "测试门店")
             self.assertEqual(record["category_path"], "套餐")
             self.assertEqual(record["dish"], "招牌双拼套餐+可乐")
+            self.assertEqual(record["match_category"], "package")
+            self.assertEqual(record["match_family"], "combo")
+            self.assertEqual(record["match_kind"], "套餐/组合")
             self.assertEqual(record["suffix"], ".jpg")
             self.assertEqual(record["width"], 640)
             self.assertEqual(record["height"], 480)
             self.assertTrue(record["is_combo"])
+            self.assertTrue(record["is_package"])
             self.assertTrue(record["is_drink"])
             self.assertIn("combo", record["tags"])
+            self.assertIn("package", record["tags"])
             self.assertIn("drink", record["tags"])
             self.assertGreaterEqual(
                 record.keys(),
@@ -63,6 +68,10 @@ class LibraryIndexTest(unittest.TestCase):
             self.assertTrue(record["avoid_as_style_card"])
             self.assertLess(record["style_weight"], 1.0)
             self.assertTrue(Path(record["thumb_path"]).exists())
+            summary = result.summary()
+            self.assertEqual(summary["packageImages"], 1)
+            self.assertEqual(summary["formalImages"], 1)
+            self.assertEqual(summary["matchCategories"]["package"], 1)
 
     def test_scan_library_marks_cleanpic_and_watermarkpic_reuse_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,6 +144,8 @@ class LibraryIndexTest(unittest.TestCase):
             self.assertEqual(full_summary["total"], 5)
             self.assertEqual(full_summary["clean"], 4)
             self.assertEqual(full_summary["watermark"], 1)
+            self.assertGreaterEqual(full_summary["singleImages"], 2)
+            self.assertGreaterEqual(full_summary["snackDrinkImages"], 1)
             self.assertEqual(full_summary["reusable"], 4)
             self.assertEqual(full_summary["referenceOnly"], 1)
 

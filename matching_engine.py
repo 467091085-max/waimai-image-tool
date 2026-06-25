@@ -12,6 +12,15 @@ from typing import Any
 DIRECT_SCORE = 70.0
 REVIEW_SCORE = 45.0
 DEFAULT_MIN_SCORE = REVIEW_SCORE / 100
+DEFAULT_IMAGE_POINTS = 100
+STRONG_TOKEN_SCORE = 0.68
+FUZZY_SCORE = 0.78
+
+MATCH_REASON_EXACT = "exact_normalized"
+MATCH_REASON_ALIAS = "alias_canonical"
+MATCH_REASON_STRONG_TOKEN = "strong_token"
+MATCH_REASON_FUZZY = "category_compatible_fuzzy"
+MATCH_REASON_UNMATCHED = "unmatched"
 
 BLOCKED_IMAGE_WORDS = (
     "背景",
@@ -50,11 +59,19 @@ MARKETING_WORDS = (
     "必点",
     "现炒",
     "现煎",
+    "手打",
+    "手作",
+    "手工",
+    "入店必点",
     "秘制",
     "正宗",
     "经典",
     "老长沙",
     "推荐",
+    "严选",
+    "超值",
+    "精品",
+    "厨师",
     "收藏",
     "宠粉",
     "粉丝",
@@ -83,6 +100,10 @@ SPEC_WORDS = (
     "标准份",
     "一份",
     "单份",
+    "堂食份量",
+    "堂食分量",
+    "加量",
+    "双倍加量",
     "微辣",
     "中辣",
     "重辣",
@@ -96,6 +117,7 @@ SPEC_WORDS = (
     "去冰",
     "少冰",
     "正常冰",
+    "咸鲜",
 )
 
 FORMAT_WORDS = (
@@ -118,6 +140,7 @@ ALIAS_CANONICALS = {
         "小炒肉",
         "农家小炒肉",
         "农家炒肉",
+        "必点辣椒炒肉",
     },
     "小炒黄牛肉": {
         "小炒黄牛肉",
@@ -129,9 +152,19 @@ ALIAS_CANONICALS = {
         "西红柿炒蛋",
         "西红柿炒鸡蛋",
     },
+    "肉末茄子": {
+        "肉末茄子",
+        "肉沫茄子",
+        "茄子肉末",
+        "茄子肉沫",
+    },
+    "宫保鸡丁": {
+        "宫保鸡丁",
+        "宫爆鸡丁",
+    },
 }
 
-ALIAS_SUFFIXES = ("", "饭", "米饭")
+ALIAS_SUFFIXES = ("", "饭", "米饭", "盖饭", "盖码饭", "盖浇饭", "木桶饭")
 
 COMPONENT_DROP_WORDS = (
     "套餐",
@@ -315,6 +348,8 @@ MAIN_FOOD_WORDS = (
 COMBO_WORDS = (
     "套餐",
     "组合",
+    "套饭",
+    "套餐饭",
     "双拼",
     "三拼",
     "四拼",
@@ -323,9 +358,15 @@ COMBO_WORDS = (
     "自选",
     "任选",
     "配菜",
+    "搭配",
+    "搭子",
     "多人餐",
     "单人餐",
     "双人餐",
+    "三人餐",
+    "四人餐",
+    "亲子餐",
+    "分享餐",
     "大礼包",
     "全家桶",
 )
@@ -392,8 +433,8 @@ def _canonical_alias(norm: str) -> str:
     return norm
 
 
-def normalize_dish(text: str) -> str:
-    """Return a stable key for dish-name comparison."""
+def _normalize_dish_base(text: str) -> str:
+    """Return a cleaned dish key before alias collapsing."""
     if _looks_like_blocked_image(text):
         return ""
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
@@ -406,14 +447,15 @@ def normalize_dish(text: str) -> str:
     text = text.replace("西红柿", "番茄")
     text = text.replace("紫菜鸡蛋汤", "紫菜蛋花汤")
     text = text.replace("番茄炒鸡蛋", "番茄炒蛋")
-    text = text.replace("爆炒黄牛肉", "小炒黄牛肉")
-    text = text.replace("辣椒小炒肉", "辣椒炒肉")
-    text = text.replace("农家小炒肉", "辣椒炒肉")
     text = text.replace("农家一碗香", "一碗香")
     for word in MARKETING_WORDS + PLATFORM_WORDS + SPEC_WORDS + FORMAT_WORDS:
         text = text.replace(word, "")
-    norm = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
-    return _canonical_alias(norm)
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
+
+
+def normalize_dish(text: str) -> str:
+    """Return a stable key for dish-name comparison."""
+    return _canonical_alias(_normalize_dish_base(text))
 
 
 def grams(text: str) -> set[str]:
@@ -444,6 +486,7 @@ def split_components(name: str, attrs: str = "") -> list[str]:
     source = f"{name or ''}+{attrs or ''}" if attrs else str(name or "")
     source = unicodedata.normalize("NFKC", source)
     source = re.sub(r"(套餐内容|规格|内容|包含|含)[:：]", "+", source)
+    source = re.sub(r"(?<!不)(?:包含|内含|含|搭配|配)(?=[\u4e00-\u9fffA-Za-z0-9])", "+", source)
     source = re.sub(r"\s*[xX*]\s*\d+\s*", "+", source)
     raw_parts = SPLIT_RE.split(source)
     out: list[str] = []
@@ -476,7 +519,7 @@ def classify_kind(name: str, attrs: str = "", category: str = "") -> str:
     has_separator = bool(re.search(r"[+＋&/／、,，|丨;；]", text))
     if _service_text(name_compact, compact):
         return "其他"
-    if any(word in text for word in COMBO_WORDS) or (has_separator and len(components) >= 2):
+    if _has_combo_signal(text) or (has_separator and len(components) >= 2):
         return "套餐/组合"
     if any(word in compact for word in BEVERAGE_WORDS) or _addon_text(name_compact, compact) or _plain_rice_compact(name_compact):
         return "饮品/小食"
@@ -488,7 +531,11 @@ def classify_kind(name: str, attrs: str = "", category: str = "") -> str:
 
 
 def _has_combo_signal(text: str) -> bool:
-    return any(word in text for word in COMBO_WORDS) or bool(re.search(r"[+＋&/／、,，|丨;；]", text))
+    if any(word in text for word in COMBO_WORDS):
+        return True
+    if re.search(r"[+＋&/／、,，|丨;；]", text):
+        return True
+    return bool(re.search(r"(?<!不)(?:包含|内含|含|搭配)(?=[\u4e00-\u9fffA-Za-z0-9])", text))
 
 
 def _is_plain_rice_name(name: str, norm: str = "") -> bool:
@@ -545,6 +592,14 @@ def significant_bigrams(norm: str) -> set[str]:
     return {clean[i : i + 2] for i in range(len(clean) - 1)} - GENERIC_BIGRAMS
 
 
+def _token_overlap_strength(left: str, right: str) -> float:
+    left_tokens = significant_bigrams(left)
+    right_tokens = significant_bigrams(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+
+
 def compatible_families(menu_family: str, image_family: str) -> bool:
     """Hard category gate before score ranking."""
     if "blocked" in {menu_family, image_family}:
@@ -552,6 +607,52 @@ def compatible_families(menu_family: str, image_family: str) -> bool:
     if menu_family != image_family:
         return False
     return True
+
+
+def _match_reason_score(
+    menu_name: str,
+    image_name: str,
+    menu_norm: str | None = None,
+    image_norm: str | None = None,
+    score: float | None = None,
+) -> tuple[float, str] | None:
+    left = normalize_dish(menu_name) if menu_norm is None else str(menu_norm or "")
+    right = normalize_dish(image_name) if image_norm is None else str(image_norm or "")
+    if not left or not right:
+        return None
+
+    menu_family = semantic_family(menu_name, left)
+    image_family = semantic_family(image_name, right)
+    if not compatible_families(menu_family, image_family):
+        return None
+    if menu_family == "service":
+        return None
+
+    base_left = _normalize_dish_base(menu_name)
+    base_right = _normalize_dish_base(image_name)
+    if base_left and base_left == base_right:
+        return 1.0, MATCH_REASON_EXACT
+    if left == right:
+        return 0.94, MATCH_REASON_ALIAS
+
+    if score is None:
+        score = similarity(menu_name, image_name, left, right, grams(left), grams(right))
+
+    if menu_family in {"plain_rice", "addon"}:
+        return None
+
+    contains = (left in right or right in left) and min(len(left), len(right)) >= 2
+    token_strength = _token_overlap_strength(left, right)
+    if contains and score >= 0.55:
+        return max(score, 0.82), MATCH_REASON_STRONG_TOKEN
+    if token_strength >= 0.66 and score >= STRONG_TOKEN_SCORE:
+        return max(score, STRONG_TOKEN_SCORE), MATCH_REASON_STRONG_TOKEN
+
+    common_chars = set(left) & set(right)
+    char_overlap = len(common_chars) / max(1, min(len(set(left)), len(set(right))))
+    if score >= FUZZY_SCORE and char_overlap >= 0.62 and token_strength >= 0.34:
+        return score, MATCH_REASON_FUZZY
+    return None
 
 
 def strict_match_allowed(
@@ -566,27 +667,30 @@ def strict_match_allowed(
     right = normalize_dish(image_name) if image_norm is None else str(image_norm or "")
     if not left or not right:
         return False
+    return _match_reason_score(menu_name, image_name, left, right, score) is not None
 
-    menu_family = semantic_family(menu_name, left)
-    image_family = semantic_family(image_name, right)
-    if not compatible_families(menu_family, image_family):
-        return False
 
-    if score is None:
-        score = similarity(menu_name, image_name, left, right, grams(left), grams(right))
-
-    if left == right or left in right or right in left:
-        return True
-    if menu_family in {"plain_rice", "addon", "service"}:
-        return False
-
-    overlap = significant_bigrams(left) & significant_bigrams(right)
-    if overlap and score >= 0.45:
-        return True
-
-    common_chars = set(left) & set(right)
-    char_overlap = len(common_chars) / max(1, min(len(set(left)), len(set(right))))
-    return bool(score >= 0.72 and char_overlap >= 0.5)
+def assess_match(
+    menu_name: str,
+    image_name: str,
+    menu_norm: str | None = None,
+    image_norm: str | None = None,
+    score: float | None = None,
+) -> dict[str, Any] | None:
+    """Return score and reason for an allowed match, or None for unmatched."""
+    left = normalize_dish(menu_name) if menu_norm is None else str(menu_norm or "")
+    right = normalize_dish(image_name) if image_norm is None else str(image_norm or "")
+    if not left or not right:
+        return None
+    raw_score = score
+    if raw_score is None:
+        raw_score = similarity(menu_name, image_name, left, right, grams(left), grams(right))
+    assessment = _match_reason_score(menu_name, image_name, left, right, raw_score)
+    if assessment is None:
+        return None
+    match_score, reason = assessment
+    confidence = round(match_score * 100, 1)
+    return {"score": match_score, "confidence": confidence, "match_reason": reason, "matchReason": reason}
 
 
 def similarity(
@@ -660,6 +764,28 @@ def _record_source(record: Any) -> str:
     return str(_value(record, "source", "store", "provider", "batch", default="library") or "library")
 
 
+def _record_bool(record: Any, *keys: str, default: bool = False) -> bool:
+    value = _value(record, *keys, default=default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _record_float(record: Any, *keys: str, default: float = 1.0) -> float:
+    value = _value(record, *keys, default=default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _record_id(record: Any, name: str, style_id: str) -> str:
     value = _value(record, "imageId", "image_id", "id", default="")
     if value:
@@ -668,21 +794,29 @@ def _record_id(record: Any, name: str, style_id: str) -> str:
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:18]
 
 
-def _candidate(record: Any, score: float, matched_name: str, match_type: str, component: str = "") -> dict[str, Any]:
+def _candidate(record: Any, score: float, matched_name: str, match_type: str, match_reason: str, component: str = "") -> dict[str, Any]:
     dish_name = _record_name(record)
     style_id = _record_style(record)
     source = _record_source(record)
     path = _value(record, "path", default="")
     url = _value(record, "url", "publicUrl", "public_url", default="")
+    candidate_id = _record_id(record, dish_name, style_id)
+    confidence = round(score * 100, 1)
     candidate = {
-        "imageId": _record_id(record, dish_name, style_id),
-        "score": round(score * 100, 1),
+        "imageId": candidate_id,
+        "candidate_id": candidate_id,
+        "score": confidence,
+        "confidence": confidence,
         "dishName": dish_name,
         "styleId": style_id,
         "source": source,
         "store": source,
         "matchType": match_type,
+        "match_reason": match_reason,
+        "matchReason": match_reason,
         "matchedName": matched_name,
+        "reusable": _record_bool(record, "reusable", default=True),
+        "referenceOnly": _record_bool(record, "reference_only", "referenceOnly", default=False),
     }
     if component:
         candidate["component"] = component
@@ -704,7 +838,21 @@ def _prepared_records(records: Sequence[Any]) -> list[dict[str, Any]]:
         family = semantic_family(name, norm)
         if family == "blocked":
             continue
-        prepared.append({"record": record, "name": name, "norm": norm, "grams": grams(norm), "family": family})
+        weight = max(0.0, min(1.0, _record_float(record, "match_weight", "matchWeight", default=1.0)))
+        if _record_bool(record, "avoid_as_match_primary", "avoidAsMatchPrimary", default=False):
+            weight = min(weight, 0.45)
+        if _record_bool(record, "reference_only", "referenceOnly", default=False):
+            weight = min(weight, 0.62)
+        prepared.append(
+            {
+                "record": record,
+                "name": name,
+                "norm": norm,
+                "grams": grams(norm),
+                "family": family,
+                "match_weight": weight,
+            }
+        )
     return prepared
 
 
@@ -727,11 +875,16 @@ def _score_candidates(
     for prepared in prepared_records:
         if not compatible_families(query_family, prepared["family"]):
             continue
-        score = similarity(query_name, prepared["name"], query_norm, prepared["norm"], query_grams, prepared["grams"])
-        if score >= effective_min_score and strict_match_allowed(query_name, prepared["name"], query_norm, prepared["norm"], score):
-            scored.append((score, prepared["record"]))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [_candidate(record, score, query_name, match_type, component) for score, record in scored[:limit]]
+        raw_score = similarity(query_name, prepared["name"], query_norm, prepared["norm"], query_grams, prepared["grams"])
+        assessment = _match_reason_score(query_name, prepared["name"], query_norm, prepared["norm"], raw_score)
+        if assessment is None:
+            continue
+        score, reason = assessment
+        score = min(1.0, score) * float(prepared.get("match_weight") or 0.0)
+        if score >= effective_min_score:
+            scored.append((score, reason, prepared["record"]))
+    scored.sort(key=lambda item: (_reason_priority(item[1]), item[0]), reverse=True)
+    return [_candidate(record, score, query_name, match_type, reason, component) for score, reason, record in scored[:limit]]
 
 
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -746,10 +899,23 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+def _reason_priority(reason: str) -> int:
+    return {
+        MATCH_REASON_EXACT: 4,
+        MATCH_REASON_ALIAS: 3,
+        MATCH_REASON_STRONG_TOKEN: 2,
+        MATCH_REASON_FUZZY: 1,
+    }.get(reason, 0)
+
+
 def _sort_candidates(candidates: list[dict[str, Any]], selected_style: str = "") -> list[dict[str, Any]]:
     if selected_style:
-        return sorted(candidates, key=lambda c: (c.get("styleId") == selected_style, float(c.get("score") or 0)), reverse=True)
-    return sorted(candidates, key=lambda c: float(c.get("score") or 0), reverse=True)
+        return sorted(
+            candidates,
+            key=lambda c: (_reason_priority(str(c.get("match_reason") or c.get("matchReason") or "")), c.get("styleId") == selected_style, float(c.get("score") or 0)),
+            reverse=True,
+        )
+    return sorted(candidates, key=lambda c: (_reason_priority(str(c.get("match_reason") or c.get("matchReason") or "")), float(c.get("score") or 0)), reverse=True)
 
 
 def _status_for(candidates: list[dict[str, Any]]) -> str:
@@ -792,6 +958,28 @@ def _background_action(candidates: list[dict[str, Any]], selected_style: str = "
     if score >= REVIEW_SCORE:
         return "需人工确认"
     return "智能补图"
+
+
+def _top_candidate_fields(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        return {
+            "confidence": 0.0,
+            "match_reason": MATCH_REASON_UNMATCHED,
+            "matchReason": MATCH_REASON_UNMATCHED,
+            "candidate_id": "",
+            "candidateId": "",
+        }
+    top = candidates[0]
+    confidence = float(top.get("confidence", top.get("score", 0)) or 0)
+    reason = str(top.get("match_reason") or top.get("matchReason") or "")
+    candidate_id = str(top.get("candidate_id") or top.get("candidateId") or top.get("imageId") or "")
+    return {
+        "confidence": confidence,
+        "match_reason": reason,
+        "matchReason": reason,
+        "candidate_id": candidate_id,
+        "candidateId": candidate_id,
+    }
 
 
 def _item_value(item: Any, *keys: str, default: Any = "") -> Any:
@@ -844,6 +1032,9 @@ def match_menu_to_library(
                         "status": _status_for(matches),
                         "matchStatus": _machine_status_for(matches),
                         "needsAi": not matches,
+                        "needs_generation": not matches,
+                        "needsGeneration": not matches,
+                        **_top_candidate_fields(matches),
                         "candidates": matches,
                     }
                 )
@@ -854,6 +1045,7 @@ def match_menu_to_library(
         status = _status_for(candidates)
         match_status = _machine_status_for(candidates)
         background_action = _background_action(candidates, selected_style)
+        needs_generation = match_status in {"no_match", "needs_ai"}
         results.append(
             {
                 "row": row,
@@ -864,7 +1056,10 @@ def match_menu_to_library(
                 "components": components,
                 "status": status,
                 "matchStatus": match_status,
-                "needsAi": match_status in {"no_match", "needs_ai"},
+                "needsAi": needs_generation,
+                "needs_generation": needs_generation,
+                "needsGeneration": needs_generation,
+                **_top_candidate_fields(candidates),
                 "candidates": candidates,
                 "componentMatches": component_matches,
                 "backgroundAction": background_action,
@@ -872,6 +1067,67 @@ def match_menu_to_library(
             }
         )
     return results
+
+
+def display_category_for_match(row: Mapping[str, Any]) -> str:
+    kind = str(row.get("kind") or "")
+    name = str(row.get("name") or "")
+    category = str(row.get("category") or "")
+    norm = str(row.get("norm") or normalize_dish(name))
+    family = semantic_family(name, norm, category=category)
+    if kind == "套餐/组合" or family == "combo":
+        return "package"
+    if family == "beverage":
+        return "beverage"
+    if family == "plain_rice":
+        return "staple"
+    if family == "addon":
+        return "addon"
+    if family in {"soup"} or kind == "饮品/小食":
+        return "snack"
+    if family == "service" or kind == "其他":
+        return "other"
+    return "single"
+
+
+def match_summary(results: Sequence[Mapping[str, Any]], points_per_image: int = DEFAULT_IMAGE_POINTS) -> dict[str, Any]:
+    category_counts = {
+        "single": 0,
+        "package": 0,
+        "beverage": 0,
+        "snack": 0,
+        "staple": 0,
+        "addon": 0,
+        "other": 0,
+    }
+    matched = 0
+    needs_generation = 0
+    for row in results:
+        category = display_category_for_match(row)
+        category_counts[category] = category_counts.get(category, 0) + 1
+        if row.get("needs_generation") or row.get("needsGeneration") or row.get("matchStatus") == "no_match":
+            needs_generation += 1
+        else:
+            matched += 1
+    formal_images = sum(count for category, count in category_counts.items() if category != "other")
+    points = formal_images * int(points_per_image)
+    return {
+        "singleImages": category_counts.get("single", 0),
+        "packageImages": category_counts.get("package", 0),
+        "snackDrinkImages": category_counts.get("beverage", 0) + category_counts.get("snack", 0),
+        "beverageImages": category_counts.get("beverage", 0),
+        "snackImages": category_counts.get("snack", 0),
+        "stapleImages": category_counts.get("staple", 0),
+        "addonImages": category_counts.get("addon", 0),
+        "otherImages": category_counts.get("other", 0),
+        "formalImages": formal_images,
+        "officialImageTotal": formal_images,
+        "estimatedPoints": points,
+        "points": points,
+        "matchedImages": matched,
+        "needsGenerationImages": needs_generation,
+        "displayCategoryCounts": category_counts,
+    }
 
 
 def _style_ids_from_results(results: Sequence[Mapping[str, Any]]) -> list[str]:
