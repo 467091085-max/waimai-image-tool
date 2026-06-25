@@ -109,6 +109,77 @@ function renderAudit(data) {
   renderAuditErrors(audit.errors || []);
 }
 
+function renderOperations(data) {
+  const summary = data.summary || {};
+  const billing = data.billing || {};
+  const generation = data.generation || {};
+  const ledger = billing.ledger || [];
+  const refunds = billing.refunds || [];
+  const jobs = generation.jobs || [];
+
+  setText("#opsBalance", summary.totalBalance ?? 0);
+  setText("#opsOrders", summary.orderCount ?? 0);
+  setText("#opsRefunds", `${summary.refundCount ?? 0} / ${summary.refundPoints ?? 0}`);
+  setText("#opsJobs", summary.generationJobCount ?? 0);
+  setText(
+    "#operationsHint",
+    `流水 ${summary.ledgerCount ?? 0} 条，运行中 ${summary.runningJobs ?? 0} 个，失败 ${summary.failedJobs ?? 0} 个`
+  );
+
+  renderOperationJobs(jobs);
+  renderOperationLedger(ledger);
+  renderOperationRefunds(refunds);
+}
+
+function renderOperationJobs(jobs) {
+  $("#opsJobRows").innerHTML = jobs.length ? jobs.map(job => {
+    const progress = job.progress || {};
+    return (
+      `<tr>
+        <td>${esc(shortId(job.id || "-"))}</td>
+        <td><span class="status-pill">${esc(job.status || "-")}</span></td>
+        <td>${esc(progress.completed ?? job.completedItems ?? 0)}/${esc(progress.total ?? job.totalItems ?? 0)} · ${esc(progress.percent ?? 0)}%</td>
+        <td>${esc(job.points ?? 0)}</td>
+        <td>${esc(shortId(job.orderId || "-"))}</td>
+      </tr>`
+    );
+  }).join("") : (
+    '<tr><td colspan="5">暂无生成任务</td></tr>'
+  );
+}
+
+function renderOperationLedger(ledger) {
+  $("#opsLedgerRows").innerHTML = ledger.length ? ledger.map(entry => {
+    const signed = Number(entry.signedPoints ?? entry.points ?? 0);
+    const signClass = signed >= 0 ? "credit" : "debit";
+    return (
+      `<tr>
+        <td>${esc(shortTime(entry.createdAt))}</td>
+        <td><span class="ledger-direction ${signClass}">${esc(entry.direction || "-")}</span></td>
+        <td>${esc(signed)}</td>
+        <td>${esc(entry.balanceAfter ?? 0)}</td>
+        <td>${esc(entry.description || entry.orderId || "-")}</td>
+      </tr>`
+    );
+  }).join("") : (
+    '<tr><td colspan="5">暂无积分流水</td></tr>'
+  );
+}
+
+function renderOperationRefunds(refunds) {
+  $("#opsRefundRows").innerHTML = refunds.length ? refunds.map(refund => (
+    `<tr>
+      <td>${esc(shortId(refund.refundId || "-"))}</td>
+      <td>${esc(shortId(refund.sourceOrderId || "-"))}</td>
+      <td>${esc(refund.failedImages ?? 0)}</td>
+      <td>${esc(refund.points ?? 0)}</td>
+      <td>${esc(refund.reason || "-")}</td>
+    </tr>`
+  )).join("") : (
+    '<tr><td colspan="5">暂无失败退款</td></tr>'
+  );
+}
+
 function renderCurrentMenu(current) {
   const counts = current.kindCounts || {};
   const rows = current.available ? [
@@ -158,12 +229,34 @@ function sheetSummary(sheets) {
   return sheets.map(sheet => `${sheet.sheet || "Sheet"}@${sheet.headerRow || "?"}:${sheet.items || 0}`).join("；");
 }
 
+function shortId(value) {
+  const text = String(value || "-");
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function shortTime(value) {
+  const text = String(value || "");
+  if (!text) return "-";
+  return text.replace("T", " ").replace("Z", "").slice(0, 16);
+}
+
 async function loadLibrary() {
   try {
     setText("#libraryHint", "读取中");
     renderLibrary(await api("/api/admin/library-sample?limit=18"));
   } catch (error) {
     setText("#libraryHint", "读取失败");
+    toast(error.message);
+  }
+}
+
+async function loadOperations() {
+  try {
+    setText("#operationsHint", "读取中");
+    renderOperations(await api("/api/admin/operations?limit=30"));
+  } catch (error) {
+    setText("#operationsHint", "读取失败");
     toast(error.message);
   }
 }
@@ -178,8 +271,10 @@ async function loadAudit() {
   }
 }
 
+$("#refreshOperations").addEventListener("click", loadOperations);
 $("#refreshLibrary").addEventListener("click", loadLibrary);
 $("#refreshAudit").addEventListener("click", loadAudit);
 
+loadOperations();
 loadLibrary();
 loadAudit();

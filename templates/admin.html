@@ -59,6 +59,87 @@
     <section class="admin-section">
       <div class="section-head">
         <div>
+          <h2>运营计费</h2>
+          <p id="operationsHint">读取中</p>
+        </div>
+        <button id="refreshOperations" type="button">刷新运营</button>
+      </div>
+      <div class="ops-summary">
+        <article>
+          <span>账户余额池</span>
+          <b id="opsBalance">-</b>
+        </article>
+        <article>
+          <span>订单流水</span>
+          <b id="opsOrders">-</b>
+        </article>
+        <article>
+          <span>失败退款</span>
+          <b id="opsRefunds">-</b>
+        </article>
+        <article>
+          <span>生成任务</span>
+          <b id="opsJobs">-</b>
+        </article>
+      </div>
+      <div class="ops-layout">
+        <div>
+          <h3>生成状态</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th>进度</th>
+                  <th>积分</th>
+                  <th>订单</th>
+                </tr>
+              </thead>
+              <tbody id="opsJobRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>积分流水</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>方向</th>
+                  <th>积分</th>
+                  <th>余额</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody id="opsLedgerRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>失败退款</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>退款</th>
+                  <th>原订单</th>
+                  <th>失败图</th>
+                  <th>积分</th>
+                  <th>原因</th>
+                </tr>
+              </thead>
+              <tbody id="opsRefundRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="admin-section">
+      <div class="section-head">
+        <div>
           <h2>样例图片</h2>
           <p id="libraryHint">读取中</p>
         </div>
