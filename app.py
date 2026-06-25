@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -87,10 +88,13 @@ TENCENT_IMAGE3_ENABLED = os.environ.get("TENCENT_IMAGE3_ENABLED", "true").lower(
 TENCENT_IMAGE3_FALLBACK_TO_LITE = os.environ.get("TENCENT_IMAGE3_FALLBACK_TO_LITE", "true").lower() not in {"0", "false", "no", "off"}
 TENCENT_SYNC_LIMIT = int(os.environ.get("TENCENT_HUNYUAN_SYNC_LIMIT", "6"))
 GENERATION_JOB_SYNC_BATCH_SIZE = int(os.environ.get("GENERATION_JOB_SYNC_BATCH_SIZE", str(max(1, TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT > 0 else 6))))
+GENERATION_JOB_ASYNC_RETURN_GRACE_MS = int(os.environ.get("GENERATION_JOB_ASYNC_RETURN_GRACE_MS", "50"))
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
 DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
+_ACTIVE_GENERATION_JOB_THREADS: dict[str, threading.Thread] = {}
+_ACTIVE_GENERATION_JOB_LOCK = threading.Lock()
 
 QUALITY_OPTIONS = {
     "standard": {
@@ -2678,6 +2682,28 @@ def job_run_limit(value: Any = None) -> int:
         return max(1, GENERATION_JOB_SYNC_BATCH_SIZE)
 
 
+def job_limit_from_payload(payload: dict[str, Any], *, async_mode: bool) -> int | None:
+    if payload.get("limit") in (None, ""):
+        return None if async_mode else job_run_limit(None)
+    return job_run_limit(payload.get("limit"))
+
+
+def job_sync_requested(payload: dict[str, Any]) -> bool:
+    if "sync" in payload:
+        return bool_value(payload.get("sync"), default=False)
+    return bool_value(request.args.get("sync"), default=False)
+
+
+def job_wait_ms_from_payload(payload: dict[str, Any]) -> int | None:
+    value = payload.get("waitMs")
+    if value in (None, ""):
+        return None
+    try:
+        return max(0, min(5000, int(value)))
+    except Exception:
+        return None
+
+
 def app_quality_id(quality: str | None) -> str:
     normalized = generation_engine.normalize_quality(quality)
     return "premium" if normalized == generation_engine.QUALITY_PREMIUM else "standard"
@@ -2891,6 +2917,100 @@ def generation_job_item_runner(style: str, quality: str, platforms: list[str] | 
         }
 
     return run_item
+
+
+def generation_job_runner_for(job: dict[str, Any]):
+    job_request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    return generation_job_item_runner(
+        str(job["style"]),
+        str(job["quality"]),
+        platforms=job_request.get("platforms") if isinstance(job_request.get("platforms"), list) else None,
+        watermark=job_request.get("watermark") if isinstance(job_request.get("watermark"), dict) else False,
+    )
+
+
+def execute_generation_job(job_id: str, *, limit: int | None = None) -> dict[str, Any]:
+    job = generation_jobs.get_job(job_id)
+    return generation_jobs.run_job(job_id, generation_job_runner_for(job), limit=limit)
+
+
+def generation_job_thread_active(job_id: str) -> bool:
+    with _ACTIVE_GENERATION_JOB_LOCK:
+        thread = _ACTIVE_GENERATION_JOB_THREADS.get(job_id)
+        if thread and thread.is_alive():
+            return True
+        if thread:
+            _ACTIVE_GENERATION_JOB_THREADS.pop(job_id, None)
+    return False
+
+
+def generation_job_background_target(job_id: str, limit: int | None) -> None:
+    try:
+        execute_generation_job(job_id, limit=limit)
+    except Exception as exc:
+        message = str(exc)[:1000] or type(exc).__name__
+        app.logger.exception("generation job failed in background", extra={"job_id": job_id})
+        try:
+            generation_jobs.set_job_stage(
+                job_id,
+                generation_jobs.JOB_STAGE_FORMAL_GENERATION,
+                generation_jobs.STAGE_FAILED,
+                detail="正式生图后台任务失败",
+                error=message,
+            )
+            generation_jobs.mark_failed(job_id, message)
+        except Exception:
+            app.logger.exception("failed to mark generation job failed", extra={"job_id": job_id})
+    finally:
+        with _ACTIVE_GENERATION_JOB_LOCK:
+            thread = _ACTIVE_GENERATION_JOB_THREADS.get(job_id)
+            if thread is threading.current_thread():
+                _ACTIVE_GENERATION_JOB_THREADS.pop(job_id, None)
+
+
+def start_generation_job_async(job_id: str, *, limit: int | None = None) -> tuple[dict[str, Any], bool, bool]:
+    with _ACTIVE_GENERATION_JOB_LOCK:
+        existing = _ACTIVE_GENERATION_JOB_THREADS.get(job_id)
+        if existing and existing.is_alive():
+            return generation_jobs.get_job(job_id), False, True
+        if existing:
+            _ACTIVE_GENERATION_JOB_THREADS.pop(job_id, None)
+
+        job = generation_jobs.get_job(job_id)
+        if str(job.get("status") or "").lower() == generation_jobs.JOB_RUNNING:
+            return job, False, True
+        if str(job.get("status") or "").lower() in generation_jobs.JOB_TERMINAL_STATUSES and int(job.get("pendingItems") or 0) <= 0:
+            return job, False, False
+
+        job = generation_jobs.set_job_stage(
+            job_id,
+            generation_jobs.JOB_STAGE_FORMAL_GENERATION,
+            generation_jobs.STAGE_QUEUED,
+            detail="正式生图任务已进入后台队列",
+        )
+        thread = threading.Thread(
+            target=generation_job_background_target,
+            args=(job_id, limit),
+            name=f"generation-job-{job_id[:12]}",
+            daemon=True,
+        )
+        _ACTIVE_GENERATION_JOB_THREADS[job_id] = thread
+        thread.start()
+        return job, True, False
+
+
+def async_job_response(job_id: str, *, limit: int | None = None, wait_ms: int | None = None) -> dict[str, Any]:
+    job, started, already_running = start_generation_job_async(job_id, limit=limit)
+    grace_ms = GENERATION_JOB_ASYNC_RETURN_GRACE_MS if wait_ms is None else max(0, wait_ms)
+    if started and grace_ms > 0:
+        with _ACTIVE_GENERATION_JOB_LOCK:
+            thread = _ACTIVE_GENERATION_JOB_THREADS.get(job_id)
+        if thread:
+            thread.join(grace_ms / 1000)
+        job = generation_jobs.get_job(job_id)
+    response = job_poll_response(job)
+    response.update({"mode": "async", "started": started, "alreadyRunning": already_running})
+    return response
 
 
 def pipeline_payload() -> dict[str, Any]:
@@ -3607,19 +3727,14 @@ def api_run_generation_job(job_id: str):
         order_id = str(payload.get("orderId") or "").strip()
         if payload.get("paid") or order_id:
             job = generation_jobs.mark_paid(job_id, order_id=order_id or None)
-        limit = job_run_limit(payload.get("limit"))
-        job_request = job.get("request") if isinstance(job.get("request"), dict) else {}
-        job = generation_jobs.run_job(
-            job_id,
-            generation_job_item_runner(
-                str(job["style"]),
-                str(job["quality"]),
-                platforms=job_request.get("platforms") if isinstance(job_request.get("platforms"), list) else None,
-                watermark=job_request.get("watermark") if isinstance(job_request.get("watermark"), dict) else False,
-            ),
-            limit=limit,
-        )
-        return jsonify(job_poll_response(job))
+        sync = job_sync_requested(payload)
+        limit = job_limit_from_payload(payload, async_mode=not sync)
+        if sync:
+            job = generation_jobs.run_job(job_id, generation_job_runner_for(job), limit=limit)
+            response = job_poll_response(job)
+            response.update({"mode": "sync", "started": True, "alreadyRunning": False})
+            return jsonify(response)
+        return jsonify(async_job_response(job_id, limit=limit, wait_ms=job_wait_ms_from_payload(payload)))
     except generation_jobs.GenerationJobError as exc:
         return generation_job_json_error(exc)
 
@@ -3631,20 +3746,18 @@ def api_retry_generation_job(job_id: str):
     item_indexes = raw_indexes if isinstance(raw_indexes, list) else None
     try:
         job = generation_jobs.retry_failed_items(job_id, item_indexes=item_indexes)
-        if payload.get("run", True):
-            limit = job_run_limit(payload.get("limit"))
-            job_request = job.get("request") if isinstance(job.get("request"), dict) else {}
-            job = generation_jobs.run_job(
-                job_id,
-                generation_job_item_runner(
-                    str(job["style"]),
-                    str(job["quality"]),
-                    platforms=job_request.get("platforms") if isinstance(job_request.get("platforms"), list) else None,
-                    watermark=job_request.get("watermark") if isinstance(job_request.get("watermark"), dict) else False,
-                ),
-                limit=limit,
-            )
-        return jsonify(job_poll_response(job))
+        if bool_value(payload.get("run"), default=True):
+            sync = job_sync_requested(payload)
+            limit = job_limit_from_payload(payload, async_mode=not sync)
+            if sync:
+                job = generation_jobs.run_job(job_id, generation_job_runner_for(job), limit=limit)
+                response = job_poll_response(job)
+                response.update({"mode": "sync", "started": True, "alreadyRunning": False})
+                return jsonify(response)
+            return jsonify(async_job_response(job_id, limit=limit, wait_ms=job_wait_ms_from_payload(payload)))
+        response = job_poll_response(job)
+        response.update({"mode": "queued", "started": False, "alreadyRunning": generation_job_thread_active(job_id)})
+        return jsonify(response)
     except generation_jobs.GenerationJobError as exc:
         return generation_job_json_error(exc)
 

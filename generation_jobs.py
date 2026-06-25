@@ -40,6 +40,27 @@ JOB_STATUSES = {
 }
 JOB_TERMINAL_STATUSES = {JOB_COMPLETED, JOB_FAILED, JOB_PARTIALLY_FAILED, JOB_REFUNDED, JOB_CANCELLED}
 
+JOB_STAGE_MENU_PARSE = "menu_parse"
+JOB_STAGE_STYLE_PREPARE = "style_prepare"
+JOB_STAGE_PREVIEW_GENERATION = "preview_generation"
+JOB_STAGE_FORMAL_GENERATION = "formal_generation"
+JOB_STAGE_EXPORT_PACKAGE = "export_package"
+JOB_STAGE_DEFINITIONS = (
+    {"id": JOB_STAGE_MENU_PARSE, "label": "菜单解析"},
+    {"id": JOB_STAGE_STYLE_PREPARE, "label": "风格准备"},
+    {"id": JOB_STAGE_PREVIEW_GENERATION, "label": "样图生成"},
+    {"id": JOB_STAGE_FORMAL_GENERATION, "label": "正式生图"},
+    {"id": JOB_STAGE_EXPORT_PACKAGE, "label": "导出打包"},
+)
+JOB_STAGE_IDS = {stage["id"] for stage in JOB_STAGE_DEFINITIONS}
+STAGE_PENDING = "pending"
+STAGE_QUEUED = "queued"
+STAGE_RUNNING = "running"
+STAGE_COMPLETED = "completed"
+STAGE_FAILED = "failed"
+STAGE_SKIPPED = "skipped"
+STAGE_STATUSES = {STAGE_PENDING, STAGE_QUEUED, STAGE_RUNNING, STAGE_COMPLETED, STAGE_FAILED, STAGE_SKIPPED}
+
 ITEM_PENDING = "pending"
 ITEM_QUEUED = "queued"
 ITEM_RUNNING = "running"
@@ -222,6 +243,11 @@ def create_job(
     status = JOB_PAID if mark_paid or clean_order_id else JOB_CREATED
     paid_at = now if status == JOB_PAID else None
     item_list = list(items)
+    initial_summary = _initial_result_summary(
+        total=len(item_list),
+        pending=len(item_list),
+        source=(request_payload or {}).get("source") if isinstance(request_payload, dict) else None,
+    )
 
     with open_db(db_path) as conn:
         _ensure_schema(conn)
@@ -243,10 +269,11 @@ def create_job(
                     order_id,
                     request_payload,
                     plan_snapshot,
+                    result_summary,
                     created_at,
                     updated_at,
                     paid_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_job_id,
@@ -260,6 +287,7 @@ def create_job(
                     clean_order_id,
                     _json_dumps(request_payload or {}),
                     _json_dumps(plan_snapshot or {}),
+                    _json_dumps(initial_summary),
                     now,
                     now,
                     paid_at,
@@ -267,6 +295,50 @@ def create_job(
             )
             for index, item in enumerate(item_list, start=1):
                 _insert_item(conn, clean_job_id, index, item, now)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return _job_payload(conn, clean_job_id, include_items=True)
+
+
+def set_job_stage(
+    job_id: str,
+    stage_id: str,
+    status: str,
+    *,
+    detail: str | None = None,
+    error: str | None = None,
+    db_path: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    clean_job_id = _clean_required(job_id, "job_id")
+    clean_stage_id = _clean_stage_id(stage_id)
+    clean_status = _clean_stage_status(status)
+    now = _now()
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _job_row(conn, clean_job_id)
+            request_payload = _json_loads(row["request_payload"], {})
+            source = request_payload.get("source") if isinstance(request_payload, dict) else None
+            summary = _json_loads(row["result_summary"], {})
+            if not isinstance(summary, dict):
+                summary = {}
+            stages = _job_stages_from_summary(summary, source=source)
+            stages = _set_stage_in_list(stages, clean_stage_id, clean_status, now=now, detail=detail, error=error)
+            active_stage = next((stage for stage in stages if stage["id"] == clean_stage_id), None)
+            summary["stages"] = stages
+            summary["stage"] = active_stage
+            if error:
+                summary["error"] = str(error)[:1000]
+            assignments = ["result_summary = ?", "updated_at = ?"]
+            values: list[Any] = [_json_dumps(summary), now]
+            if clean_status == STAGE_FAILED and error:
+                assignments.append("error = ?")
+                values.append(str(error)[:1000])
+            values.append(clean_job_id)
+            conn.execute(f"UPDATE generation_jobs SET {', '.join(assignments)} WHERE id = ?", values)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -575,6 +647,7 @@ def run_job(
 ) -> dict[str, Any]:
     clean_job_id = _clean_required(job_id, "job_id")
     clean_limit = _optional_positive_int(limit, "limit")
+    set_job_stage(clean_job_id, JOB_STAGE_FORMAL_GENERATION, STAGE_QUEUED, detail="正式生图任务已排队", db_path=db_path)
     job = mark_queued(clean_job_id, db_path=db_path)
     items = runnable_items(clean_job_id, limit=clean_limit, db_path=db_path)
     run_summary = {
@@ -586,10 +659,21 @@ def run_job(
     }
     if not items:
         refreshed = refresh_job_status(clean_job_id, db_path=db_path)
+        _record_run_summary(clean_job_id, run_summary, db_path=db_path)
+        refreshed_stage = _formal_stage_status_from_job(refreshed)
+        refreshed = set_job_stage(
+            clean_job_id,
+            JOB_STAGE_FORMAL_GENERATION,
+            refreshed_stage,
+            detail="没有待生成菜品" if refreshed_stage == STAGE_COMPLETED else "没有可启动的待生成菜品",
+            error=refreshed.get("error") if refreshed_stage == STAGE_FAILED else None,
+            db_path=db_path,
+        )
         refreshed["lastRun"] = run_summary
         return refreshed
 
     mark_running(clean_job_id, db_path=db_path)
+    set_job_stage(clean_job_id, JOB_STAGE_FORMAL_GENERATION, STAGE_RUNNING, detail=f"正在生成 {len(items)} 张正式图", db_path=db_path)
     for item in items:
         index = int(item["index"])
         record_item_status(clean_job_id, index, ITEM_RUNNING, increment_attempt=True, db_path=db_path)
@@ -674,8 +758,46 @@ def run_job(
             run_summary["completed"] += 1
 
     job = refresh_job_status(clean_job_id, db_path=db_path)
+    _record_run_summary(clean_job_id, run_summary, db_path=db_path)
+    stage_status = _formal_stage_status_from_job(job)
+    detail = f"本批完成 {run_summary['completed']} 张，失败 {run_summary['failed']} 张，延后 {run_summary['deferred']} 张"
+    job = set_job_stage(
+        clean_job_id,
+        JOB_STAGE_FORMAL_GENERATION,
+        stage_status,
+        detail=detail,
+        error=job.get("error") if stage_status == STAGE_FAILED else None,
+        db_path=db_path,
+    )
     job["lastRun"] = run_summary
     return job
+
+
+def _record_run_summary(
+    job_id: str,
+    run_summary: dict[str, Any],
+    *,
+    db_path: str | os.PathLike[str] | None = None,
+) -> None:
+    clean_job_id = _clean_required(job_id, "job_id")
+    now = _now()
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _job_row(conn, clean_job_id)
+            summary = _json_loads(row["result_summary"], {})
+            if not isinstance(summary, dict):
+                summary = {}
+            summary["lastRun"] = run_summary
+            conn.execute(
+                "UPDATE generation_jobs SET result_summary = ?, updated_at = ? WHERE id = ?",
+                (_json_dumps(summary), now, clean_job_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def refresh_job_status(
@@ -850,7 +972,9 @@ def _refresh_job_status(conn: sqlite3.Connection, job_id: str, *, now: str) -> N
         next_status = JOB_PARTIALLY_FAILED
         completed_at = completed_at or now
 
-    summary = {
+    existing_summary = _json_loads(job["result_summary"], {})
+    summary = existing_summary if isinstance(existing_summary, dict) else {}
+    summary.update({
         "total": total,
         "completed": completed,
         "failed": failed,
@@ -858,7 +982,16 @@ def _refresh_job_status(conn: sqlite3.Connection, job_id: str, *, now: str) -> N
         "queued": queued,
         "running": running,
         "remaining": remaining,
-    }
+    })
+    if next_status in {JOB_FAILED, JOB_PARTIALLY_FAILED}:
+        errors = _failed_item_errors(conn, job_id)
+        if errors:
+            summary["errors"] = errors
+    error_value = job["error"]
+    if next_status == JOB_FAILED:
+        error_value = error_value or _first_failed_item_error(conn, job_id) or "Generation job failed"
+    elif next_status not in {JOB_FAILED, JOB_PARTIALLY_FAILED}:
+        error_value = None
     conn.execute(
         """
         UPDATE generation_jobs
@@ -866,12 +999,13 @@ def _refresh_job_status(conn: sqlite3.Connection, job_id: str, *, now: str) -> N
             completed_items = ?,
             failed_items = ?,
             pending_items = ?,
+            error = ?,
             result_summary = ?,
             updated_at = ?,
             completed_at = ?
         WHERE id = ?
         """,
-        (next_status, completed, failed, remaining, _json_dumps(summary), now, completed_at, job_id),
+        (next_status, completed, failed, remaining, error_value, _json_dumps(summary), now, completed_at, job_id),
     )
 
 
@@ -924,6 +1058,13 @@ def _job_payload(conn: sqlite3.Connection, job_id: str, *, include_items: bool =
     refund_required = any(bool(item.get("refundRequired")) for item in items)
     retryable_failed = any(item.get("status") == ITEM_FAILED and bool(item.get("retryable")) for item in items)
     percent = 100 if total == 0 else round((completed + failed) / total * 100, 1)
+    request_payload = _json_loads(row["request_payload"], {})
+    result_summary = _json_loads(row["result_summary"], {})
+    if not isinstance(result_summary, dict):
+        result_summary = {}
+    source = request_payload.get("source") if isinstance(request_payload, dict) else None
+    stages = _reconciled_job_stages(row, result_summary, source=source)
+    stage = _active_stage_from_stages(stages, result_summary)
     payload = {
         "id": row["id"],
         "userId": row["user_id"],
@@ -940,9 +1081,12 @@ def _job_payload(conn: sqlite3.Connection, job_id: str, *, include_items: bool =
         "refundRequired": refund_required,
         "refund_required": refund_required,
         "retryableFailed": retryable_failed,
-        "request": _json_loads(row["request_payload"], {}),
+        "request": request_payload,
         "planSnapshot": _json_loads(row["plan_snapshot"], {}),
-        "resultSummary": _json_loads(row["result_summary"], {}),
+        "resultSummary": result_summary,
+        "stage": stage,
+        "phase": stage,
+        "stages": stages,
         "progress": {
             "total": total,
             "completed": completed,
@@ -961,6 +1105,8 @@ def _job_payload(conn: sqlite3.Connection, job_id: str, *, include_items: bool =
     }
     if include_items:
         payload["items"] = items
+    if isinstance(result_summary.get("lastRun"), dict):
+        payload["lastRun"] = result_summary["lastRun"]
     return payload
 
 
@@ -991,6 +1137,171 @@ def _item_payload(row: sqlite3.Row) -> dict[str, Any]:
         "startedAt": row["started_at"],
         "completedAt": row["completed_at"],
     }
+
+
+def _initial_result_summary(total: int, pending: int, source: Any = None) -> dict[str, Any]:
+    stages = _default_job_stages(source=source)
+    return {
+        "total": total,
+        "completed": 0,
+        "failed": 0,
+        "pending": pending,
+        "queued": 0,
+        "running": 0,
+        "remaining": pending,
+        "stage": next(stage for stage in stages if stage["id"] == JOB_STAGE_FORMAL_GENERATION),
+        "stages": stages,
+    }
+
+
+def _default_job_stages(source: Any = None) -> list[dict[str, Any]]:
+    preview_status = STAGE_SKIPPED if str(source or "") == "direct_items" else STAGE_COMPLETED
+    initial_statuses = {
+        JOB_STAGE_MENU_PARSE: STAGE_COMPLETED,
+        JOB_STAGE_STYLE_PREPARE: STAGE_COMPLETED,
+        JOB_STAGE_PREVIEW_GENERATION: preview_status,
+        JOB_STAGE_FORMAL_GENERATION: STAGE_PENDING,
+        JOB_STAGE_EXPORT_PACKAGE: STAGE_PENDING,
+    }
+    return [
+        {
+            **definition,
+            "status": initial_statuses[str(definition["id"])],
+            "detail": "",
+            "error": "",
+        }
+        for definition in JOB_STAGE_DEFINITIONS
+    ]
+
+
+def _job_stages_from_summary(summary: dict[str, Any], *, source: Any = None) -> list[dict[str, Any]]:
+    existing = summary.get("stages") if isinstance(summary, dict) else None
+    by_id = {
+        str(stage.get("id")): stage
+        for stage in existing
+        if isinstance(existing, list) and isinstance(stage, dict) and str(stage.get("id")) in JOB_STAGE_IDS
+    } if isinstance(existing, list) else {}
+    stages = []
+    for default in _default_job_stages(source=source):
+        merged = {**default, **by_id.get(str(default["id"]), {})}
+        merged["id"] = str(default["id"])
+        merged["label"] = str(default["label"])
+        try:
+            merged["status"] = _clean_stage_status(merged.get("status") or default["status"])
+        except InvalidJobInput:
+            merged["status"] = str(default["status"])
+        merged["detail"] = str(merged.get("detail") or "")
+        merged["error"] = str(merged.get("error") or "")
+        stages.append(merged)
+    return stages
+
+
+def _reconciled_job_stages(row: sqlite3.Row, summary: dict[str, Any], *, source: Any = None) -> list[dict[str, Any]]:
+    stages = _job_stages_from_summary(summary, source=source)
+    status = _canonical_job_status(row["status"])
+    formal_status = _stage_status_from_job_status(status)
+    stages = _set_stage_in_list(
+        stages,
+        JOB_STAGE_FORMAL_GENERATION,
+        formal_status,
+        now=str(row["updated_at"] or ""),
+        detail=None,
+        error=str(row["error"] or "") if formal_status == STAGE_FAILED else None,
+        preserve_existing=True,
+    )
+    return stages
+
+
+def _active_stage_from_stages(stages: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
+    summary_stage = summary.get("stage") if isinstance(summary, dict) else None
+    active_id = str(summary_stage.get("id") or "") if isinstance(summary_stage, dict) else ""
+    active = next((stage for stage in stages if stage["id"] == active_id and stage["status"] in {STAGE_QUEUED, STAGE_RUNNING, STAGE_FAILED}), None)
+    if active:
+        return active
+    for status in (STAGE_RUNNING, STAGE_QUEUED, STAGE_FAILED, STAGE_PENDING):
+        active = next((stage for stage in stages if stage["status"] == status), None)
+        if active:
+            return active
+    return stages[-1] if stages else {"id": "", "label": "", "status": STAGE_PENDING, "detail": "", "error": ""}
+
+
+def _set_stage_in_list(
+    stages: list[dict[str, Any]],
+    stage_id: str,
+    status: str,
+    *,
+    now: str,
+    detail: str | None = None,
+    error: str | None = None,
+    preserve_existing: bool = False,
+) -> list[dict[str, Any]]:
+    clean_stage_id = _clean_stage_id(stage_id)
+    clean_status = _clean_stage_status(status)
+    output = []
+    for stage in stages:
+        if stage["id"] != clean_stage_id:
+            output.append(stage)
+            continue
+        next_stage = dict(stage)
+        if not preserve_existing or stage.get("status") != clean_status:
+            next_stage["status"] = clean_status
+        if detail is not None:
+            next_stage["detail"] = str(detail)[:500]
+        if error is not None:
+            next_stage["error"] = str(error)[:1000]
+        elif clean_status != STAGE_FAILED and not preserve_existing:
+            next_stage["error"] = ""
+        if clean_status in {STAGE_QUEUED, STAGE_RUNNING}:
+            next_stage.setdefault("startedAt", now)
+            next_stage.pop("completedAt", None)
+        if clean_status in {STAGE_COMPLETED, STAGE_FAILED, STAGE_SKIPPED}:
+            next_stage.setdefault("startedAt", now)
+            next_stage["completedAt"] = now
+        output.append(next_stage)
+    return output
+
+
+def _stage_status_from_job_status(status: str) -> str:
+    clean = _canonical_job_status(status)
+    if clean == JOB_RUNNING:
+        return STAGE_RUNNING
+    if clean == JOB_QUEUED:
+        return STAGE_QUEUED
+    if clean in {JOB_COMPLETED}:
+        return STAGE_COMPLETED
+    if clean in {JOB_FAILED, JOB_PARTIALLY_FAILED}:
+        return STAGE_FAILED
+    return STAGE_PENDING
+
+
+def _formal_stage_status_from_job(job: dict[str, Any]) -> str:
+    return _stage_status_from_job_status(str(job.get("status") or ""))
+
+
+def _failed_item_errors(conn: sqlite3.Connection, job_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT item_index, dish, error, provider_error
+        FROM generation_job_items
+        WHERE job_id = ? AND status = ?
+        ORDER BY item_index ASC
+        LIMIT ?
+        """,
+        (job_id, ITEM_FAILED, limit),
+    ).fetchall()
+    return [
+        {
+            "index": int(row["item_index"]),
+            "dish": row["dish"],
+            "message": str(row["provider_error"] or row["error"] or "生成失败"),
+        }
+        for row in rows
+    ]
+
+
+def _first_failed_item_error(conn: sqlite3.Connection, job_id: str) -> str | None:
+    errors = _failed_item_errors(conn, job_id, limit=1)
+    return str(errors[0]["message"]) if errors else None
 
 
 def _item_status_from_runner_result(result: dict[str, Any]) -> tuple[str, str | None]:
@@ -1048,6 +1359,20 @@ def _clean_job_status(status: str) -> str:
     clean = _canonical_job_status(clean)
     if clean not in JOB_STATUSES:
         raise InvalidJobInput("Unsupported job status", status=status)
+    return clean
+
+
+def _clean_stage_id(stage_id: Any) -> str:
+    clean = str(stage_id or "").strip()
+    if clean not in JOB_STAGE_IDS:
+        raise InvalidJobInput("Unsupported job stage", stage=stage_id)
+    return clean
+
+
+def _clean_stage_status(status: Any) -> str:
+    clean = str(status or "").strip().lower()
+    if clean not in STAGE_STATUSES:
+        raise InvalidJobInput("Unsupported job stage status", status=status)
     return clean
 
 
