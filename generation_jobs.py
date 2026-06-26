@@ -164,6 +164,9 @@ CREATE TABLE IF NOT EXISTS generation_job_items (
 
 CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_created ON generation_jobs(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_jobs_order_id_unique
+    ON generation_jobs(order_id)
+    WHERE order_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_generation_job_items_job_status ON generation_job_items(job_id, status, item_index);
 """
 
@@ -253,6 +256,13 @@ def create_job(
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if clean_order_id:
+                existing = _job_row_by_order_id(conn, clean_order_id)
+                if existing is not None:
+                    conn.commit()
+                    payload = _job_payload(conn, str(existing["id"]), include_items=True)
+                    payload["idempotent"] = True
+                    return payload
             conn.execute(
                 """
                 INSERT INTO generation_jobs (
@@ -299,7 +309,25 @@ def create_job(
         except Exception:
             conn.rollback()
             raise
-        return _job_payload(conn, clean_job_id, include_items=True)
+        payload = _job_payload(conn, clean_job_id, include_items=True)
+        payload["idempotent"] = False
+        return payload
+
+
+def get_job_by_order_id(
+    order_id: str,
+    *,
+    db_path: str | os.PathLike[str] | None = None,
+) -> dict[str, Any] | None:
+    clean_order_id = _clean_required(order_id, "order_id")
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        row = _job_row_by_order_id(conn, clean_order_id)
+        if row is None:
+            return None
+        payload = _job_payload(conn, str(row["id"]), include_items=True)
+        payload["idempotent"] = True
+        return payload
 
 
 def set_job_stage(
@@ -1027,6 +1055,19 @@ def _job_row(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row:
     if row is None:
         raise JobNotFound("Generation job not found", jobId=job_id)
     return row
+
+
+def _job_row_by_order_id(conn: sqlite3.Connection, order_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM generation_jobs
+        WHERE order_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    ).fetchone()
 
 
 def _item_row(conn: sqlite3.Connection, job_id: str, item_index: int) -> sqlite3.Row:
