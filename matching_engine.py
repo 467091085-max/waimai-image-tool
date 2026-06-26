@@ -239,6 +239,27 @@ BEVERAGE_WORDS = (
 )
 
 SOUP_WORDS = ("汤", "羹")
+SNACK_FOOD_WORDS = (
+    "薯条",
+    "鸡米花",
+    "鸡柳",
+    "盐酥鸡",
+    "小酥肉",
+    "锅贴",
+    "烤肠",
+    "火腿肠",
+    "香肠",
+    "茶叶蛋",
+    "溏心蛋",
+    "煎蛋",
+    "荷包蛋",
+    "卤蛋",
+    "汤圆",
+    "糍粑",
+    "凉粉",
+    "凉皮",
+    "花生米",
+)
 
 PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "米", "饭", "主食", "杂粮饭", "糙米饭", "珍珠饭")
 PLAIN_RICE_PREFIXES = ("", "一碗", "一份", "半份", "小份", "大份", "加", "配", "赠", "送", "另加", "单点")
@@ -326,6 +347,25 @@ GENERIC_BIGRAMS = {
     "福利",
     "收藏",
     "门店",
+}
+GENERIC_DISH_KEYS = {
+    "米饭",
+    "白饭",
+    "主食",
+    "米粉",
+    "米线",
+    "面条",
+    "炒饭",
+    "盖饭",
+    "拌饭",
+    "汤",
+    "粥",
+    "小吃",
+    "小食",
+    "饮品",
+    "饮料",
+    "套餐",
+    "组合",
 }
 
 MAIN_FOOD_WORDS = (
@@ -580,6 +620,8 @@ def semantic_family(name: str, norm: str | None = None, attrs: str = "", categor
         return "porridge"
     if any(word in text for word in WHEAT_NOODLE_WORDS):
         return "noodle"
+    if any(word in text for word in SNACK_FOOD_WORDS):
+        return "snack_food"
     if any(word in text for word in SOUP_WORDS):
         return "soup"
     return "main_dish"
@@ -641,7 +683,9 @@ def _match_reason_score(
     if menu_family in {"plain_rice", "addon"}:
         return None
 
-    contains = (left in right or right in left) and min(len(left), len(right)) >= 2
+    min_key_len = min(len(left), len(right))
+    generic_key = left in GENERIC_DISH_KEYS or right in GENERIC_DISH_KEYS
+    contains = (left in right or right in left) and min_key_len >= 3 and not generic_key
     token_strength = _token_overlap_strength(left, right)
     if contains and score >= 0.55:
         return max(score, 0.82), MATCH_REASON_STRONG_TOKEN
@@ -1034,7 +1078,12 @@ def match_menu_to_library(
                 )
                 component_candidates.extend(matches)
 
-        candidates = _dedupe_candidates(dish_candidates + component_candidates)
+        # Combo component matches are structural hints only. A combo row should
+        # not be marked as matched just because its individual dishes exist.
+        if kind == "套餐/组合":
+            candidates = _dedupe_candidates(dish_candidates)
+        else:
+            candidates = _dedupe_candidates(dish_candidates + component_candidates)
         candidates = _sort_candidates(candidates, selected_style)[:limit]
         status = _status_for(candidates)
         match_status = _machine_status_for(candidates)

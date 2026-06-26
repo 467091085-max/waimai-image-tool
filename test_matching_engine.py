@@ -130,8 +130,38 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
 
         self.assertEqual(combo["candidates"][0]["dishName"], "辣椒炒肉+茄子肉末套餐")
         self.assertEqual(combo["candidates"][0]["matchType"], "dish")
-        self.assertIn("辣椒炒肉", [c["dishName"] for c in combo["candidates"] if c["matchType"] == "component"])
+        self.assertNotIn("辣椒炒肉", [c["dishName"] for c in combo["candidates"]])
+        self.assertIn("辣椒炒肉", [c["dishName"] for m in combo["componentMatches"] for c in m["candidates"]])
         self.assertEqual([c["dishName"] for c in single["candidates"]], ["辣椒炒肉"])
+
+    def test_combo_with_only_single_components_stays_generation_needed(self) -> None:
+        records = [
+            {"imageId": "pork", "dishName": "辣椒炒肉", "styleId": "style-1", "source": "sample"},
+            {"imageId": "egg", "dishName": "番茄炒蛋", "styleId": "style-1", "source": "sample"},
+        ]
+        items = [{"name": "辣椒炒肉+番茄炒蛋套餐"}]
+
+        result = match_menu_to_library(items, records, selected_style="style-1")[0]
+
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["matchStatus"], "no_match")
+        self.assertTrue(result["needsGeneration"])
+        self.assertEqual([m["name"] for m in result["componentMatches"]], ["辣椒炒肉", "番茄炒蛋"])
+        self.assertTrue(all(match["candidates"] for match in result["componentMatches"]))
+
+    def test_generic_or_cross_family_matches_are_rejected(self) -> None:
+        pairs = [
+            ("米粉", "桂林米粉"),
+            ("经典米线", "桂林米粉"),
+            ("北京炒合菜", "薯条"),
+            ("手打金桔柠檬水", "鸡米花"),
+            ("番茄炒蛋", "紫菜蛋花汤"),
+        ]
+        for menu_name, image_name in pairs:
+            menu_norm = normalize_dish(menu_name)
+            image_norm = normalize_dish(image_name)
+            score = similarity(menu_name, image_name, menu_norm, image_norm)
+            self.assertFalse(strict_match_allowed(menu_name, image_name, menu_norm, image_norm, score), (menu_name, image_name, score))
 
     def test_builtin_match_outputs_candidates_components_and_style_source(self) -> None:
         results = match_menu_to_library(SAMPLE_MENU_ITEMS, SAMPLE_LIBRARY_RECORDS, selected_style="style-1")
@@ -179,7 +209,7 @@ class MatchingEngineDemoLibraryTest(unittest.TestCase):
         self.assertGreaterEqual(len(self.records), 20)
         results = match_menu_to_library(self.items, self.records, selected_style="style-1")
         self.assertEqual(len(results), len(self.items))
-        self.assertTrue(all(row["candidates"] for row in results))
+        self.assertTrue(all(row["candidates"] for row in results if row["kind"] != "套餐/组合"))
 
         combo = next(row for row in results if row["name"] == "辣椒炒肉+茄子肉末盖码饭")
         component_names = [component["name"] for component in combo["componentMatches"]]

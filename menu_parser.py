@@ -10,8 +10,9 @@ from typing import Any
 
 import pandas as pd
 
-MENU_EXTS = {".xls", ".xlsx"}
+MENU_EXTS = {".csv", ".xls", ".xlsx"}
 DEFAULT_MENU_DIR = Path.home() / "Documents" / "menus"
+DEFAULT_POINTS_PER_IMAGE = 10
 
 KIND_SINGLE = "单品"
 KIND_COMBO = "套餐/组合"
@@ -30,30 +31,42 @@ BASIC_SNACK = "小吃"
 BASIC_OTHER = "其他"
 
 NAME_HEADERS = {
+    "*商品名称",
     "菜单名",
+    "菜单名称",
     "菜品名",
     "菜品名称",
+    "菜品",
     "菜名",
+    "餐品",
     "餐品名",
     "餐品名称",
+    "商品",
     "商品名",
     "商品名称",
     "产品名",
     "产品名称",
+    "外卖名称",
     "名称",
     "品名",
     "门店菜品",
 }
 NAME_HEADER_PRIORITY = {
+    "*商品名称": 119,
     "菜单名": 120,
+    "菜单名称": 119,
     "商品名称": 118,
     "商品名": 116,
+    "商品": 92,
     "菜品名称": 114,
     "菜品名": 112,
+    "菜品": 94,
     "餐品名称": 110,
     "餐品名": 108,
+    "餐品": 94,
     "产品名称": 106,
     "产品名": 104,
+    "外卖名称": 102,
     "菜名": 102,
     "品名": 96,
     "名称": 90,
@@ -68,8 +81,10 @@ CATEGORY_HEADERS = {
     "分类名",
     "分类名称",
     "商品分类",
+    "商品分组",
     "菜单分类",
     "分组",
+    "分组名称",
     "品类",
 }
 CATEGORY_IGNORE_VALUES = {"全部", "所有", "未分类", "默认", "无", "-"}
@@ -82,6 +97,9 @@ PRICE_HEADER_PRIORITY = {
     "售价": 120,
     "销售价": 118,
     "价格": 116,
+    "美团价": 115,
+    "外卖价": 115,
+    "线上价": 115,
     "门店价格": 112,
     "会员价": 110,
     "打包价": 96,
@@ -551,6 +569,126 @@ def _find_table_candidates(df: pd.DataFrame, sheet_name: str, sheet_index: int) 
     return candidates
 
 
+def _looks_like_menu_name_value(value: str) -> bool:
+    text = clean_cell(value)
+    if not text or _is_price_like(text):
+        return False
+    compact = _compact_text(text)
+    if len(compact) < 2 or len(compact) > 80:
+        return False
+    if clean_header(text) in CATEGORY_IGNORE_VALUES:
+        return False
+    if re.fullmatch(r"\d+(\.\d+)?", compact):
+        return False
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", compact):
+        return False
+    if _is_service_text(compact, compact):
+        return False
+    return len(normalize(text)) >= 2
+
+
+def _column_values(df: pd.DataFrame, col: int, start_row: int = 0, sample: int = 80) -> list[str]:
+    if col >= df.shape[1]:
+        return []
+    return [clean_cell(value) for value in df.iloc[start_row : start_row + sample, col].tolist()]
+
+
+def _infer_price_col(df: pd.DataFrame, name_col: int, data_start: int) -> int | None:
+    best: tuple[float, int] | None = None
+    for col in range(df.shape[1]):
+        if col == name_col:
+            continue
+        ratio = _numeric_ratio(df, col, data_start, sample=40)
+        if ratio < 0.45:
+            continue
+        score = ratio * 100 - abs(col - name_col) * 2
+        if best is None or score > best[0]:
+            best = (score, col)
+    return best[1] if best else None
+
+
+def _infer_category_cols(df: pd.DataFrame, name_col: int, price_col: int | None, data_start: int) -> list[int]:
+    candidates: list[tuple[float, int]] = []
+    for col in range(df.shape[1]):
+        if col in {name_col, price_col}:
+            continue
+        values = []
+        for row_index in range(data_start, min(len(df), data_start + 40)):
+            name_value = clean_cell(df.iloc[row_index, name_col]) if name_col < df.shape[1] else ""
+            if not _looks_like_menu_name_value(name_value):
+                continue
+            value = clean_cell(df.iloc[row_index, col])
+            if value:
+                values.append(value)
+        if len(values) < 2:
+            continue
+        if sum(1 for value in values if _is_price_like(value)) / len(values) > 0.25:
+            continue
+        unique = {clean_header(value) for value in values if clean_header(value)}
+        avg_len = sum(len(_compact_text(value)) for value in values) / len(values)
+        if 1 < len(unique) <= min(12, max(3, len(values) // 2)) and avg_len <= 12:
+            candidates.append((len(values) / max(1, len(unique)), col))
+    candidates.sort(reverse=True)
+    return [col for _, col in candidates[:2]]
+
+
+def _find_inferred_table_candidates(df: pd.DataFrame, sheet_name: str, sheet_index: int) -> list[TableCandidate]:
+    """Infer a menu table when exports omit recognized headers.
+
+    This is intentionally conservative: it only triggers when one column has
+    several dish-like names, not mostly numbers/categories. Bad inference is
+    worse than asking the user to generate missing images, so low-confidence
+    sheets still fail with an actionable parser error.
+    """
+    if df.empty or df.shape[1] == 0:
+        return []
+    best: tuple[float, int, int] | None = None
+    max_start = min(12, len(df))
+    for data_start in range(max_start):
+        remaining = len(df) - data_start
+        if remaining < 2:
+            continue
+        for col in range(df.shape[1]):
+            values = [value for value in _column_values(df, col, data_start, sample=60) if value]
+            if len(values) < 3:
+                continue
+            name_like = sum(1 for value in values if _looks_like_menu_name_value(value))
+            numeric = sum(1 for value in values if _is_price_like(value))
+            ratio = name_like / len(values)
+            if name_like < 3 or ratio < 0.52 or numeric:
+                continue
+            score = 96 + ratio * 40 + min(name_like, 20) - data_start * 1.5
+            if best is None or score > best[0]:
+                best = (score, data_start, col)
+    if best is None:
+        return []
+    score, data_start, name_col = best
+    price_col = _infer_price_col(df, name_col, data_start)
+    category_cols = _infer_category_cols(df, name_col, price_col, data_start)
+    headers = [f"列{idx + 1}" for idx in range(df.shape[1])]
+    headers[name_col] = "菜品名"
+    if price_col is not None:
+        headers[price_col] = "价格"
+    for col in category_cols:
+        headers[col] = "分类"
+    return [
+        TableCandidate(
+            sheet_name=sheet_name,
+            sheet_index=sheet_index,
+            header_row=data_start - 1,
+            headers=headers,
+            name_col=name_col,
+            price_col=price_col,
+            category_cols=category_cols,
+            attribute_cols=[],
+            name_extra_cols=[],
+            score=score,
+            primary=_sheet_primary(sheet_name),
+            discouraged=_sheet_discouraged(sheet_name),
+        )
+    ]
+
+
 def _meaningful_category(values: list[str], current: str) -> str:
     for value in values:
         text = clean_cell(value)
@@ -590,6 +728,7 @@ def split_components(name: str, attrs: str) -> list[str]:
         clean = re.sub(r"[【\[].*?[】\]]", "", part)
         clean = re.sub(r"[（(].*?[）)]", "", clean)
         clean = re.sub(r"^[#\s:：-]+|[#\s:：-]+$", "", clean).strip()
+        clean = re.sub(r"(套餐|组合|单人餐|双人餐|盖码饭|盖浇饭|木桶饭)$", "", clean).strip()
         norm = normalize(clean)
         if len(norm) < 2 or norm in seen or _basic_category_from_text(clean, "", "") in {BASIC_OTHER, BASIC_ADDON, BASIC_STAPLE}:
             continue
@@ -779,6 +918,28 @@ def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def menu_image_stats(items: list[dict[str, Any]], points_per_image: int = DEFAULT_POINTS_PER_IMAGE) -> dict[str, int]:
+    counts = kind_counts(items)
+    single = counts.get("single", 0)
+    combo = counts.get("combo", 0)
+    snack = counts.get("snack", 0)
+    other = counts.get("other", 0)
+    formal_total = single + combo + snack
+    points = formal_total * int(points_per_image)
+    return {
+        "singleImages": single,
+        "packageImages": combo,
+        "snackImages": snack,
+        "otherImages": other,
+        "snackOtherImages": snack + other,
+        "formalImages": formal_total,
+        "formalImageTotal": formal_total,
+        "officialImageTotal": formal_total,
+        "estimatedPoints": points,
+        "points": points,
+    }
+
+
 def guess_store(path: Path) -> str:
     stem = path.stem
     stem = re.sub(r"^运营数据[_-]?", "", stem)
@@ -787,16 +948,46 @@ def guess_store(path: Path) -> str:
     return stem.strip(" _-") or path.stem
 
 
-def parse_menu(path: str | Path) -> dict[str, Any]:
-    source = Path(path)
-    if source.suffix.lower() not in MENU_EXTS:
-        raise ValueError(f"不支持的菜单格式: {source.suffix}")
-    if not source.exists():
-        raise FileNotFoundError(source)
+def _read_csv_menu(source: Path) -> tuple[pd.DataFrame, list[dict[str, str]]]:
+    errors: list[dict[str, str]] = []
+    for encoding in ("utf-8-sig", "gb18030", "utf-16"):
+        try:
+            return (
+                pd.read_csv(
+                    source,
+                    header=None,
+                    dtype=str,
+                    keep_default_na=False,
+                    encoding=encoding,
+                    sep=None,
+                    engine="python",
+                ).fillna(""),
+                [],
+            )
+        except UnicodeError as exc:
+            errors.append({"sheet": source.stem, "message": f"{encoding}: {exc}"})
+        except Exception as exc:
+            errors.append({"sheet": source.stem, "message": f"{encoding}: {exc}"})
+    return pd.DataFrame(), errors
 
+
+def _collect_all_candidates(source: Path) -> tuple[list[tuple[TableCandidate, pd.DataFrame]], list[dict[str, str]], list[str]]:
     errors: list[dict[str, str]] = []
     diagnostics: list[str] = []
     all_candidates: list[tuple[TableCandidate, pd.DataFrame]] = []
+    if source.suffix.lower() == ".csv":
+        df, csv_errors = _read_csv_menu(source)
+        errors.extend(csv_errors)
+        if not df.empty:
+            candidates = _find_table_candidates(df, source.stem, 0)
+            if not candidates:
+                candidates = _find_inferred_table_candidates(df, source.stem, 0)
+            if not candidates:
+                diagnostics.append(f"{source.name}: 未找到菜品名/商品名称/菜单名等表头，也未能保守推断菜品列")
+            for candidate in candidates:
+                all_candidates.append((candidate, df))
+        return all_candidates, errors, diagnostics
+
     with pd.ExcelFile(source) as workbook:
         for sheet_index, sheet_name in enumerate(workbook.sheet_names):
             try:
@@ -806,13 +997,26 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
                 continue
             candidates = _find_table_candidates(df, sheet_name, sheet_index)
             if not candidates:
+                candidates = _find_inferred_table_candidates(df, sheet_name, sheet_index)
+            if not candidates:
                 non_empty = sum(1 for row in df.head(40).itertuples(index=False) if any(clean_cell(value) for value in row))
                 if non_empty:
-                    diagnostics.append(f"{sheet_name}: 前40行未找到菜品名/商品名称/菜单名等表头")
+                    diagnostics.append(f"{sheet_name}: 前40行未找到菜品名/商品名称/菜单名等表头，也未能保守推断菜品列")
                 else:
                     diagnostics.append(f"{sheet_name}: 空表或前40行无有效内容")
             for candidate in candidates:
                 all_candidates.append((candidate, df))
+    return all_candidates, errors, diagnostics
+
+
+def parse_menu(path: str | Path) -> dict[str, Any]:
+    source = Path(path)
+    if source.suffix.lower() not in MENU_EXTS:
+        raise ValueError(f"不支持的菜单格式: {source.suffix}")
+    if not source.exists():
+        raise FileNotFoundError(source)
+
+    all_candidates, errors, diagnostics = _collect_all_candidates(source)
 
     selected = _select_candidates([candidate for candidate, _ in all_candidates])
     selected_ids = {(candidate.sheet_name, candidate.header_row, candidate.name_col) for candidate in selected}
@@ -844,12 +1048,15 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
             detail = "; ".join(diagnostics[:6]) or "未找到可识别的菜单表头"
         raise ValueError(f"未能从菜单中解析出菜品: {source.name} ({detail})")
 
+    stats = menu_image_stats(items)
     return {
         "store": guess_store(source),
         "file": source.name,
         "count": len(items),
         "kindCounts": kind_counts(items),
         "basicCategoryCounts": basic_category_counts(items),
+        "imageStats": stats,
+        **stats,
         "items": items,
         "sheets": parsed_sheets,
         "errors": errors,
@@ -903,8 +1110,8 @@ def _format_sheet_summary(sheets: list[dict[str, Any]]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Audit local xls/xlsx menu parsing.")
-    parser.add_argument("directory", nargs="?", default=str(DEFAULT_MENU_DIR), help="Directory containing menu xls/xlsx files.")
+    parser = argparse.ArgumentParser(description="Audit local xls/xlsx/csv menu parsing.")
+    parser.add_argument("directory", nargs="?", default=str(DEFAULT_MENU_DIR), help="Directory containing menu xls/xlsx/csv files.")
     args = parser.parse_args(argv)
 
     try:
