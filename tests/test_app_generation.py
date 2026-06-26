@@ -293,6 +293,8 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(calls, ["watermarkpic"])
             self.assertEqual(output["result"]["sourceStrategy"], "reference_redraw")
             self.assertEqual(output["result"]["action"], "ReferenceRedraw")
+            self.assertEqual(output["result"]["qualityPoints"], 20)
+            self.assertEqual(row["generation"]["qualityPoints"], 20)
             self.assertEqual(row["generationStatus"], "succeeded")
 
     def test_formal_runner_provider_failure_returns_refund_hook_without_raising(self) -> None:
@@ -364,6 +366,7 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(same_output["result"]["status"], "reused")
             self.assertEqual(same_output["result"]["provider"], "library")
             self.assertEqual(same_output["result"]["action"], "Reuse")
+            self.assertEqual(same_output["result"]["qualityPoints"], 10)
             self.assertEqual(same_output["result"]["evidence"], {"provider": "library", "action": "Reuse", "status": "reused", "providerStatus": "succeeded", "provider_status": "succeeded"})
 
             self.assertEqual(diff_output["result"]["sourceStrategy"], "replace_background")

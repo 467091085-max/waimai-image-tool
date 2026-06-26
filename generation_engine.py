@@ -11,6 +11,10 @@ KIND_COMBO = "combo"
 KIND_OTHER = "other"
 QUALITY_NORMAL = "normal"
 QUALITY_PREMIUM = "premium"
+QUALITY_POINTS = {
+    QUALITY_NORMAL: 10,
+    QUALITY_PREMIUM: 20,
+}
 
 STRATEGY_REUSE = "reuse"
 STRATEGY_REPLACE_BACKGROUND = "replace_background"
@@ -38,6 +42,11 @@ NEGATIVE_IMAGE_PROMPT = "文字，水印，logo，品牌名，价格，人物，
 WAITING_FOR_PROVIDER_ERROR = "waiting_for_provider: 腾讯云生图环境变量未配置完整"
 PROMPT_LIMIT = 900
 EVIDENCE_KEYS = ("requestId", "jobId", "submitRequestId", "queryRequestId", "endpoint")
+PLATFORM_PROMPTS = {
+    "meituan": "美团外卖 4:3 成图，推荐 800x600px，主体和水印必须留在裁切安全区内",
+    "taobao": "淘宝外卖/饿了么 1:1 成图，推荐 800x800px，主体和水印必须留在裁切安全区内",
+    "jd": "京东外卖/京东秒送 1:1 成图，推荐 800x800px，主体和水印必须留在裁切安全区内",
+}
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,8 @@ class GenerationResult:
     provider: str = PROVIDER_TENCENT
     action: str = ""
     prompt_type: str = ""
+    quality: str = QUALITY_NORMAL
+    quality_points: int = QUALITY_POINTS[QUALITY_NORMAL]
     candidate: dict[str, Any] | None = None
     path: str = ""
     provider_error: str | None = None
@@ -108,6 +119,9 @@ class GenerationResult:
             "provider": self.provider,
             "action": self.action,
             "promptType": self.prompt_type,
+            "quality": self.quality,
+            "qualityPoints": self.quality_points,
+            "quality_points": self.quality_points,
             "source_strategy": self.source_strategy,
             "sourceStrategy": self.source_strategy,
             "retryable": self.retryable,
@@ -167,6 +181,10 @@ def normalize_quality(value: Any) -> str:
     return QUALITY_NORMAL
 
 
+def quality_points(value: Any) -> int:
+    return QUALITY_POINTS[normalize_quality(value)]
+
+
 def request_from_row(
     row: dict[str, Any],
     *,
@@ -223,6 +241,8 @@ def execute_generation_request(request: GenerationRequest, provider: GenerationP
             status=STATUS_QUEUED,
             source_strategy=STRATEGY_WAITING_FOR_PROVIDER,
             action="WaitingForProvider",
+            quality=routed.quality,
+            quality_points=quality_points(routed.quality),
             provider_error=WAITING_FOR_PROVIDER_ERROR,
             retryable=True,
             refund_required=False,
@@ -254,6 +274,8 @@ def execute_generation_request(request: GenerationRequest, provider: GenerationP
         provider=provider_name,
         action=action,
         prompt_type=str(detail.get("promptType") or prompt_type_for_strategy(strategy, routed.kind)),
+        quality=routed.quality,
+        quality_points=quality_points(routed.quality),
         candidate=detail.get("candidate") if isinstance(detail.get("candidate"), dict) else None,
         path=str(detail.get("path") or ""),
         provider_error=str(detail.get("provider_error") or detail.get("providerError") or "") or None,
@@ -274,6 +296,8 @@ def failed_result(request: GenerationRequest, exc: Exception) -> GenerationResul
         provider=PROVIDER_TENCENT,
         action=_action_for_strategy(request.source_strategy),
         prompt_type=prompt_type_for_strategy(request.source_strategy, request.kind),
+        quality=request.quality,
+        quality_points=quality_points(request.quality),
         provider_error=message,
         retryable=is_retryable_provider_error(message),
         refund_required=True,
@@ -339,8 +363,9 @@ def prompt_for_generation(
     dish = str(row.get("name") or row.get("dish") or row.get("dishName") or "外卖菜品")
     kind = normalize_kind(row.get("kind"))
     safe_area = _watermark_safe_area(row)
+    platform = _platform_requirements(row)
     forbidden = "不要出现任何文字、价格、非用户指定logo、水印、品牌名、人物、手、包装袋，不要裁切菜品主体。"
-    crop = "适合美团/饿了么/京东外卖平台裁切，四周保留干净安全边距，主体占画面约70%。"
+    crop = f"{platform}。四周保留干净安全边距，主体占画面约70%。"
     common = (
         f"外卖主图，外卖平台主图，干净统一背景，主体完整，背景必须跟所选背景一致：{style}。"
         f"{detail}。{crop}{safe_area}{forbidden}"
@@ -443,6 +468,24 @@ def candidate_has_brand_watermark(candidate: dict[str, Any] | None) -> bool:
     return any(marker.lower() in source.lower() for marker in WATERMARK_MARKERS)
 
 
+def candidate_matches_request_dish(candidate: dict[str, Any] | None, request: GenerationRequest) -> bool:
+    if not candidate:
+        return False
+    dish = str(request.dish or request.row.get("name") or "").strip()
+    candidate_dish = str(candidate.get("dishName") or candidate.get("dish") or candidate.get("name") or "").strip()
+    if not dish or not candidate_dish:
+        return False
+    dish_norm = _dish_match_key(dish)
+    candidate_norm = _dish_match_key(candidate_dish)
+    if not dish_norm or not candidate_norm:
+        return False
+    if dish_norm == candidate_norm or dish_norm in candidate_norm or candidate_norm in dish_norm:
+        return True
+    overlap = _dish_token_overlap(dish_norm, candidate_norm)
+    score = _candidate_score(candidate)
+    return score >= 88 and overlap >= 0.68
+
+
 def candidate_is_model_output(candidate: dict[str, Any] | None) -> bool:
     if not candidate:
         return False
@@ -467,6 +510,8 @@ def _same_style_reusable_candidate(request: GenerationRequest) -> dict[str, Any]
     for candidate in request.candidates:
         if not candidate.get("reusable", True) or candidate_has_brand_watermark(candidate):
             continue
+        if not candidate_matches_request_dish(candidate, request):
+            continue
         if str(candidate.get("styleId") or "") != request.style:
             continue
         if request.kind == KIND_COMBO and candidate_kind(candidate) != KIND_COMBO:
@@ -481,6 +526,8 @@ def _reusable_source_candidate(request: GenerationRequest) -> dict[str, Any] | N
             continue
         if not candidate.get("reusable", True) or candidate_has_brand_watermark(candidate):
             continue
+        if not candidate_matches_request_dish(candidate, request):
+            continue
         if request.kind == KIND_COMBO and candidate_kind(candidate) != KIND_COMBO:
             continue
         return candidate
@@ -489,6 +536,8 @@ def _reusable_source_candidate(request: GenerationRequest) -> dict[str, Any] | N
 
 def _reference_candidate(request: GenerationRequest) -> dict[str, Any] | None:
     for candidate in request.candidates:
+        if not candidate_matches_request_dish(candidate, request):
+            continue
         if candidate_has_brand_watermark(candidate) or candidate.get("path") or candidate.get("url"):
             return candidate
     return None
@@ -496,6 +545,8 @@ def _reference_candidate(request: GenerationRequest) -> dict[str, Any] | None:
 
 def _combo_reference_candidate(request: GenerationRequest) -> dict[str, Any] | None:
     for candidate in request.candidates:
+        if not candidate_matches_request_dish(candidate, request):
+            continue
         if candidate_kind(candidate) == KIND_COMBO:
             return candidate
     return None
@@ -530,8 +581,50 @@ def _status_after_provider(strategy: str, detail: dict[str, Any]) -> str:
 def _watermark_safe_area(row: dict[str, Any]) -> str:
     watermark = row.get("watermark")
     if isinstance(watermark, dict) and watermark.get("enabled"):
-        return "右下角保留干净安全区，便于后续添加用户指定品牌水印；"
+        return "四角尤其右下角保留干净水印安全区，后续添加用户指定品牌水印时不能遮挡菜品，也不能被平台裁切；"
     return "画面中不主动生成任何品牌水印；"
+
+
+def _platform_requirements(row: dict[str, Any]) -> str:
+    raw = row.get("_delivery_platforms") or row.get("platforms") or row.get("deliveryPlatforms") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    selected = [str(item) for item in raw if str(item) in PLATFORM_PROMPTS]
+    if not selected:
+        selected = ["meituan", "taobao", "jd"]
+    return "；".join(PLATFORM_PROMPTS[item] for item in selected)
+
+
+def _dish_match_key(value: str) -> str:
+    text = re.sub(r"\s+", "", str(value or "").lower())
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+    for suffix in ("外卖主图", "菜品图", "产品图", "盖码饭", "盖浇饭", "盖饭", "套餐", "组合", "单人餐", "双人餐"):
+        text = text.replace(suffix, "")
+    return text
+
+
+def _dish_token_overlap(left: str, right: str) -> float:
+    left_tokens = _dish_grams(left)
+    right_tokens = _dish_grams(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+
+
+def _dish_grams(value: str) -> set[str]:
+    text = str(value or "")
+    if len(text) <= 2:
+        return {text} if text else set()
+    return {text[index : index + 2] for index in range(len(text) - 1)}
+
+
+def _candidate_score(candidate: dict[str, Any]) -> float:
+    for key in ("score", "confidence", "matchScore"):
+        try:
+            return float(candidate.get(key) or 0)
+        except Exception:
+            continue
+    return 0.0
 
 
 def _clip_prompt(value: str, limit: int = PROMPT_LIMIT) -> str:

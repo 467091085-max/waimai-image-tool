@@ -212,6 +212,37 @@ class GenerationEngineRoutingTests(unittest.TestCase):
 
         text_request = generation_engine.request_from_row(menu_item(4, "新品汤"), style="style-1")
         self.assertEqual(generation_engine.select_generation_request(text_request).source_strategy, generation_engine.STRATEGY_TEXT_TO_IMAGE3)
+        self.assertEqual(generation_engine.quality_points("standard"), 10)
+        self.assertEqual(generation_engine.quality_points("premium"), 20)
+
+    def test_mismatched_candidate_is_not_reused_or_used_as_background_reference(self) -> None:
+        wrong_same_style = {"dishName": "百事可乐", "styleId": "style-1", "reusable": True, "path": "/tmp/wrong.jpg", "score": 99}
+        wrong_diff_style = {"dishName": "白米饭", "styleId": "style-2", "reusable": True, "path": "/tmp/wrong2.jpg", "score": 98}
+        request = generation_engine.request_from_row(
+            {**menu_item(9, "辣椒炒肉盖码饭"), "candidates": [wrong_same_style, wrong_diff_style]},
+            style="style-1",
+        )
+
+        routed = generation_engine.select_generation_request(request)
+
+        self.assertEqual(routed.source_strategy, generation_engine.STRATEGY_TEXT_TO_IMAGE3)
+        self.assertIsNone(routed.source_candidate)
+
+    def test_prompt_contract_mentions_platform_dimensions_and_watermark_safe_area(self) -> None:
+        row = {
+            **menu_item(11, "招牌牛肉饭"),
+            "_delivery_platforms": ["meituan", "jd"],
+            "watermark": {"enabled": True, "position": "bottom-right"},
+        }
+
+        prompt = generation_engine.prompt_for_generation(row, "style-1", "premium", "text_to_image")
+
+        self.assertIn("美团外卖 4:3", prompt)
+        self.assertIn("800x600px", prompt)
+        self.assertIn("京东外卖/京东秒送 1:1", prompt)
+        self.assertIn("800x800px", prompt)
+        self.assertIn("水印安全区", prompt)
+        self.assertIn("不能被平台裁切", prompt)
 
     def test_combo_without_combo_reference_does_not_use_single_candidate(self) -> None:
         single_candidate = {"dishName": "红烧肉", "styleId": "style-2", "reusable": True, "path": "/tmp/single.jpg"}

@@ -2249,6 +2249,17 @@ def bump_generation_action(generation: dict[str, Any], action: str) -> None:
     actions[action] = int(actions.get(action) or 0) + 1
 
 
+def generation_action_for_strategy(strategy: str) -> str:
+    return {
+        generation_engine.STRATEGY_REUSE: "Reuse",
+        generation_engine.STRATEGY_REPLACE_BACKGROUND: "ReplaceBackground",
+        generation_engine.STRATEGY_REFERENCE_REDRAW: "ReferenceRedraw",
+        generation_engine.STRATEGY_TEXT_TO_IMAGE3: "SubmitTextToImageJob",
+        generation_engine.STRATEGY_TEXT_TO_IMAGE_LITE: "TextToImageLite",
+        generation_engine.STRATEGY_WAITING_FOR_PROVIDER: "WaitingForProvider",
+    }.get(str(strategy or ""), "Failed")
+
+
 def materialize_final_images(plan: dict[str, Any], selected_style: str, quality: str | None = "standard") -> dict[str, Any]:
     status = tencent_status_payload()
     generation = {
@@ -2277,7 +2288,10 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
     for row in plan["results"]:
         strip_nonfinal_generated_candidates(row)
         reason = materialization_reason(row, selected_style)
-        source_candidate = source_candidate_for_generation(row)
+        request_data = generation_engine.select_generation_request(
+            generation_engine.request_from_row(row, style=selected_style, quality=quality)
+        )
+        source_candidate = request_data.source_candidate
         item_result = generation_row_result(row, status["provider"], "Reuse", reason)
         if reason is None:
             generation["skipped"] += 1
@@ -2358,10 +2372,17 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
             generation["attempted"] += 1
             item_result["attempted"] = True
             try:
-                if source_candidate:
+                if request_data.source_strategy == generation_engine.STRATEGY_REPLACE_BACKGROUND and source_candidate:
                     detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
-                else:
+                elif request_data.source_strategy == generation_engine.STRATEGY_REFERENCE_REDRAW and source_candidate:
+                    detail = tencent_reference_redraw(row, source_candidate, selected_style, target, quality)
+                elif request_data.source_strategy in {
+                    generation_engine.STRATEGY_TEXT_TO_IMAGE3,
+                    generation_engine.STRATEGY_TEXT_TO_IMAGE_LITE,
+                }:
                     detail = tencent_text_to_image(row, selected_style, quality, target)
+                else:
+                    raise RuntimeError(f"Unsupported generation strategy: {request_data.source_strategy}")
                 assert detail is not None
                 ai_candidate, _ = ai_output_candidate(row, selected_style, quality, f"tencent-{detail['action']}")
                 ai_candidate["tencent"] = detail
@@ -2370,6 +2391,9 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                     "provider": "tencent-hunyuan",
                     "action": detail["action"],
                     "promptType": detail.get("promptType"),
+                    "sourceStrategy": request_data.source_strategy,
+                    "quality": request_data.quality,
+                    "qualityPoints": generation_engine.quality_points(request_data.quality),
                     "reason": reason,
                     "row": row.get("row"),
                     "dish": row.get("name"),
@@ -2395,6 +2419,11 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
                         "status": "succeeded",
                         "succeeded": True,
                         "promptType": detail.get("promptType"),
+                        "sourceStrategy": request_data.source_strategy,
+                        "source_strategy": request_data.source_strategy,
+                        "quality": request_data.quality,
+                        "qualityPoints": generation_engine.quality_points(request_data.quality),
+                        "quality_points": generation_engine.quality_points(request_data.quality),
                         "requestId": detail.get("requestId"),
                         "jobId": detail.get("jobId"),
                         "evidence": generation_evidence("tencent-hunyuan", str(detail["action"]), "succeeded", detail),
@@ -2404,7 +2433,7 @@ def materialize_final_images(plan: dict[str, Any], selected_style: str, quality:
             except Exception as exc:
                 error = str(exc)[:220]
                 generation["errors"].append({"dish": row.get("name"), "message": error})
-                failed_action = "ReplaceBackground" if source_candidate else "Failed"
+                failed_action = generation_action_for_strategy(request_data.source_strategy)
                 item_result.update(
                     {
                         "error": error,
@@ -2927,7 +2956,7 @@ class AppGenerationProvider:
     def __init__(self, style: str, quality: str | None) -> None:
         self.style = style
         self.quality = app_quality_id(quality)
-        self.configured = tencent_ready()
+        self.configured = bool(tencent_status_payload().get("configured"))
         self.allow_lite_fallback = TENCENT_IMAGE3_FALLBACK_TO_LITE
 
     def reuse(self, request_data: generation_engine.GenerationRequest) -> dict[str, Any]:
@@ -2944,6 +2973,8 @@ class AppGenerationProvider:
             "provider": provider,
             "action": action,
             "promptType": "reuse",
+            "qualityPoints": generation_engine.quality_points(request_data.quality),
+            "quality_points": generation_engine.quality_points(request_data.quality),
             "candidate": candidate,
             "path": candidate.get("path") or "",
             "reason": "cached_model_output" if provider == "tencent-hunyuan" else "same_dish_same_style",
@@ -3009,6 +3040,8 @@ def run_formal_generation_item(
     strip_mismatched_source_candidates(row)
     if isinstance(watermark, dict):
         row["watermark"] = watermark
+    if platforms:
+        row["_delivery_platforms"] = [str(platform) for platform in platforms if str(platform or "").strip()]
     request_data = generation_engine.request_from_row(row, style=style, quality=quality, platforms=platforms, watermark=watermark)
     request_data = generation_engine.select_generation_request(request_data)
     provider = AppGenerationProvider(style, quality)
@@ -3034,6 +3067,9 @@ def run_formal_generation_item(
         "providerStatus": generation_engine.provider_status(result.status),
         "provider_status": generation_engine.provider_status(result.status),
         "promptType": result.prompt_type,
+        "quality": result.quality,
+        "qualityPoints": result.quality_points,
+        "quality_points": result.quality_points,
         "sourceStrategy": result.source_strategy,
         "source_strategy": result.source_strategy,
         "providerError": result.provider_error,
