@@ -207,15 +207,29 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "createPayload": create_payload,
         }
 
+    if not status_body.get("configured"):
+        missing = status_body.get("missing") if isinstance(status_body.get("missing"), list) else []
+        raise RuntimeError(
+            "live smoke skipped: Tencent Hunyuan is not configured"
+            + (f" ({', '.join(str(item) for item in missing)})" if missing else "")
+        )
+
     create_status, create_body = client.post_json("/api/jobs", create_payload)
     require_ok(create_status, create_body, "/api/jobs")
     job = create_body.get("job") if isinstance(create_body.get("job"), dict) else {}
     job_id = str(job.get("id") or "")
     if not job_id:
         raise RuntimeError("/api/jobs did not return job.id")
-    run_status, run_body = client.post_json(f"/api/jobs/{job_id}/run", {"limit": args.limit, "paid": True})
+    run_status, run_body = client.post_json(f"/api/jobs/{job_id}/run", {"limit": args.limit, "paid": True, "sync": True})
     require_ok(run_status, run_body, f"/api/jobs/{job_id}/run")
     summary = summarize(client, status_body, run_body)
+    if summary["providerStatus"] != "succeeded":
+        raise RuntimeError(
+            "live smoke did not produce a succeeded provider result: "
+            f"status={summary['status']} providerStatus={summary['providerStatus']} error={summary['error']}"
+        )
+    if not summary["result_url"]:
+        raise RuntimeError("live smoke succeeded status but did not return a generated image URL")
     summary.update(
         {
             "mode": "live",

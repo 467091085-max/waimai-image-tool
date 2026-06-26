@@ -141,6 +141,23 @@ class HunyuanLiveIntegrationTests(unittest.TestCase):
         self.assertIn("--live --limit 1", result["liveCommandRequired"])
         self.assertEqual(result["status"], generation_engine.STATUS_QUEUED)
 
+    def test_smoke_live_without_provider_fails_before_creating_job(self) -> None:
+        args = argparse.Namespace(
+            base_url="",
+            live=True,
+            limit=1,
+            style="style-1",
+            quality="standard",
+            dish="招牌辣椒炒肉",
+        )
+
+        with (
+            mock.patch.object(app_module, "tencent_ready", return_value=False),
+            mock.patch.object(smoke_hunyuan_live.SmokeClient, "post_json", side_effect=AssertionError("live smoke must not create jobs without provider")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Tencent Hunyuan is not configured"):
+                smoke_hunyuan_live.run_smoke(args)
+
 
 if __name__ == "__main__":
     unittest.main()
