@@ -16,8 +16,8 @@ DEFAULT_USER_ID = "default"
 
 POINT_RATE = 10
 QUALITY_POINTS = {
-    "standard": 100,
-    "premium": 200,
+    "standard": 10,
+    "premium": 20,
 }
 QUALITY_ALIASES = {
     "normal": "standard",
@@ -27,7 +27,7 @@ QUALITY_ALIASES = {
     "refined": "premium",
     "pro": "premium",
 }
-CUSTOM_EDIT_POINTS = 150
+CUSTOM_EDIT_POINTS = 15
 WATERMARK_POINTS = 50
 EXTRA_PLATFORM_POINTS = 100
 FREE_SAMPLE_IMAGES = 6

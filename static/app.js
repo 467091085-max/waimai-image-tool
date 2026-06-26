@@ -71,14 +71,14 @@ const exportFormatOptions = [
 ];
 
 const qualityMeta = {
-  standard: { name: "普通出图", points: 100 },
-  premium: { name: "精修出图", points: 200 }
+  standard: { name: "普通出图", points: 10 },
+  premium: { name: "精修出图", points: 20 }
 };
 
 const styleDisplayNames = ["一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景"];
 const fallbackExtraPlatformPoints = 100;
 const fallbackWatermarkPoints = 50;
-const fallbackCustomEditPoints = 150;
+const fallbackCustomEditPoints = 15;
 const stageNames = ["", "上传菜单", "选择风格/样图", "正式出图", "导出"];
 let busySerial = 0;
 let exportProgressTimer = null;
@@ -112,7 +112,7 @@ function extraPlatformPoints() {
 function customEditPoints() {
   const raw = Number(state.plan?.pricing?.customEditPoints);
   if (!Number.isFinite(raw) || raw <= 0) return fallbackCustomEditPoints;
-  return raw < 100 ? raw * 10 : raw;
+  return raw;
 }
 
 function cleanCustomerStatus(value) {

@@ -38,17 +38,17 @@ class BillingTests(unittest.TestCase):
         )
         result = billing.debit_account("u1", "generation-1", charge, db_path=self.db_path)
 
-        self.assertEqual(charge, 3 * 200 + 50 + 100)
-        self.assertEqual(result["points"], 750)
-        self.assertEqual(result["balance"], 290)
+        self.assertEqual(charge, 3 * 20 + 50 + 100)
+        self.assertEqual(result["points"], 210)
+        self.assertEqual(result["balance"], 830)
 
-    def test_product_custom_edit_price_is_one_hundred_fifty_points(self) -> None:
+    def test_product_custom_edit_price_is_fifteen_points(self) -> None:
         import app as app_module
 
         pricing = app_module.pricing_payload(total=10)
 
-        self.assertEqual(pricing["customEditPoints"], 150)
-        self.assertEqual(pricing["customEditCash"], 15)
+        self.assertEqual(pricing["customEditPoints"], 15)
+        self.assertEqual(pricing["customEditCash"], 1.5)
 
     def test_custom_recharge_minimum_is_one_hundred_points(self) -> None:
         with self.assertRaises(billing.InvalidRechargePackage):
@@ -130,10 +130,10 @@ class BillingTests(unittest.TestCase):
         )
 
         self.assertEqual(breakdown["chargeableImages"], 2)
-        self.assertEqual(breakdown["customEditPoints"], 300)
+        self.assertEqual(breakdown["customEditPoints"], 30)
         self.assertEqual(breakdown["chargeableReworks"], 2)
         self.assertEqual(breakdown["extraPlatformPoints"], 200)
-        self.assertEqual(breakdown["total"], 975)
+        self.assertEqual(breakdown["total"], 345)
 
     def test_generation_failure_refund_is_idempotent_and_visible_to_admin(self) -> None:
         billing.credit_recharge("u1", "recharge-99", 99, db_path=self.db_path)
@@ -165,13 +165,13 @@ class BillingTests(unittest.TestCase):
         )
         admin = billing.admin_billing_payload(self.db_path)
 
-        self.assertEqual(charge["points"], 600)
-        self.assertEqual(refund["refund"]["points"], 200)
+        self.assertEqual(charge["points"], 60)
+        self.assertEqual(refund["refund"]["points"], 20)
         self.assertTrue(duplicate["transaction"]["idempotent"])
-        self.assertEqual(billing.get_account("u1", db_path=self.db_path)["balance"], 640)
+        self.assertEqual(billing.get_account("u1", db_path=self.db_path)["balance"], 1000)
         self.assertTrue(admin["ok"])
         self.assertEqual(admin["summary"]["refundCount"], 1)
-        self.assertEqual(admin["summary"]["refundPoints"], 200)
+        self.assertEqual(admin["summary"]["refundPoints"], 20)
         self.assertEqual(admin["summary"]["failedImagesRefunded"], 1)
         self.assertEqual(admin["tasks"][0]["status"], "failed_refunded")
         self.assertIn("generation_output_charge", {entry["eventType"] for entry in admin["ledger"]})
@@ -191,7 +191,7 @@ class BillingTests(unittest.TestCase):
         )
         admin = billing.admin_billing_payload(self.db_path)
 
-        self.assertEqual(result["points"], 100)
+        self.assertEqual(result["points"], 10)
         self.assertEqual(result["eventType"], "generation_retry_charge")
         self.assertEqual(admin["ledger"][0]["eventType"], "generation_retry_charge")
 

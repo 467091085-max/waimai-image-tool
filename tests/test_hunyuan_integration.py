@@ -141,7 +141,7 @@ class HunyuanLiveIntegrationTests(unittest.TestCase):
         self.assertIn("--live --limit 1", result["liveCommandRequired"])
         self.assertEqual(result["status"], generation_engine.STATUS_QUEUED)
 
-    def test_smoke_live_without_provider_fails_before_creating_job(self) -> None:
+    def test_smoke_live_without_provider_skips_before_creating_job(self) -> None:
         args = argparse.Namespace(
             base_url="",
             live=True,
@@ -155,8 +155,14 @@ class HunyuanLiveIntegrationTests(unittest.TestCase):
             mock.patch.object(app_module, "tencent_ready", return_value=False),
             mock.patch.object(smoke_hunyuan_live.SmokeClient, "post_json", side_effect=AssertionError("live smoke must not create jobs without provider")),
         ):
-            with self.assertRaisesRegex(RuntimeError, "Tencent Hunyuan is not configured"):
-                smoke_hunyuan_live.run_smoke(args)
+            result = smoke_hunyuan_live.run_smoke(args)
+
+        self.assertEqual(result["mode"], "live")
+        self.assertEqual(result["acceptanceStatus"], "skipped")
+        self.assertTrue(result["skipped"])
+        self.assertFalse(result["willCreateJob"])
+        self.assertFalse(result["willRunProvider"])
+        self.assertIn("not fully configured", result["skipReason"])
 
 
 if __name__ == "__main__":
