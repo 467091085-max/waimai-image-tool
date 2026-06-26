@@ -23,6 +23,7 @@ DEFAULT_LOCAL_URL = "http://127.0.0.1:8790"
 DEFAULT_RENDER_URL = "https://waimai-image-tool-1.onrender.com"
 DEFAULT_REPORT_DIR = Path("data") / "exports" / "acceptance"
 LIVE_ENV_VAR = "WAIMAI_ACCEPTANCE_LIVE"
+GALLERY_UPLOAD_STATUS_PATH = "/api/admin/gallery-upload/status"
 MENU_ROWS = [
     ["分类", "菜品名", "价格", "类型", "套餐内容/规格", "备注"],
     ["热销", "老长沙辣椒炒肉盖码饭", "19.8", "单品", "", "smoke"],
@@ -205,6 +206,7 @@ def run_product_flow(
     plan: dict[str, Any] | None = None
     job_id = ""
     provider_configured = False
+    provider_ready_for_live = False
     provider_fields: dict[str, Any] = {}
     selected_rows: list[int] = []
     selected_row_details: list[dict[str, Any]] = []
@@ -230,6 +232,7 @@ def run_product_flow(
         tencent_status = request_json(client, "GET", "/api/tencent-status")
         tencent_data = tencent_status["data"] if isinstance(tencent_status["data"], dict) else {}
         provider_configured = bool(tencent_data.get("configured"))
+        provider_ready_for_live = provider_configured and bool(tencent_data.get("cosReady"))
         provider_fields = compact_fields(
             tencent_data,
             [
@@ -252,6 +255,18 @@ def run_product_flow(
             fields=provider_fields,
             reason="" if ok else tencent_status["error"] or "missing provider/configured fields",
         )
+
+        if is_render_like_url(base_url):
+            log.add(
+                "render_provider_env",
+                provider_ready_for_live,
+                skipped=not provider_ready_for_live,
+                fields={
+                    **provider_fields,
+                    "missing": tencent_data.get("missing") if isinstance(tencent_data.get("missing"), list) else [],
+                },
+                reason="" if provider_ready_for_live else "Render Tencent/COS env is not fully configured; live model gates are skipped until env is ready",
+            )
 
         account_status = request_json(client, "GET", "/api/account")
         account_data = account_status["data"] if isinstance(account_status["data"], dict) else {}
@@ -292,6 +307,59 @@ def run_product_flow(
             ),
             reason="" if library_ok else library_status["error"] or "library has no reusable product images",
         )
+
+        if is_render_like_url(base_url):
+            remote_images = int_or_zero(library_data.get("remoteImages")) or int_or_zero(library_data.get("indexImages"))
+            real_gallery_ok = (
+                not library_status["error"]
+                and library_data.get("remoteIndex") is True
+                and remote_images > 0
+            )
+            log.add(
+                "real_gallery_runtime",
+                real_gallery_ok,
+                http_status=library_status["status"],
+                fields=compact_fields(
+                    library_data,
+                    [
+                        "remoteIndex",
+                        "remoteImages",
+                        "indexImages",
+                        "indexSource",
+                        "sources",
+                        "externalDirs",
+                        "total",
+                        "styles",
+                    ],
+                ),
+                reason="" if real_gallery_ok else "Render must read the COS real gallery index; internal seed images are not production evidence",
+            )
+
+            upload_env = request_json(client, "GET", GALLERY_UPLOAD_STATUS_PATH)
+            upload_env_data = upload_env["data"] if isinstance(upload_env["data"], dict) else {}
+            upload_env_ok = not upload_env["error"] and upload_env_data.get("enabled") is True
+            upload_env_reachable = not upload_env["error"]
+            log.add(
+                "gallery_upload_env",
+                upload_env_reachable,
+                skipped=upload_env_reachable and not upload_env_ok,
+                http_status=upload_env["status"],
+                fields=compact_fields(
+                    upload_env_data,
+                    [
+                        "enabled",
+                        "disabledReason",
+                        "cosReady",
+                        "bucket",
+                        "region",
+                        "prefix",
+                        "indexUrl",
+                        "configuredIndexUrl",
+                        "runtimeIndexActive",
+                    ],
+                ),
+                reason="" if upload_env_ok else upload_env["error"] or "Render gallery upload proxy/env is not enabled; upload-live checks are skipped",
+            )
 
         main_upload_ok = False
         main_upload_fields: dict[str, Any] = {}
@@ -575,7 +643,7 @@ def run_product_flow(
         )
 
         effective_limit = min(max(int_or_zero(limit), 0), max(len(selected_rows), 1), 1)
-        if live_generate and job_id and effective_limit > 0:
+        if live_generate and job_id and effective_limit > 0 and provider_ready_for_live:
             run_payload = {
                 "limit": effective_limit,
                 "paid": True,
@@ -607,14 +675,14 @@ def run_product_flow(
             run_ok = (
                 not run_response["error"]
                 and bool(run_job)
-                and provider_configured
+                and provider_ready_for_live
                 and int_or_zero(run_job.get("completedItems")) >= 1
                 and str(run_job.get("status") or "") not in {"failed", "cancelled"}
                 and bool(formal_evidence.get("imageUrl"))
                 and not formal_evidence.get("mockOrSeed")
             )
-            if not provider_configured:
-                run_reason = "provider configured=false; formal generation is blocked before model execution"
+            if not provider_ready_for_live:
+                run_reason = "provider/COS env is not ready; formal generation is blocked before model execution"
             elif formal_evidence.get("mockOrSeed"):
                 run_reason = "provider configured=true but formal result looks like seed/mock/local fallback"
                 red_flags.append({"step": "job_run_live", "reason": run_reason})
@@ -631,12 +699,23 @@ def run_product_flow(
             )
 
         else:
+            if live_generate and not provider_ready_for_live:
+                skip_reason = "Render Tencent/COS env is not fully configured; skipped live provider run without creating model cost"
+            elif not live_generate:
+                skip_reason = "not run by default; pass --live-generate --limit 1 to run one formal image"
+            else:
+                skip_reason = "no runnable job or limit for live formal image"
             log.add(
                 "job_run_live",
                 True,
                 skipped=True,
-                fields={"liveGenerate": live_generate, "requestedLimit": limit, "effectiveLimit": effective_limit},
-                reason="not run by default; pass --live-generate --limit 1 to run one formal image",
+                fields={
+                    "liveGenerate": live_generate,
+                    "requestedLimit": limit,
+                    "effectiveLimit": effective_limit,
+                    "providerReadyForLive": provider_ready_for_live,
+                },
+                reason=skip_reason,
             )
 
         single_export_rows = single_export_row_selection(results if isinstance(results, list) else [])
@@ -683,9 +762,14 @@ def run_product_flow(
         for step in log.steps
         if not step.get("ok")
     ]
+    skips = [
+        {"step": step["name"], "reason": step.get("reason", "")}
+        for step in log.steps
+        if step.get("status") == "skipped"
+    ]
     finished_at = utc_now()
     return {
-        "ok": not failures,
+        "ok": not failures and not red_flags,
         "baseUrl": base_url,
         "mode": {
             "styleFirst": style_first,
@@ -707,9 +791,10 @@ def run_product_flow(
         "summary": {
             "passed": sum(1 for step in log.steps if step.get("ok") and step.get("status") != "skipped"),
             "failed": len(failures),
-            "skipped": sum(1 for step in log.steps if step.get("status") == "skipped"),
+            "skipped": len(skips),
             "total": len(log.steps),
         },
+        "skips": skips,
         "redFlags": red_flags,
         "exports": [artifact for artifact in export_artifacts if artifact],
         "failures": failures,
@@ -736,6 +821,12 @@ def normalize_base_url(value: str | None) -> tuple[str, str]:
     raise ValueError(
         f"Invalid --base-url {raw!r}. Use 'local', 'render', or a full URL such as {DEFAULT_LOCAL_URL}."
     )
+
+
+def is_render_like_url(value: str | None) -> bool:
+    parsed = parse.urlparse(str(value or ""))
+    host = (parsed.netloc or parsed.path or "").lower()
+    return "onrender.com" in host or host == parse.urlparse(DEFAULT_RENDER_URL).netloc
 
 
 def env_flag_enabled(name: str) -> bool:
@@ -1466,6 +1557,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     provider = report.get("provider") if isinstance(report.get("provider"), dict) else {}
     failures = report.get("failures") if isinstance(report.get("failures"), list) else []
     red_flags = report.get("redFlags") if isinstance(report.get("redFlags"), list) else []
+    skips = report.get("skips") if isinstance(report.get("skips"), list) else []
     lines = [
         "# Product Acceptance Report",
         "",
@@ -1489,6 +1581,11 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         lines.append("")
     else:
         lines.extend(["## Blocking Failures", "", "- None", ""])
+    if skips:
+        lines.extend(["## Skipped Gates", ""])
+        for skipped in skips:
+            lines.append(f"- `{skipped.get('step')}`: {skipped.get('reason')}")
+        lines.append("")
     lines.extend(
         [
             "## Gate Matrix",
@@ -1554,6 +1651,15 @@ def compact_markdown_fields(fields: dict[str, Any]) -> str:
         "images",
         "zipImages",
         "download",
+        "remoteIndex",
+        "remoteImages",
+        "indexImages",
+        "indexSource",
+        "sources",
+        "enabled",
+        "cosReady",
+        "bucket",
+        "indexUrl",
     ]
     compact = {key: fields.get(key) for key in keep if key in fields and fields.get(key) not in (None, "", [])}
     if not compact:
@@ -1571,6 +1677,7 @@ def stdout_summary(report: dict[str, Any], artifacts: dict[str, str] | None = No
         "baseUrl": report.get("baseUrl"),
         "summary": report.get("summary"),
         "failures": report.get("failures"),
+        "skips": report.get("skips"),
         "redFlags": report.get("redFlags"),
         "artifacts": artifacts or {},
     }
