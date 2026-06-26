@@ -305,7 +305,9 @@
         </label>
         <label>图片格式
           <select id="formatSelect">
-            <option value="jpg">JPG/PNG/JPEG 兼容（默认 JPG）</option>
+            <option value="jpg" selected>JPG（默认，平台通用）</option>
+            <option value="jpeg">JPEG（支持时保留 .jpeg）</option>
+            <option value="png">PNG</option>
           </select>
           <span class="field-note">JPG/PNG/JPEG 兼容，默认导出 JPG。</span>
         </label>

@@ -28,7 +28,7 @@ from flask import Flask, jsonify, render_template, request, send_file, send_from
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from admin_panel import AdminDependencies, create_admin_blueprint
-from image_pipeline import PLATFORMS, export_delivery_zip
+from image_pipeline import PLATFORMS, export_delivery_zip, require_platforms
 from matching_engine import (
     MATCH_REASON_UNMATCHED,
     assess_match as engine_assess_match,
@@ -4131,7 +4131,10 @@ def api_export():
         selected_ids = []
     selected_ids = [*selected_ids, *[x for x in selected_rows_payload if not str(x).isdigit()]]
     watermark = payload.get("watermark") if isinstance(payload.get("watermark"), dict) else None
-    platforms = payload.get("platforms") or ["meituan"]
+    try:
+        platforms = require_platforms(payload.get("platforms"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "code": "platform_required"}), 400
     quality = str(payload.get("quality", "standard"))
     style = str(payload.get("style", ""))
     image_format = str(payload.get("format") or payload.get("imageFormat") or "jpg")

@@ -202,21 +202,28 @@ def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.
     return Image.alpha_composite(base, overlay)
 
 
-def parse_platforms(value: Any) -> list[str]:
+def parse_platforms(value: Any, *, default: list[str] | tuple[str, ...] | None = ("meituan",)) -> list[str]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        value = ["meituan"]
+        value = list(default or [])
     out = []
     for item in value:
         key = str(item)
         if key in PLATFORMS and key not in out:
             out.append(key)
-    return out or ["meituan"]
+    return out or list(default or [])
+
+
+def require_platforms(value: Any) -> list[str]:
+    selected = parse_platforms(value, default=[])
+    if not selected:
+        raise ValueError("请至少选择一个导出平台")
+    return selected
 
 
 def platform_extra_points(platforms: list[str] | str | None, extra_points: int = EXTRA_PLATFORM_POINTS) -> int:
-    selected = parse_platforms(platforms)
+    selected = parse_platforms(platforms, default=[])
     return max(len(selected) - 1, 0) * int(extra_points)
 
 
