@@ -29,14 +29,26 @@
       <div class="hero-copy">
         <span class="eyebrow">出图工作台</span>
         <h2>从菜单上传到平台交付，<br>一次完成整店菜品图</h2>
-        <p>上传菜单后自动解析菜品，先选 6 张背景风格并生成 6 张免费单品样图；确认质量、平台和水印后再扣积分生成正式图，最后按平台尺寸导出。</p>
+        <p>上传菜单后自动解析菜品，自动进入风格选择；先看 6 张免费单品样图，确认质量、平台和水印后再扣积分生成正式图，最后按平台尺寸导出。</p>
         <div class="desk-flow" aria-label="产品流程">
           <span>上传菜单</span>
-          <span>选风格</span>
-          <span>设质量/平台/水印</span>
-          <span>扣积分生成</span>
-          <span>预览修改</span>
+          <span>选择风格/样图</span>
+          <span>正式出图</span>
           <span>导出</span>
+        </div>
+        <div class="hero-ledger" aria-label="积分和本单预估">
+          <div>
+            <span>当前积分</span>
+            <b id="heroBalance">-</b>
+          </div>
+          <div>
+            <span>预计消耗</span>
+            <b id="heroEstimatePoints">-</b>
+          </div>
+          <div>
+            <span>当前质量</span>
+            <b id="heroQualityText">普通出图</b>
+          </div>
         </div>
       </div>
       <div class="action-rail">
@@ -51,29 +63,21 @@
         <button id="startJobBtn" class="round-step" type="button" disabled>
           <i>2</i>
           <span class="step-copy">
-            <b>选择风格</b>
-            <span>生成 6 张背景候选</span>
+            <b>选择风格/样图</b>
+            <span>自动生成背景候选和免费样图入口</span>
           </span>
           <em>等待菜单</em>
         </button>
-        <button id="sampleShortcutBtn" class="round-step" type="button" disabled>
+        <button id="formalShortcutBtn" class="round-step" type="button" disabled>
           <i>3</i>
           <span class="step-copy">
-            <b>免费样图</b>
-            <span>生成 6 张单品预览</span>
-          </span>
-          <em>选择背景后可用</em>
-        </button>
-        <button id="formalShortcutBtn" class="round-step" type="button" disabled>
-          <i>4</i>
-          <span class="step-copy">
             <b>正式出图</b>
-            <span>设置质量/平台/水印后扣积分</span>
+            <span>确认扣积分并生成全店图</span>
           </span>
           <em>样图后可用</em>
         </button>
         <button id="exportShortcutBtn" class="round-step" type="button" disabled>
-          <i>5</i>
+          <i>4</i>
           <span class="step-copy">
             <b>导出图片</b>
             <span>单张保存或打包 ZIP</span>
@@ -128,7 +132,7 @@
 
     <section id="stylesPanel" class="panel section-panel locked">
       <div class="section-copy">
-        <span class="eyebrow">第 2-4 步</span>
+        <span class="eyebrow">第 2 步</span>
         <h3>风格和出图设置</h3>
         <p>先从 6 张背景候选中选定整店风格，再看 6 张免费单品样图；质量、平台和水印确认后才扣积分生成正式图。</p>
       </div>
@@ -190,7 +194,7 @@
           </div>
           <div id="platformOptions" class="platform-options">
             <label class="platform-option">
-              <input class="platform-check" type="checkbox" value="meituan" checked>
+              <input class="platform-check" type="checkbox" value="meituan">
               <span><b>美团</b><em>800x600，4:3，<=5MB，首个平台不加积分</em></span>
             </label>
             <label class="platform-option">
