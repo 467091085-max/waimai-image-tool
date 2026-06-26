@@ -12,9 +12,9 @@ DOCS = {
 }
 
 
-class V6AcceptanceDocsTests(unittest.TestCase):
+class V7AcceptanceDocsTests(unittest.TestCase):
     def test_docs_include_render_env_and_smoke_release_gates(self) -> None:
-        required_terms = [
+        common_terms = [
             "scripts/smoke_product_flow.py",
             "WAIMAI_ACCEPTANCE_LIVE=1",
             "--no-live-generate",
@@ -30,22 +30,32 @@ class V6AcceptanceDocsTests(unittest.TestCase):
             "/api/tencent-status",
             "gunicorn app:app",
         ]
+        v7_terms = [
+            "GALLERY_UPLOAD_TOKEN",
+            "remoteIndex",
+            "remoteImages",
+            "因 Render env 未配置而跳过",
+        ]
         for name, path in DOCS.items():
             text = path.read_text(encoding="utf-8")
+            required_terms = common_terms + (v7_terms if name != "README.md" else [])
             missing = [term for term in required_terms if term not in text]
             self.assertEqual(missing, [], f"{name} missing Render acceptance terms")
 
-    def test_acceptance_doc_names_v6_e2e_surfaces(self) -> None:
+    def test_acceptance_doc_names_v7_e2e_surfaces(self) -> None:
         text = DOCS["PRODUCT_ACCEPTANCE.md"].read_text(encoding="utf-8")
         required_surfaces = [
+            "真实图库",
             "上传菜单",
-            "六张风格图",
-            "六张免费样图",
+            "6 张背景",
+            "6 张免费单品样图",
             "正式生图 job",
             "图片预览",
             "单张修改",
-            "打包导出",
+            "平台导出",
+            "打包 ZIP",
             "积分扣费",
+            "Hunyuan live",
             "library-status",
         ]
         missing = [surface for surface in required_surfaces if surface not in text]

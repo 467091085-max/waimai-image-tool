@@ -174,6 +174,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     client = SmokeClient(args.base_url)
     status_code, status_body = client.get_json("/api/tencent-status")
     require_ok(status_code, status_body, "/api/tencent-status")
+    env_ready = bool(status_body.get("configured")) and bool(status_body.get("cosReady"))
+    missing = status_body.get("missing") if isinstance(status_body.get("missing"), list) else []
 
     create_payload = {
         "style": args.style,
@@ -188,6 +190,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "mode": "dry-run",
             "live": False,
+            "acceptanceStatus": "passed" if env_ready else "skipped",
+            "skipped": not env_ready,
+            "skipReason": "" if env_ready else "Tencent/COS Render env is not fully configured; live provider evidence is unavailable",
             "willCreateJob": False,
             "willRunProvider": False,
             "statusEndpoint": "/api/tencent-status",
@@ -195,7 +200,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "status": summary["status"],
             "providerStatus": summary["providerStatus"],
             "configured": bool(status_body.get("configured")),
-            "missing": status_body.get("missing") if isinstance(status_body.get("missing"), list) else [],
+            "cosReady": bool(status_body.get("cosReady")),
+            "missing": missing,
             "error": summary["error"],
             "provider_error": summary["provider_error"],
             "retryable": summary["retryable"],
@@ -207,12 +213,31 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "createPayload": create_payload,
         }
 
-    if not status_body.get("configured"):
-        missing = status_body.get("missing") if isinstance(status_body.get("missing"), list) else []
-        raise RuntimeError(
-            "live smoke skipped: Tencent Hunyuan is not configured"
-            + (f" ({', '.join(str(item) for item in missing)})" if missing else "")
-        )
+    if not env_ready:
+        summary = summarize(client, status_body)
+        return {
+            "mode": "live",
+            "live": True,
+            "acceptanceStatus": "skipped",
+            "skipped": True,
+            "skipReason": "Tencent/COS Render env is not fully configured; skipped before creating a paid provider job",
+            "willCreateJob": False,
+            "willRunProvider": False,
+            "provider": summary["provider"],
+            "status": "skipped",
+            "providerStatus": summary["providerStatus"],
+            "configured": bool(status_body.get("configured")),
+            "cosReady": bool(status_body.get("cosReady")),
+            "missing": missing,
+            "error": summary["error"],
+            "provider_error": summary["provider_error"],
+            "retryable": summary["retryable"],
+            "refund_required": summary["refund_required"],
+            "result_url": "",
+            "fixedDish": args.dish,
+            "promptContract": SMOKE_PROMPT_NOTE,
+            "createPayload": create_payload,
+        }
 
     create_status, create_body = client.post_json("/api/jobs", create_payload)
     require_ok(create_status, create_body, "/api/jobs")
@@ -234,10 +259,14 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         {
             "mode": "live",
             "live": True,
+            "acceptanceStatus": "passed" if summary.get("status") in {"succeeded", "partial"} and summary.get("result_url") else "failed",
+            "skipped": False,
+            "skipReason": "",
             "limit": args.limit,
             "configured": bool(status_body.get("configured")),
-            "willRunProvider": bool(status_body.get("configured")),
-            "missing": status_body.get("missing") if isinstance(status_body.get("missing"), list) else [],
+            "cosReady": bool(status_body.get("cosReady")),
+            "willRunProvider": env_ready,
+            "missing": missing,
             "fixedDish": args.dish,
             "promptContract": SMOKE_PROMPT_NOTE,
         }
@@ -268,8 +297,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1
-    print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
-    return 0
+    status = str(result.get("acceptanceStatus") or result.get("status") or "").lower()
+    ok = status not in {"failed", "fail", "error"}
+    print(json.dumps({"ok": ok, **result}, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
