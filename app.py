@@ -3846,15 +3846,20 @@ def api_gallery_upload_status():
     cos = tencent_cos_config()
     prefix = gallery_cos_prefix()
     index_url = public_cos_url(cos.get("bucket", ""), cos.get("region", ""), gallery_index_key(prefix)) if cos.get("bucket") else ""
+    configured_index_url = configured_library_index_url()
+    upload_enabled = bool(gallery_upload_token())
     return jsonify(
         {
-            "enabled": bool(gallery_upload_token()),
+            "enabled": upload_enabled,
+            "disabledReason": "" if upload_enabled else "未配置 GALLERY_UPLOAD_TOKEN，图库远程上传接口已关闭",
             "cosReady": bool(cos.get("ready")),
             "bucket": cos.get("bucket") if cos.get("ready") else "",
             "region": cos.get("region"),
             "prefix": prefix,
             "indexKey": gallery_index_key(prefix),
             "indexUrl": index_url,
+            "configuredIndexUrl": configured_index_url,
+            "runtimeIndexActive": bool(configured_index_url and configured_index_url == index_url),
             "renderEnv": {"COS_LIBRARY_INDEX_URL": index_url} if index_url else {},
         }
     )
@@ -3950,6 +3955,7 @@ def api_gallery_upload_publish():
     key = gallery_index_key(str(cos["prefix"]))
     client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(data), Key=key, ContentType="application/x-ndjson; charset=utf-8")
     index_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
+    os.environ["COS_LIBRARY_INDEX_URL"] = index_url
     library_images.cache_clear()
     return jsonify(
         {
@@ -3958,6 +3964,8 @@ def api_gallery_upload_publish():
             "records": len([line for line in data.decode("utf-8", errors="ignore").splitlines() if line.strip()]),
             "indexKey": key,
             "indexUrl": index_url,
+            "activatedIndexUrl": index_url,
+            "runtimeIndexActive": True,
             "renderEnv": {"COS_LIBRARY_INDEX_URL": index_url},
         }
     )

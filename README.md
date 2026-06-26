@@ -188,6 +188,8 @@ PYTHONPATH=.codex_deps:. python3 scripts/push_gallery_via_app.py \
 
 成功后脚本会输出 `publish.renderEnv.COS_LIBRARY_INDEX_URL`。把这个 URL 填到 Render 的 `COS_LIBRARY_INDEX_URL` 环境变量，重启服务；线上 `/api/library-status` 应显示 `remoteIndex=true`。确认小批量没问题后，再去掉 `--limit 3` 做全量上传。
 
+上传代理在 publish 成功时会把本次 COS index URL 激活到当前 Render 进程并清理图库缓存，所以脚本加 `--verify-library` 后可以立刻检查 `/api/library-status` 是否读到 remote gallery；但 Render 重启后仍依赖环境变量，`COS_LIBRARY_INDEX_URL` 需要长期保留。
+
 从 Mac 的 `cleanpic` 生成线上真实种子图库：
 
 ```bash
