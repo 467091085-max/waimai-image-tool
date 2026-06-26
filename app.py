@@ -75,6 +75,7 @@ CUSTOM_EDIT_POINTS = billing.CUSTOM_EDIT_POINTS
 WATERMARK_POINTS = billing.WATERMARK_POINTS
 EXTRA_PLATFORM_POINTS = billing.EXTRA_PLATFORM_POINTS
 PREVIEW_SAMPLE_COUNT = 6
+STYLE_BACKGROUND_GENERATION_ATTEMPT_LIMIT = int(os.environ.get("STYLE_BACKGROUND_GENERATION_ATTEMPT_LIMIT", str(PREVIEW_SAMPLE_COUNT * 3)))
 DEMO_BALANCE_POINTS = int(os.environ.get("DEMO_BALANCE_POINTS", "1880"))
 TENCENT_AIART_HOST = "aiart.tencentcloudapi.com"
 TENCENT_AIART_SERVICE = "aiart"
@@ -163,15 +164,15 @@ DEMO_DISHES = [
     "康师傅冰红茶",
 ]
 
-BACKGROUND_LABELS = ("1号背景", "2号背景", "3号背景", "4号背景", "5号背景", "6号背景")
+BACKGROUND_LABELS = ("一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景")
 
 STYLE_COLORS = {
-    "style-1": ("1号背景", (238, 205, 155), (173, 102, 42)),
-    "style-2": ("2号背景", (60, 64, 67), (218, 187, 121)),
-    "style-3": ("3号背景", (229, 232, 235), (90, 116, 132)),
-    "style-4": ("4号背景", (181, 44, 39), (255, 221, 148)),
-    "style-5": ("5号背景", (210, 184, 122), (84, 136, 84)),
-    "style-6": ("6号背景", (192, 216, 226), (42, 100, 132)),
+    "style-1": ("一号背景", (238, 205, 155), (173, 102, 42)),
+    "style-2": ("二号背景", (60, 64, 67), (218, 187, 121)),
+    "style-3": ("三号背景", (229, 232, 235), (90, 116, 132)),
+    "style-4": ("四号背景", (181, 44, 39), (255, 221, 148)),
+    "style-5": ("五号背景", (210, 184, 122), (84, 136, 84)),
+    "style-6": ("六号背景", (192, 216, 226), (42, 100, 132)),
 }
 
 STYLE_PROMPTS = {
@@ -1984,7 +1985,7 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                 "evidence": generation_evidence("tencent-hunyuan", str(detail["action"]), "succeeded", detail),
             }
         except Exception as exc:
-            failed_action = "ReplaceBackground" if source_candidate else "Failed"
+            failed_action = "ReplaceBackground" if source_candidate else "TextToImage"
             error = str(exc)[:220]
             result.update(
                 {
@@ -1997,27 +1998,6 @@ def materialize_preview_candidate(item: dict[str, Any], selected_style: str, qua
                     "evidence": generation_evidence("tencent-hunyuan", failed_action, "failed"),
                 }
             )
-            if allow_local_image_fallback():
-                draw_demo_image(target, item["name"], selected_style)
-                metadata = {
-                    "status": "fallback",
-                    "provider": "local-demo",
-                    "action": "LocalFallback",
-                    "reason": "free_style_preview",
-                    "error": error,
-                    "modelFailed": True,
-                }
-                write_ai_output_metadata(target, metadata)
-                candidate = candidate_from_path(target, item["name"], selected_style, "generated-preview", 70.0)
-                candidate_generation_metadata(candidate, metadata)
-                return candidate, {
-                    "status": "fallback",
-                    "provider": "local-demo",
-                    "action": "LocalFallback",
-                    "error": error,
-                    "fallbackFrom": "tencent-hunyuan",
-                    "evidence": generation_evidence("local-demo", "LocalFallback", "fallback"),
-                }
             return None, result
     return None, queued_generation_payload()
 
@@ -2535,100 +2515,61 @@ def style_option_payload(
     }
 
 
+def style_option_metrics(results: list[dict[str, Any]], style_id: str) -> dict[str, int]:
+    direct = review = bg_replace = custom = count = 0
+    for row in results:
+        candidates = row.get("candidates") or []
+        if not candidates:
+            custom += 1
+            continue
+        same = next((c for c in candidates if c.get("styleId") == style_id), None)
+        if same:
+            count += 1
+        if same and same.get("reusable", True) and row.get("status") == "直接可用":
+            direct += 1
+        elif same and float(same.get("score") or same.get("confidence") or 0) >= 70:
+            review += 1
+        elif same:
+            custom += 1
+        else:
+            bg_replace += 1
+    return {
+        "count": count,
+        "direct": direct,
+        "review": review,
+        "bgReplace": bg_replace,
+        "custom": custom,
+        "estimatedPoints": direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
+    }
+
+
+def normalized_background_signatures(candidate: dict[str, Any] | None, fallback: str) -> tuple[str, set[str]]:
+    signature = candidate_background_signature(candidate)
+    signatures = candidate_background_signatures(candidate)
+    if signature and not signatures:
+        signatures = {f"bg:{signature}"}
+    if not signature:
+        signature = fallback
+        signatures = signatures or {f"bg:{fallback}"}
+    return signature, signatures
+
+
 def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     style_ids = ordered_style_ids(results)
-    options = []
+    options: list[dict[str, Any]] = []
     seen_signatures: set[str] = set()
     used_style_ids: set[str] = set()
     total = max(1, len(results))
     generated_attempts = 0
-    for style_id in style_ids:
-        if len(options) >= PREVIEW_SAMPLE_COUNT:
-            break
-        if style_id in used_style_ids:
-            continue
-        direct = review = bg_replace = custom = 0
-        sample = None
-        for row in results:
-            candidates = row["candidates"]
-            if not candidates:
-                custom += 1
-                continue
-            same = next((c for c in candidates if c["styleId"] == style_id), None)
-            sample = sample or same
-            if same and same.get("reusable", True) and row.get("status") == "直接可用":
-                direct += 1
-            elif same and float(same.get("score") or same.get("confidence") or 0) >= 70:
-                review += 1
-            elif same:
-                custom += 1
-            else:
-                bg_replace += 1
-        library_sample = style_representative_candidate(style_id)
-        if library_sample:
-            sample = library_sample
-        else:
-            sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
-        signature = candidate_background_signature(sample)
-        signatures = candidate_background_signatures(sample)
-        if signature and not signatures:
-            signatures = {f"bg:{signature}"}
-        if not signature:
-            signature = style_id
-            signatures = signatures or {f"bg:{style_id}"}
+
+    def add_option(style_id: str, sample: dict[str, Any] | None) -> bool:
+        if not sample or style_id in used_style_ids or len(options) >= PREVIEW_SAMPLE_COUNT:
+            return False
+        signature, signatures = normalized_background_signatures(sample, style_id)
         if signatures & seen_signatures:
-            fallback_sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
-            fallback_signature = candidate_background_signature(fallback_sample)
-            fallback_signatures = candidate_background_signatures(fallback_sample)
-            if fallback_signature and not fallback_signatures:
-                fallback_signatures = {f"bg:{fallback_signature}"}
-            if not fallback_signature:
-                fallback_signature = style_id
-                fallback_signatures = fallback_signatures or {f"bg:{style_id}"}
-            if not (fallback_signatures & seen_signatures):
-                sample = fallback_sample
-                signature = fallback_signature
-                signatures = fallback_signatures
-            else:
-                continue
-        style_name = style_name_for(style_id)
+            return False
         display_index = len(options) + 1
-        display_name = BACKGROUND_LABELS[display_index - 1]
-        options.append(
-            style_option_payload(
-                style_id,
-                display_name,
-                style_name,
-                sample,
-                signature,
-                sum(1 for r in results for c in r["candidates"] if c["styleId"] == style_id),
-                direct,
-                review,
-                bg_replace,
-                custom,
-                total,
-                direct * 10 + review * 12 + bg_replace * 18 + custom * 49,
-            )
-        )
-        used_style_ids.add(style_id)
-        seen_signatures.update(signatures)
-    fallback_index = 1
-    while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= PREVIEW_SAMPLE_COUNT:
-        style_id = f"generated-style-fallback-{fallback_index}"
-        fallback_index += 1
-        if style_id in used_style_ids:
-            continue
-        sample, generated_attempts = style_background_fill_candidate(style_id, generated_attempts, PREVIEW_SAMPLE_COUNT)
-        signature = candidate_background_signature(sample)
-        signatures = candidate_background_signatures(sample)
-        if signature and not signatures:
-            signatures = {f"bg:{signature}"}
-        if not signature:
-            signature = style_id
-            signatures = signatures or {f"bg:{style_id}"}
-        if signatures & seen_signatures:
-            continue
-        display_index = len(options) + 1
+        metrics = style_option_metrics(results, style_id)
         options.append(
             style_option_payload(
                 style_id,
@@ -2636,17 +2577,52 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 style_name_for(style_id),
                 sample,
                 signature,
-                0,
-                0,
-                0,
+                metrics["count"],
+                metrics["direct"],
+                metrics["review"],
+                metrics["bgReplace"],
+                metrics["custom"],
                 total,
-                0,
-                total,
-                total * 18,
+                metrics["estimatedPoints"],
             )
         )
         used_style_ids.add(style_id)
         seen_signatures.update(signatures)
+        return True
+
+    # First pass: use truly available gallery backgrounds and skip duplicates.
+    for style_id in style_ids:
+        if len(options) >= PREVIEW_SAMPLE_COUNT:
+            break
+        add_option(style_id, style_representative_candidate(style_id))
+
+    # Second pass: when the gallery lacks enough distinct backgrounds, ask Hunyuan to fill.
+    for style_id in style_ids:
+        if len(options) >= PREVIEW_SAMPLE_COUNT:
+            break
+        if style_id in used_style_ids:
+            continue
+        sample, generated_attempts = style_background_fill_candidate(
+            style_id,
+            generated_attempts,
+            STYLE_BACKGROUND_GENERATION_ATTEMPT_LIMIT,
+        )
+        add_option(style_id, sample)
+
+    fallback_index = 1
+    max_fallbacks = max(PREVIEW_SAMPLE_COUNT * 4, STYLE_BACKGROUND_GENERATION_ATTEMPT_LIMIT)
+    while len(options) < PREVIEW_SAMPLE_COUNT and fallback_index <= max_fallbacks:
+        style_id = f"generated-style-fallback-{fallback_index}"
+        fallback_index += 1
+        if style_id in used_style_ids:
+            continue
+        sample, generated_attempts = style_background_fill_candidate(
+            style_id,
+            generated_attempts,
+            STYLE_BACKGROUND_GENERATION_ATTEMPT_LIMIT,
+        )
+        add_option(style_id, sample)
+
     pending_index = 1
     while len(options) < PREVIEW_SAMPLE_COUNT:
         style_id = f"generated-style-needed-{pending_index}"
@@ -2654,29 +2630,7 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if style_id in used_style_ids:
             continue
         sample = style_background_placeholder_candidate(style_id, "pending", "GenerateStyleBackground", "图库背景不足，等待生成不同背景")
-        signature = candidate_background_signature(sample) or style_id
-        signatures = candidate_background_signatures(sample) or {f"bg:{signature}"}
-        if signatures & seen_signatures:
-            continue
-        display_index = len(options) + 1
-        options.append(
-            style_option_payload(
-                style_id,
-                BACKGROUND_LABELS[display_index - 1],
-                style_name_for(style_id),
-                sample,
-                signature,
-                0,
-                0,
-                0,
-                total,
-                0,
-                total,
-                total * 18,
-            )
-        )
-        used_style_ids.add(style_id)
-        seen_signatures.update(signatures)
+        add_option(style_id, sample)
     return options
 
 

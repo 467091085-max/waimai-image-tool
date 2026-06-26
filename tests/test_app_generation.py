@@ -381,7 +381,7 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(missing_output["result"]["evidence"]["requestId"], "txt-real")
             self.assertEqual(missing_output["result"]["evidence"]["jobId"], "job-real")
 
-    def test_preview_keeps_replace_background_error_when_local_fallback_enabled(self) -> None:
+    def test_preview_keeps_replace_background_error_without_local_fake_when_fallback_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.jpg"
@@ -397,9 +397,10 @@ class AppGenerationTests(unittest.TestCase):
             ):
                 preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
 
-            self.assertIsNotNone(preview_candidate)
-            self.assertEqual(generation["status"], "fallback")
-            self.assertEqual(generation["fallbackFrom"], "tencent-hunyuan")
+            self.assertIsNone(preview_candidate)
+            self.assertEqual(generation["status"], "failed")
+            self.assertEqual(generation["provider"], "tencent-hunyuan")
+            self.assertEqual(generation["action"], "ReplaceBackground")
             self.assertIn("aiart not open", generation["error"])
             text.assert_not_called()
 

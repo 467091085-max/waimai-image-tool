@@ -74,7 +74,7 @@ const qualityMeta = {
   premium: { name: "精修出图", points: 200 }
 };
 
-const styleDisplayNames = ["1号背景", "2号背景", "3号背景", "4号背景", "5号背景", "6号背景"];
+const styleDisplayNames = ["一号背景", "二号背景", "三号背景", "四号背景", "五号背景", "六号背景"];
 const fallbackExtraPlatformPoints = 100;
 const fallbackWatermarkPoints = 50;
 const fallbackCustomEditPoints = 150;
@@ -154,7 +154,7 @@ function ensureDeliveryPlatform() {
 }
 
 function styleDisplayName(index) {
-  return styleDisplayNames[index] || `${index + 1}号背景`;
+  return styleDisplayNames[index] || `第${index + 1}号背景`;
 }
 
 function styleChoices(plan = state.plan) {
@@ -1151,7 +1151,7 @@ function renderStylePlanLoading() {
       <button class="style skeleton" type="button" disabled>
         <div class="style-media"></div>
         <span class="style-body">
-          <b>${index + 1}号背景</b>
+          <b>${styleDisplayName(index)}</b>
           <span>正在生成背景候选</span>
           <em>生成中</em>
         </span>
@@ -1492,6 +1492,16 @@ function previewSampleCard(sample, index) {
   </div>`;
 }
 
+function backgroundJobError(style) {
+  const job = style?.backgroundJob || style?.sample?.backgroundJob || {};
+  return style?.error || style?.sample?.error || job.error || job.provider_error || job.providerError || "";
+}
+
+function backgroundJobWaiting(style) {
+  const job = style?.backgroundJob || style?.sample?.backgroundJob || {};
+  return previewWaitingStatus(job.status || style?.sample?.generationStatus || "");
+}
+
 function renderStyles() {
   const p = state.plan;
   $("#selectedStyleHint").textContent = state.pendingStyle ? `已选择：${styleName(state.pendingStyle)}` : "还没有选择风格";
@@ -1509,15 +1519,27 @@ function renderStyles() {
     const selected = s.id === state.pendingStyle;
     const loading = state.previewLoadingStyle === s.id;
     const sample = validImageCandidate(s.sample);
+    const bgError = backgroundJobError(s);
+    const bgWaiting = backgroundJobWaiting(s);
+    const missingText = bgError ? "背景生成失败" : bgWaiting ? "背景生成中" : "等待背景图";
+    const statusText = loading
+      ? "样图生成中"
+      : selected
+        ? "已选中"
+        : bgError
+          ? `生成失败：${cleanErrorText(bgError)}`
+          : bgWaiting
+            ? "等待背景生成"
+            : "点击选择背景";
     return `<button class="style ${selected ? "active" : ""} ${loading ? "is-loading" : ""}" data-style="${s.id}" type="button">
-      <div class="style-media ${sample ? "" : "missing"}" data-image-shell>
-        ${sample ? `<img src="${sample.url}" alt="${esc(s.uiName)}" ${imageFallbackAttr()}>` : `<span>等待背景图</span>`}
+      <div class="style-media ${sample ? "" : "missing"} ${bgError ? "error" : ""}" data-image-shell>
+        ${sample ? `<img src="${sample.url}" alt="${esc(s.uiName)}" ${imageFallbackAttr()}>` : `<span>${esc(missingText)}</span>`}
         <span class="image-error-note">背景图加载失败</span>
       </div>
       <span class="style-body">
         <b>${esc(s.uiName)}</b>
         <span>整店统一背景 ${s.uiIndex + 1}/6</span>
-        <em>${loading ? "样图生成中" : selected ? "已选中" : "点击选择背景"}</em>
+        <em title="${esc(bgError || "")}">${esc(statusText)}</em>
       </span>
     </button>`;
   }).join("");
