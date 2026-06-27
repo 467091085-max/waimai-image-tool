@@ -104,19 +104,32 @@ def verify_remote_library(base_url: str, expected_min_images: int, attempts: int
     return {"ok": False, "status": last}
 
 
-def build_upload_items(records: list[dict[str, Any]], bucket: str, region: str, prefix: str, max_side: int, quality: int) -> list[dict[str, Any]]:
+def build_upload_items(
+    records: list[dict[str, Any]], bucket: str, region: str, prefix: str, max_side: int, quality: int
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     items: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
     for record in records:
-        prepared = prepare_jpeg(Path(str(record.get("path") or "")), max_side=max_side, quality=quality)
-        index_record = build_index_record(record, prepared, bucket=bucket, region=region, prefix=prefix)
-        items.append(
-            {
-                "record": index_record,
-                "image": base64.b64encode(prepared.data).decode("ascii"),
-                "contentType": "image/jpeg",
-            }
-        )
-    return items
+        path = Path(str(record.get("path") or ""))
+        try:
+            prepared = prepare_jpeg(path, max_side=max_side, quality=quality)
+            index_record = build_index_record(record, prepared, bucket=bucket, region=region, prefix=prefix)
+            items.append(
+                {
+                    "record": index_record,
+                    "image": base64.b64encode(prepared.data).decode("ascii"),
+                    "contentType": "image/jpeg",
+                }
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "path": str(path),
+                    "dish": str(record.get("dish") or record.get("dish_name") or ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:300],
+                }
+            )
+    return items, errors
 
 
 def main() -> int:
@@ -126,6 +139,7 @@ def main() -> int:
     parser.add_argument("--clean-dir", default=str(DEFAULT_CLEAN_DIR))
     parser.add_argument("--watermark-dir", default=str(DEFAULT_WATERMARK_DIR))
     parser.add_argument("--session", default=f"mac-gallery-{int(time.time())}")
+    parser.add_argument("--offset", type=int, default=0, help="skip this many prepared upload items before sending batches")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-side", type=int, default=1200)
@@ -172,14 +186,22 @@ def main() -> int:
         return 1
 
     scan = scan_library(clean_dir=Path(args.clean_dir), watermark_dir=Path(args.watermark_dir), thumb_dir=None, make_thumbs=False)
-    records = scan.records[: args.limit] if args.limit and args.limit > 0 else scan.records
-    items = build_upload_items(records, bucket=bucket, region=region, prefix=prefix, max_side=args.max_side, quality=args.quality)
+    records = scan.records[: args.limit] if args.limit and args.limit > 0 and args.offset <= 0 else scan.records
+    items, prepare_errors = build_upload_items(records, bucket=bucket, region=region, prefix=prefix, max_side=args.max_side, quality=args.quality)
+    prepared_before_offset = len(items)
+    if args.offset and args.offset > 0:
+        items = items[args.offset :]
+        if args.limit and args.limit > 0:
+            items = items[: args.limit]
     summary: dict[str, Any] = {
         "ok": True,
         "baseUrl": args.base_url,
         "session": args.session,
         "scanned": scan.total,
+        "offset": max(0, int(args.offset)),
+        "preparedBeforeOffset": prepared_before_offset,
         "prepared": len(items),
+        "prepareErrors": prepare_errors,
         "dryRun": bool(args.dry_run),
         "remoteStatus": {k: status.get(k) for k in ("enabled", "cosReady", "bucket", "region", "prefix", "indexUrl")},
         "uploaded": 0,
@@ -200,7 +222,20 @@ def main() -> int:
         summary["uploaded"] += int(response.get("uploaded") or 0)
         if response.get("errors"):
             summary["errors"].extend(response["errors"])
-        print(json.dumps({"batch": index, "uploaded": response.get("uploaded"), "sessionRecords": response.get("sessionRecords"), "errors": response.get("errors", [])[:2]}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "batch": index,
+                    "uploaded": response.get("uploaded"),
+                    "sessionRecords": response.get("sessionRecords"),
+                    "httpStatus": response.get("_httpStatus"),
+                    "error": response.get("error", ""),
+                    "code": response.get("code", ""),
+                    "errors": response.get("errors", [])[:2],
+                },
+                ensure_ascii=False,
+            )
+        )
         if response.get("_httpStatus", 200) >= 400:
             summary["ok"] = False
             break

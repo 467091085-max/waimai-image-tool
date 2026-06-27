@@ -6,6 +6,7 @@ __pycache__/
 .env
 .env.*
 !.env.cos.example
+tmp/
 .codex_deps/
 .deploy_keys/
 data/uploads/*

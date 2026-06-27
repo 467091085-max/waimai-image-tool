@@ -372,6 +372,8 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
             if client is not None:
                 upload_bytes(client, bucket, str(index_record["cos_key"]), prepared.data, CONTENT_TYPE_JPEG)
                 uploaded_images += 1
+                if uploaded_images % 50 == 0:
+                    print(f"uploaded {uploaded_images}/{len(records)} gallery images", file=sys.stderr, flush=True)
                 index_record["upload_state"] = UPLOAD_STATE_UPLOADED
                 index_record["uploaded"] = True
             else:
@@ -392,21 +394,18 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     index_upload_error = ""
     if client is not None:
         if sync_errors:
-            index_upload_error = (
-                "Skipped COS index upload because one or more gallery images failed to upload or prepare. "
-                "The remote index was not changed."
+            warnings.append(
+                f"Skipped {len(sync_errors)} unreadable gallery files; publishing index with {len(index_records)} usable images."
             )
-            warnings.append(index_upload_error)
-        else:
-            try:
-                upload_bytes(client, bucket, index_key(prefix), index_path.read_bytes(), CONTENT_TYPE_JSONL)
-                index_uploaded = True
-            except Exception as exc:
-                index_upload_error = mask_configured_secrets(str(exc))
-                warnings.append(f"COS index upload failed: {index_upload_error}")
+        try:
+            upload_bytes(client, bucket, index_key(prefix), index_path.read_bytes(), CONTENT_TYPE_JSONL)
+            index_uploaded = True
+        except Exception as exc:
+            index_upload_error = mask_configured_secrets(str(exc))
+            warnings.append(f"COS index upload failed: {index_upload_error}")
 
     scan_summary = result.summary()
-    fatal_errors = bool(sync_errors or index_upload_error) and not config.dry_run
+    fatal_errors = bool(index_upload_error) and not config.dry_run
     reusable_images = int(scan_summary.get("reusable") or 0)
     watermarked_reference_images = int(
         scan_summary.get("watermark")
@@ -424,13 +423,17 @@ def sync_gallery(config: SyncConfig) -> dict[str, Any]:
     dry_run_upload_skipped = len(index_records) if config.dry_run else 0
     skipped_images = limit_skipped + dry_run_upload_skipped
     error_images = len(result.errors) + len(sync_errors)
-    remote_ready = bool(index_uploaded and not sync_errors and not config.dry_run)
+    remote_ready = bool(index_uploaded and not index_upload_error and not config.dry_run)
     if config.dry_run:
         upload_status = "dry_run"
         message = "Dry-run complete: local JSONL and summary were written; no COS objects were uploaded."
     elif remote_ready:
-        upload_status = "uploaded"
-        message = "COS upload complete: images and remote JSONL index were uploaded."
+        if sync_errors:
+            upload_status = "uploaded_with_warnings"
+            message = "COS upload complete: usable images and remote JSONL index were uploaded; unreadable files were skipped."
+        else:
+            upload_status = "uploaded"
+            message = "COS upload complete: images and remote JSONL index were uploaded."
     else:
         upload_status = "failed"
         message = "COS upload failed or was incomplete; remote JSONL index was not published."
