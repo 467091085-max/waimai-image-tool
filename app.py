@@ -2059,6 +2059,30 @@ def is_generated_candidate(candidate: dict[str, Any] | None) -> bool:
     return bool(candidate.get("generated") or source.startswith("generated") or source.startswith("tencent"))
 
 
+def is_local_seed_candidate(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    source = str(candidate.get("source") or "").lower()
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for key in ("store", "path", "url", "remoteUrl", "cosKey")
+    ).lower()
+    return source == "internal" or "seed_" in text or "demo_store" in text
+
+
+def public_gallery_candidate(candidate: dict[str, Any] | None) -> bool:
+    if not candidate:
+        return False
+    return bool(candidate.get("remoteUrl") or candidate.get("cosKey") or is_public_http_url(str(candidate.get("url") or "")))
+
+
+def visible_source_candidates(candidates: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    public_candidates = [candidate for candidate in candidates if public_gallery_candidate(candidate) and not is_local_seed_candidate(candidate)]
+    if public_candidates:
+        return public_candidates[:limit]
+    return candidates[:limit]
+
+
 def source_candidates_for_generation(row: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         c
@@ -3332,7 +3356,7 @@ def preview_sample_payload_from_entry(selected_style: str, entry: dict[str, Any]
         "styleId": selected_style,
         "styleName": style_name_for(selected_style),
         "candidate": candidate,
-        "sourceCandidates": candidates[:3],
+        "sourceCandidates": visible_source_candidates(candidates, 3),
         "generation": generation,
         "job": job,
         "sampleJob": job,
