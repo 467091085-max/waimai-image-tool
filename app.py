@@ -3892,7 +3892,13 @@ def api_gallery_upload_batch():
             if not image_bytes:
                 raise ValueError("empty image")
             content_type = str(item.get("contentType") or "image/jpeg")
-            client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(image_bytes), Key=key, ContentType=content_type)
+            client.put_object(
+                Bucket=cos["bucket"],
+                Body=io.BytesIO(image_bytes),
+                Key=key,
+                ContentType=content_type,
+                ACL="public-read",
+            )
             remote_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
             record.update(
                 {
@@ -3944,7 +3950,13 @@ def api_gallery_upload_publish():
     if not data.strip():
         return jsonify({"error": "上传 session 没有索引记录", "code": "gallery_session_empty"}), 400
     key = gallery_index_key(str(cos["prefix"]))
-    client.put_object(Bucket=cos["bucket"], Body=io.BytesIO(data), Key=key, ContentType="application/x-ndjson; charset=utf-8")
+    client.put_object(
+        Bucket=cos["bucket"],
+        Body=io.BytesIO(data),
+        Key=key,
+        ContentType="application/x-ndjson; charset=utf-8",
+        ACL="public-read",
+    )
     index_url = public_cos_url(str(cos["bucket"]), str(cos["region"]), key)
     os.environ["COS_LIBRARY_INDEX_URL"] = index_url
     library_images.cache_clear()

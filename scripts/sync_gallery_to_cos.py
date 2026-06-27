@@ -318,7 +318,7 @@ def create_cos_client(region: str):
 
 
 def upload_bytes(client: Any, bucket: str, key: str, data: bytes, content_type: str) -> None:
-    client.put_object(Bucket=bucket, Body=io.BytesIO(data), Key=key, ContentType=content_type)
+    client.put_object(Bucket=bucket, Body=io.BytesIO(data), Key=key, ContentType=content_type, ACL="public-read")
 
 
 def summary_path_for(output: Path) -> Path:
