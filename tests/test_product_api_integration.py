@@ -1304,6 +1304,46 @@ def test_admin_write_rbac_accepts_token_and_admin_session(
     assert admin_session_payload["ok"] is True
 
 
+def test_admin_risk_deny_requires_risk_or_admin_role(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+
+    login = _login(product_api.client)
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "operator"})
+
+    review_response = product_api.client.post(
+        "/api/admin/actions/risk",
+        json={"eventType": "rbac_risk_review", "decision": "review", "riskLevel": "medium"},
+        headers=_auth_header(login["token"]),
+    )
+    review_payload = _json_for_status(review_response, 200, "POST admin risk review with operator role")
+    assert review_payload["record"]["decision"] == "review"
+
+    operator_deny_response = product_api.client.post(
+        "/api/admin/actions/risk",
+        json={"eventType": "rbac_risk_deny_operator", "decision": "deny", "riskLevel": "high"},
+        headers=_auth_header(login["token"]),
+    )
+    operator_deny_payload = _json_for_status(
+        operator_deny_response,
+        403,
+        "POST admin risk deny with operator role",
+    )
+    assert operator_deny_payload["code"] == "admin_permission_forbidden"
+
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "risk"})
+    risk_deny_response = product_api.client.post(
+        "/api/admin/actions/risk",
+        json={"eventType": "rbac_risk_deny_risk", "decision": "deny", "riskLevel": "high"},
+        headers=_auth_header(login["token"]),
+    )
+    risk_deny_payload = _json_for_status(risk_deny_response, 200, "POST admin risk deny with risk role")
+    assert risk_deny_payload["record"]["decision"] == "deny"
+
+
 def test_ai_asset_status_requires_admin_for_disable(
     product_api: ProductApiFixture,
     monkeypatch: pytest.MonkeyPatch,

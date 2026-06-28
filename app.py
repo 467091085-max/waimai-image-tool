@@ -110,6 +110,8 @@ ADMIN_FINANCE_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner", "fin
 ADMIN_WITHDRAWAL_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | ADMIN_FINANCE_ROLE_VALUES | {"support", "reviewer"}
 ADMIN_AI_ASSET_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | {"reviewer", "quality_reviewer", "qa", "support"}
 ADMIN_AI_ASSET_DISABLE_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner"}
+ADMIN_RISK_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | {"risk", "risk_reviewer", "risk_admin", "fraud", "security", "support", "reviewer"}
+ADMIN_RISK_DENY_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner", "risk", "risk_admin", "risk_manager", "fraud", "security"}
 MAX_LOGO_DATA_URL_CHARS = 1_500_000
 MAX_LOGO_BYTES = 1_000_000
 MAX_LOGO_PIXELS = 2_000_000
@@ -783,6 +785,28 @@ def admin_ai_asset_status_authorized(status: str) -> bool:
     if status == "disabled":
         return bool(roles & ADMIN_AI_ASSET_DISABLE_ROLE_VALUES)
     return bool(roles & ADMIN_AI_ASSET_REVIEW_ROLE_VALUES)
+
+
+def admin_risk_decision_authorized(decision: str) -> bool:
+    if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
+        return True
+    if not session_token_from_request():
+        return (
+            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
+            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
+            and is_local_request()
+        )
+
+    conn = product_db_conn()
+    try:
+        session = auth_service.get_session(conn, session_token_from_request())
+    finally:
+        conn.close()
+    user = session.get("user") if isinstance(session, dict) and isinstance(session.get("user"), dict) else None
+    roles = admin_user_role_values(user)
+    if decision == "deny":
+        return bool(roles & ADMIN_RISK_DENY_ROLE_VALUES)
+    return bool(roles & ADMIN_RISK_REVIEW_ROLE_VALUES)
 
 
 def admin_actor_user_id() -> str:
@@ -4520,15 +4544,23 @@ def api_sign_object_access():
 
 @app.post("/api/admin/actions/risk")
 def api_admin_record_risk_decision():
-    if not admin_write_authorized():
-        return forbidden("管理写接口未授权", "admin_write_forbidden")
     payload = request.get_json(silent=True) or {}
+    decision = str(payload.get("decision") or "allow").strip().lower()
+    if decision not in admin_actions.RISK_DECISIONS:
+        if not (admin_write_authorized() or admin_risk_decision_authorized("review")):
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
+        return jsonify({"error": f"invalid risk decision: {decision}", "code": "invalid_admin_action"}), 400
+    if not admin_risk_decision_authorized(decision):
+        if not (admin_write_authorized() or admin_risk_decision_authorized("review")):
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
+        return forbidden("风控处置权限不足", "admin_permission_forbidden")
+
     conn = product_db_conn()
     try:
         record = admin_actions.record_risk_decision(
             conn,
             event_type=str(payload.get("eventType") or payload.get("event_type") or ""),
-            decision=str(payload.get("decision") or "allow"),
+            decision=decision,
             user_id=str(payload.get("userId") or payload.get("user_id") or ""),
             agent_id=str(payload.get("agentId") or payload.get("agent_id") or ""),
             asset_id=str(payload.get("assetId") or payload.get("asset_id") or ""),
