@@ -842,6 +842,62 @@ def test_agent_withdrawal_api_uses_session_agent_and_admin_status_flow(product_a
     assert final_balance["availableCents"] == 10000
 
 
+def test_withdrawal_admin_status_requires_finance_permission_for_paid(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+    auth = _login(product_api.client)
+    agent_id = "agent_withdraw_rbac_1"
+    _insert_agent_with_paid_settlement(
+        product_api,
+        user_id=auth["user"]["id"],
+        agent_id=agent_id,
+        paid_commission_cents=30000,
+    )
+
+    create_response = product_api.client.post(
+        "/api/growth/withdrawals",
+        json={
+            "amountCents": 20000,
+            "accountSnapshot": {
+                "type": "bank",
+                "accountName": "测试代理",
+                "accountNoMasked": "6222****8888",
+            },
+        },
+        headers=_auth_header(auth["token"]),
+    )
+    withdrawal = _json_for_status(create_response, 201, "POST /api/growth/withdrawals")["withdrawal"]
+
+    _set_user_metadata(product_api.storage_db_path, auth["user"]["id"], {"role": "operator"})
+    approve_response = product_api.client.post(
+        f"/api/admin/actions/withdrawals/{withdrawal['id']}/status",
+        json={"status": "approved", "reason": "ops review passed"},
+        headers=_auth_header(auth["token"]),
+    )
+    approved = _json_for_status(approve_response, 200, "POST withdrawal approve with operator role")["withdrawal"]
+    assert approved["status"] == "approved"
+
+    operator_paid_response = product_api.client.post(
+        f"/api/admin/actions/withdrawals/{withdrawal['id']}/status",
+        json={"status": "paid", "reason": "operator should not pay"},
+        headers=_auth_header(auth["token"]),
+    )
+    operator_paid_payload = _json_for_status(operator_paid_response, 403, "POST withdrawal paid with operator role")
+    assert operator_paid_payload["code"] == "admin_permission_forbidden"
+
+    _set_user_metadata(product_api.storage_db_path, auth["user"]["id"], {"role": "finance"})
+    finance_paid_response = product_api.client.post(
+        f"/api/admin/actions/withdrawals/{withdrawal['id']}/status",
+        json={"status": "paid", "reason": "finance transfer confirmed"},
+        headers=_auth_header(auth["token"]),
+    )
+    paid = _json_for_status(finance_paid_response, 200, "POST withdrawal paid with finance role")["withdrawal"]
+    assert paid["status"] == "paid"
+
+
 def test_agent_withdrawal_api_rejects_missing_agent_and_cross_agent(product_api: ProductApiFixture) -> None:
     unauthenticated_response = product_api.client.get("/api/growth/withdrawals/balance")
     unauthenticated_payload = _json_for_status(unauthenticated_response, 401, "GET withdrawal balance unauthenticated")

@@ -106,6 +106,8 @@ AI_ASSET_SCHEMA_VERSION = 1
 AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 AI_ASSET_MANIFEST_LOCK = threading.Lock()
 ADMIN_ROLE_VALUES = {"admin", "super_admin", "superadmin", "ops", "operator"}
+ADMIN_FINANCE_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner", "finance", "financial", "accountant"}
+ADMIN_WITHDRAWAL_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | ADMIN_FINANCE_ROLE_VALUES | {"support", "reviewer"}
 MAX_LOGO_DATA_URL_CHARS = 1_500_000
 MAX_LOGO_BYTES = 1_000_000
 MAX_LOGO_PIXELS = 2_000_000
@@ -656,6 +658,40 @@ def user_is_admin(user: dict[str, Any] | None) -> bool:
     return any(role.strip().lower() in ADMIN_ROLE_VALUES for role in roles)
 
 
+def admin_user_role_values(user: dict[str, Any] | None) -> set[str]:
+    if not user or str(user.get("status") or "active") != "active":
+        return set()
+
+    roles: set[str] = set()
+    user_id = str(user.get("id") or "").strip()
+    if user_id and user_id in env_token_set("ADMIN_USER_IDS", "ADMIN_USER_ID"):
+        roles.add("super_admin")
+
+    phone = str(user.get("phone") or "").strip()
+    admin_phones = env_token_set("ADMIN_PHONE_NUMBERS", "ADMIN_PHONE_NUMBER")
+    for configured_phone in list(admin_phones):
+        try:
+            admin_phones.add(auth_rules.normalize_phone(configured_phone))
+        except (TypeError, ValueError):
+            pass
+    if phone and phone in admin_phones:
+        roles.add("super_admin")
+
+    metadata = user.get("metadata") if isinstance(user.get("metadata"), dict) else {}
+    if metadata.get("isAdmin") is True or metadata.get("is_admin") is True:
+        roles.add("admin")
+
+    for key in ("role", "adminRole", "admin_role"):
+        if metadata.get(key) is not None:
+            roles.add(str(metadata[key]).strip().lower())
+    metadata_roles = metadata.get("roles")
+    if isinstance(metadata_roles, str):
+        roles.update(part.strip().lower() for part in re.split(r"[,;\s]+", metadata_roles) if part.strip())
+    elif isinstance(metadata_roles, (list, tuple, set)):
+        roles.update(str(role).strip().lower() for role in metadata_roles if str(role).strip())
+    return roles
+
+
 def admin_session_authorized(token: str | None = None) -> bool:
     session_token = str(token or session_token_from_request() or "").strip()
     if not session_token:
@@ -678,6 +714,28 @@ def admin_write_authorized() -> bool:
         and not os.environ.get("ADMIN_API_TOKEN", "").strip()
         and is_local_request()
     )
+
+
+def admin_withdrawal_status_authorized(status: str) -> bool:
+    if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
+        return True
+    if not session_token_from_request():
+        return (
+            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
+            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
+            and is_local_request()
+        )
+
+    conn = product_db_conn()
+    try:
+        session = auth_service.get_session(conn, session_token_from_request())
+    finally:
+        conn.close()
+    user = session.get("user") if isinstance(session, dict) and isinstance(session.get("user"), dict) else None
+    roles = admin_user_role_values(user)
+    if status == "paid":
+        return bool(roles & ADMIN_FINANCE_ROLE_VALUES)
+    return bool(roles & ADMIN_WITHDRAWAL_REVIEW_ROLE_VALUES)
 
 
 def admin_actor_user_id() -> str:
@@ -4583,12 +4641,14 @@ def api_admin_update_commission_settlement_status(settlement_id: str):
 
 @app.post("/api/admin/actions/withdrawals/<withdrawal_id>/status")
 def api_admin_update_withdrawal_status(withdrawal_id: str):
-    if not admin_write_authorized():
-        return forbidden("管理写接口未授权", "admin_write_forbidden")
     payload = request.get_json(silent=True) or {}
     status = str(payload.get("status") or "").strip().lower()
     if status not in {"approved", "rejected", "paid", "canceled"}:
+        if not admin_write_authorized():
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
         return jsonify({"error": "invalid withdrawal status", "code": "invalid_withdrawal_input"}), 400
+    if not admin_withdrawal_status_authorized(status):
+        return forbidden("提现操作权限不足", "admin_permission_forbidden")
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     actor_user_id = admin_actor_user_id()
     reason = str(payload.get("reason") or "")
