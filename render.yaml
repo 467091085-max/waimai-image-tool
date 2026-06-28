@@ -11,7 +11,7 @@ services:
       - key: APP_ENV
         value: staging
       - key: ENABLE_LOCAL_DEMO_BILLING
-        value: "true"
+        value: "false"
       - key: ENABLE_LOCAL_DEMO_STORAGE
         value: "true"
       - key: OBJECT_SIGNING_SECRET

@@ -43,6 +43,26 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertTrue(payments.fake_payment_provider_enabled({}))
         self.assertTrue(payments.fake_payment_provider_enabled({"ENABLE_LOCAL_DEMO_BILLING": "true"}))
 
+    def test_fake_payment_provider_disabled_in_live_runtime(self) -> None:
+        self.assertFalse(
+            payments.fake_payment_provider_enabled(
+                {
+                    "APP_ENV": "staging",
+                    "ENABLE_LOCAL_DEMO_BILLING": "true",
+                    "PAYMENT_PROVIDER": "fake",
+                    "ALLOW_FAKE_PAYMENT_PROVIDER": "true",
+                }
+            )
+        )
+        self.assertFalse(
+            payments.fake_payment_provider_enabled(
+                {
+                    "PUBLIC_BASE_URL": "https://waimai-image-tool-1.onrender.com",
+                    "ENABLE_LOCAL_DEMO_BILLING": "true",
+                }
+            )
+        )
+
     def test_fake_payment_provider_disabled_without_explicit_override(self) -> None:
         self.assertFalse(payments.fake_payment_provider_enabled({"ENABLE_LOCAL_DEMO_BILLING": "false"}))
         self.assertFalse(
@@ -90,10 +110,28 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertFalse(readiness["ready"])
         self.assertEqual(readiness["provider"], "fake")
         self.assertEqual(readiness["mode"], "local_demo")
+        self.assertEqual(readiness["appEnv"], "production")
         self.assertIn("real_payment_provider_required", readiness["errors"])
+        self.assertIn("fake_payment_provider_forbidden_in_live_environment", readiness["errors"])
         self.assertIn("fake_payment_provider_forbidden_in_production", readiness["errors"])
         self.assertEqual(readiness["blockingIssues"], readiness["errors"])
         self.assertEqual(readiness["requiredConfig"][0]["key"], "payment_provider")
+
+    def test_payment_readiness_rejects_fake_on_render_runtime(self) -> None:
+        readiness = payments.assess_payment_provider_readiness(
+            {
+                "PUBLIC_BASE_URL": "https://waimai-image-tool-1.onrender.com",
+                "ENABLE_LOCAL_DEMO_BILLING": "true",
+            }
+        )
+
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["provider"], "fake")
+        self.assertEqual(readiness["mode"], "local_demo")
+        self.assertEqual(readiness["appEnv"], "render")
+        self.assertIn("real_payment_provider_required", readiness["errors"])
+        self.assertIn("fake_payment_provider_forbidden_in_live_environment", readiness["errors"])
+        self.assertEqual(readiness["blockingIssues"], readiness["errors"])
 
     def test_payment_readiness_rejects_fake_when_local_demo_billing_is_disabled(self) -> None:
         readiness = payments.assess_payment_provider_readiness(

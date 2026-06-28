@@ -369,12 +369,16 @@ def test_ops_readiness_accepts_tokenhub_generation_provider_in_staging(
 
     payload = _json_for_status(response, 200, "GET /api/ops/readiness TokenHub ready")
     generation = payload["generationProvider"]
-    assert payload["ready"] is True
+    payments = payload["payments"]
+    assert payload["ready"] is False
     assert generation["ready"] is True
     assert generation["mode"] == "tokenhub"
     assert generation["tokenhubReady"] is True
     assert generation["tokenhubRequired"] is True
     assert generation["tokenhubModel"] == "hy-image-v3.0"
+    assert payments["ready"] is False
+    assert "real_payment_provider_required" in payments["blockingIssues"]
+    assert "fake_payment_provider_forbidden_in_live_environment" in payments["blockingIssues"]
 
 
 def test_ops_readiness_is_false_when_storage_or_queue_is_not_ready(
@@ -932,6 +936,30 @@ def test_fake_payment_order_blocked_when_demo_billing_disabled_without_explicit_
     assert payload["code"] == "payment_provider_unavailable"
     assert payload["provider"] == "fake"
     assert payload["required"] == "PAYMENT_PROVIDER=fake or ALLOW_FAKE_PAYMENT_PROVIDER=true"
+
+
+def test_fake_payment_order_blocked_on_render_runtime_even_if_demo_billing_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV=None,
+        PUBLIC_BASE_URL="https://waimai-image-tool-1.onrender.com",
+        ENABLE_LOCAL_DEMO_BILLING="true",
+        PAYMENT_PROVIDER="fake",
+        ALLOW_FAKE_PAYMENT_PROVIDER="true",
+    )
+
+    response = api.client.post(
+        "/api/payments/orders",
+        json={"cash": 49, "provider": "fake"},
+    )
+    payload = _json_for_status(response, 503, "POST /api/payments/orders fake provider render")
+
+    assert payload["code"] == "payment_provider_unavailable"
+    assert payload["provider"] == "fake"
 
 
 def test_fake_payment_callback_forbidden_when_demo_billing_disabled_without_explicit_provider(

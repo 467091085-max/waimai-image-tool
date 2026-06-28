@@ -67,6 +67,7 @@ SIGNATURE_KEYS = frozenset({"signature", "sign", "hmac", "sig"})
 TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 REAL_PAYMENT_PROVIDERS = frozenset({"wechat", "alipay"})
+LIVE_PAYMENT_ENVIRONMENTS = frozenset({"production", "prod", "staging", "render"})
 PAYMENT_PROVIDER_ALIASES = {
     "wechatpay": "wechat",
     "weixin": "wechat",
@@ -168,6 +169,8 @@ def init_payment_schema(conn: sqlite3.Connection) -> None:
 
 def fake_payment_provider_enabled(environ: Mapping[str, str] | None = None) -> bool:
     env = os.environ if environ is None else environ
+    if _runtime_environment_label(env) in LIVE_PAYMENT_ENVIRONMENTS:
+        return False
     if _env_truthy(env.get("ENABLE_LOCAL_DEMO_BILLING"), default=True):
         return True
     if str(env.get("PAYMENT_PROVIDER") or "").strip().lower() == "fake":
@@ -185,8 +188,8 @@ def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> d
     values = os.environ if env is None else env
     raw_provider = _env_value(values, "PAYMENT_PROVIDER")
     provider = _normalize_payment_provider(raw_provider or "fake")
-    app_env = _env_value(values, "APP_ENV").lower()
-    production_env = app_env in {"production", "prod"}
+    app_env = _runtime_environment_label(values)
+    live_env = app_env in LIVE_PAYMENT_ENVIRONMENTS
     local_demo_enabled = _env_truthy(values.get("ENABLE_LOCAL_DEMO_BILLING"), default=True)
 
     warnings: list[str] = []
@@ -195,10 +198,12 @@ def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> d
 
     if provider == "fake":
         mode = "local_demo"
-        required_config = [] if not production_env and local_demo_enabled else _required_config_items(
+        required_config = [] if not live_env and local_demo_enabled else _required_config_items(
             PAYMENT_PROVIDER_SELECTION_CONFIG
         )
-        if production_env:
+        if live_env:
+            errors.append("fake_payment_provider_forbidden_in_live_environment")
+        if app_env in {"production", "prod"}:
             errors.append("fake_payment_provider_forbidden_in_production")
         if not local_demo_enabled:
             errors.append("local_demo_billing_disabled")
@@ -223,13 +228,14 @@ def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> d
         mode = "unknown"
         required_config = _required_config_items(PAYMENT_PROVIDER_SELECTION_CONFIG)
         errors.append("unsupported_payment_provider")
-        if production_env or not local_demo_enabled:
+        if live_env or not local_demo_enabled:
             errors.append("real_payment_provider_required")
 
     return {
         "ready": not errors,
         "provider": provider,
         "mode": mode,
+        "appEnv": app_env,
         "warnings": warnings,
         "errors": errors,
         "blockingIssues": list(errors),
@@ -782,6 +788,21 @@ def _env_value(env: Mapping[str, str], name: str) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _runtime_environment_label(env: Mapping[str, str]) -> str:
+    app_env = _env_value(env, "APP_ENV").lower()
+    if app_env:
+        return app_env
+    if _render_runtime_detected(env):
+        return "render"
+    return "development"
+
+
+def _render_runtime_detected(env: Mapping[str, str]) -> bool:
+    if any(_env_value(env, name) for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_URL")):
+        return True
+    return ".onrender.com" in _env_value(env, "PUBLIC_BASE_URL").lower()
 
 
 def _first_env_value(env: Mapping[str, str], names: tuple[str, ...]) -> str:
