@@ -132,6 +132,7 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
         ("GET", "/api/ops/deployment-config"),
         ("GET", "/api/admin/queue-snapshot"),
         ("POST", "/api/admin/actions/risk"),
+        ("POST", "/api/admin/actions/points-adjustments"),
         ("POST", "/api/admin/actions/withdrawals/<withdrawal_id>/status"),
     ]
 
@@ -1440,6 +1441,76 @@ def test_admin_risk_deny_requires_risk_or_admin_role(
     )
     risk_deny_payload = _json_for_status(risk_deny_response, 200, "POST admin risk deny with risk role")
     assert risk_deny_payload["record"]["decision"] == "deny"
+
+
+def test_admin_points_adjustment_requires_finance_role_and_writes_audit(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+
+    login = _login(product_api.client)
+    target_user_id = "customer_points_adjust_1"
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "operator"})
+
+    operator_response = product_api.client.post(
+        "/api/admin/actions/points-adjustments",
+        json={
+            "userId": target_user_id,
+            "direction": "credit",
+            "points": 120,
+            "reason": "客服补偿",
+            "orderId": "admin-points-operator-denied",
+        },
+        headers=_auth_header(login["token"]),
+    )
+    operator_payload = _json_for_status(operator_response, 403, "POST points adjustment with operator role")
+    assert operator_payload["code"] == "admin_permission_forbidden"
+    assert billing.get_account(target_user_id, db_path=product_api.billing_db_path)["balance"] == 0
+
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "finance"})
+    finance_response = product_api.client.post(
+        "/api/admin/actions/points-adjustments",
+        json={
+            "userId": target_user_id,
+            "direction": "credit",
+            "points": 120,
+            "reason": "客服补偿",
+            "orderId": "admin-points-credit-1",
+            "metadata": {"ticketId": "ticket-1"},
+        },
+        headers=_auth_header(login["token"]),
+    )
+    payload = _json_for_status(finance_response, 200, "POST points adjustment with finance role")
+
+    assert payload["transaction"]["orderId"] == "admin-points-credit-1"
+    assert payload["transaction"]["direction"] == "credit"
+    assert payload["account"]["balance"] == 120
+    assert billing.get_account(target_user_id, db_path=product_api.billing_db_path)["balance"] == 120
+
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT actor_user_id, action, target_type, target_id, reason, metadata_json
+            FROM admin_audit_logs
+            WHERE target_type = 'billing_account' AND target_id = ?
+            """,
+            (target_user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["actor_user_id"] == login["user"]["id"]
+    assert row["action"] == "points_credit_adjusted"
+    assert row["reason"] == "客服补偿"
+    metadata = json.loads(row["metadata_json"])
+    assert metadata["points"] == 120
+    assert metadata["billingOrderId"] == "admin-points-credit-1"
+    assert metadata["balanceAfter"] == 120
+    assert metadata["metadata"] == {"ticketId": "ticket-1"}
 
 
 def test_ai_asset_status_requires_admin_for_disable(

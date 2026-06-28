@@ -534,6 +534,24 @@ def fake_payment_provider_guard_error(*, callback: bool = False) -> payment_serv
     )
 
 
+def normalize_points_adjustment_direction(value: str) -> str:
+    direction = str(value or "").strip().lower()
+    aliases = {
+        "add": "credit",
+        "grant": "credit",
+        "refund": "credit",
+        "recharge": "credit",
+        "credit": "credit",
+        "deduct": "debit",
+        "charge": "debit",
+        "debit": "debit",
+        "subtract": "debit",
+    }
+    if direction not in aliases:
+        raise ValueError("invalid points adjustment direction")
+    return aliases[direction]
+
+
 def growth_error_response(exc: growth_service.GrowthServiceError):
     status = 400
     if isinstance(exc, growth_service.GrowthNotFound):
@@ -4992,6 +5010,87 @@ def api_admin_audit_event():
     finally:
         conn.close()
     return jsonify({"ok": True, "audit": record})
+
+
+@app.post("/api/admin/actions/points-adjustments")
+def api_admin_adjust_points():
+    if not admin_finance_action_authorized():
+        if not admin_write_authorized():
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
+        return forbidden("积分调整权限不足", "admin_permission_forbidden")
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        user_id = str(payload.get("userId") or payload.get("user_id") or "").strip()
+        if not user_id:
+            raise billing.InvalidBillingInput("userId is required")
+        direction = normalize_points_adjustment_direction(str(payload.get("direction") or payload.get("kind") or ""))
+        points = int(payload.get("points") or 0)
+        if points <= 0:
+            raise billing.InvalidBillingInput("调整积分必须大于 0", points=points)
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise billing.InvalidBillingInput("积分调整必须填写原因")
+        actor_user_id = admin_actor_user_id()
+        order_id = str(payload.get("orderId") or payload.get("order_id") or "").strip()
+        if not order_id:
+            order_id = f"admin_points_{direction}_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        billing_metadata = {
+            "source": "admin_points_adjustment",
+            "actorUserId": actor_user_id,
+            "reason": reason,
+            **metadata,
+        }
+        if direction == "credit":
+            transaction = billing.credit_account(
+                user_id,
+                order_id,
+                points,
+                description=str(payload.get("description") or "admin-points-credit"),
+                metadata=billing_metadata,
+            )
+        else:
+            transaction = billing.debit_account(
+                user_id,
+                order_id,
+                points,
+                description=str(payload.get("description") or "admin-points-debit"),
+                metadata=billing_metadata,
+            )
+    except billing.BillingError as exc:
+        return billing_json_error(exc)
+    except (TypeError, ValueError) as exc:
+        return billing_json_error(billing.InvalidBillingInput(str(exc)))
+
+    conn = product_db_conn()
+    try:
+        audit = admin_actions.admin_audit_event(
+            conn,
+            actor_user_id=actor_user_id,
+            action=f"points_{direction}_adjusted",
+            target_type="billing_account",
+            target_id=user_id,
+            reason=reason,
+            metadata={
+                "direction": direction,
+                "points": points,
+                "billingOrderId": transaction["orderId"],
+                "balanceAfter": transaction["balanceAfter"],
+                "metadata": metadata,
+            },
+        )
+    finally:
+        conn.close()
+
+    return jsonify(
+        {
+            "ok": True,
+            "transaction": transaction,
+            "account": account_payload(user_id),
+            "audit": audit,
+        }
+    )
 
 
 @app.post("/api/recharge")
