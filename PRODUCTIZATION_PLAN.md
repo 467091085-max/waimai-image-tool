@@ -36,7 +36,8 @@
 
 - 后台 lists 明细：`/api/admin/lists/*` 已覆盖生成任务、资产访问、风控事件、佣金结算、订单等明细，后台前端已优先读取既有列表，再回退到 dashboard 汇总；`risk-events` 后端资源已可按 decision/riskLevel/eventType/userId/search/时间分页查询，前端接入另排。
 - AI 资产审核动作：`/api/admin/actions/ai-assets/<asset_id>/status` 支持 approve/reject/disable 和审核备注，写入后台操作审计；approve/reject 允许 reviewer/operator/admin，disable 限制为 admin/super_admin/owner；仍缺完整人工审核队列和运营工作流。
-- 生成队列错误语义：正式出图前端走 `/api/generation-jobs` 异步任务；队列满返回 429 `generation_queue_full`，队列关闭或不可用返回 503 `generation_queue_unavailable`。
+- SaaS API/Worker/Redis 骨架：新增 `api-server/`、`worker/`、`shared/`，标准接口为 `POST /generate` 和 `GET /status/<task_id>`；API Server 只入 Redis 队列和查状态，Worker 独立消费任务、执行生成并最多 retry 2 次；Render start command 已切到 `api-server/app.py`。
+- 旧生成队列错误语义：旧前端仍走 `/api/generation-jobs` 异步任务；队列满返回 429 `generation_queue_full`，队列关闭或不可用返回 503 `generation_queue_unavailable`，待迁移到 Redis Worker。
 - 资产访问筛选：`asset-access` 明细支持 `status=denied/allowed` 等运营筛选口径，便于排查盗链、签名失败和拒绝访问。
 - 风控日志筛选：`risk-events` 明细支持 `decision/riskLevel/eventType/userId/search/createdFrom/createdTo/sort/order/limit/offset`，用于后台排查注册、邀请、下载和生成相关风险判定。
 - 风控处置权限：`/api/admin/actions/risk` 支持 allow/review/deny 写入审计；allow/review 允许 operator/risk/admin 等角色，deny 限制为 risk/security/admin/owner 等角色，避免普通运营直接做拦截性处置。
@@ -80,8 +81,9 @@
    - 正式批量出图走 worker。
    - 前端轮询进度。
    - 支持失败重试、超时恢复、任务取消、部分完成导出。
-   - 当前本地前端已经接 `/api/generation-jobs` 轮询，状态 payload 包含 `stale/timedOut/elapsed`；队列满和队列不可用已有 429/503 语义。
-   - 生产仍需替换为 Redis/RQ/Celery 等跨进程队列，不能依赖单进程内存队列承载商用批量任务。
+   - 当前已新增标准 SaaS 接口 `POST /generate` 与 `GET /status/<task_id>`，API Server 只写 Redis 队列和读状态。
+   - Worker 独立运行 `python worker/worker.py`，消费 Redis 任务，执行 AI 生成处理，成功写 `image_url`，失败最多 retry 2 次后标记 failed。
+   - 旧本地前端仍接 `/api/generation-jobs` 轮询，状态 payload 包含 `stale/timedOut/elapsed`；下一步要迁移到 Redis Worker，不能继续依赖单进程内存队列承载商用批量任务。
 
 6. 积分与计费
    - 普通出图 10 积分/张。
@@ -438,7 +440,7 @@ C 端建议只返积分，不返现金。
 
 当前增量状态：
 
-- W4 已完成本地 `/api/generation-jobs` 前端轮询、timeout/stale 状态展示和队列 429/503 错误语义；生产队列替换仍未完成。
+- W4 已完成 SaaS Redis API/Worker 骨架、本地 `/api/generation-jobs` 前端轮询、timeout/stale 状态展示和队列 429/503 错误语义；旧生成入口迁移到 Redis Worker 仍未完成。
 - W7 已完成后台 lists 明细接入和 AI 资产状态 API；完整 CRUD、权限和人工审核台仍未完成。
 - W8 已完成本地签名 token、下载守卫和资产访问审计；私有桶全链路、低清/水印预览和 Redis/DB 原子 token 仍未完成。
 - W10 已补契约测试保护前台文案、正式出图异步任务、后台 lists 接入和生产部署配置清单；CI、监控、告警、备份仍未完成。

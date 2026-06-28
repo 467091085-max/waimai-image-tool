@@ -17,7 +17,7 @@
 - 代理/邀请 MVP：支持一级代理档案、直接客户绑定、邀请注册积分、首充积分返利，并在 fake 支付回调成功后生成代理待结算佣金；退款后可重算/取消未结算佣金并追回首充返利积分；后台可释放 T+7 佣金并创建/标记结算批次。
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
-- 正式出图异步任务：前端通过 `/api/generation-jobs` 创建和轮询任务，展示排队、生成、超时、失败和完成状态；队列满返回 429，队列不可用返回 503；底层队列提供只读 `snapshot()`，可统计各状态数量、worker/limit、最老排队/运行时长、stale/timeout 和 closed 状态。
+- 正式出图异步任务：旧前端通过 `/api/generation-jobs` 创建和轮询任务；新的 SaaS 骨架已拆出 `api-server/`、`worker/`、`shared/`，标准接口为 `POST /generate` 和 `GET /status/<task_id>`，API Server 只写 Redis 队列和查询状态，AI 生成由独立 Worker 执行。
 - 重做额度：每单提供免费换版额度，用完后按 10 积分/张。
 - 导出：当前统一导出 JPG，支持勾选、全选、单品、套餐导出，并按平台上限压缩文件大小。
 - 平台尺寸：支持美团、淘宝外卖/饿了么、京东外卖/京东秒送导出，不裁掉主体，按目标尺寸留边适配。
@@ -87,8 +87,11 @@ Render 使用本仓库里的 `render.yaml` / `Procfile` 部署。
 推荐配置：
 
 - Build Command: `pip install -r requirements.txt`
-- Start Command: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180`
+- Start Command: `gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60`
+- Health Check Path: `/healthz`
+- Worker Command: `python worker/worker.py`
 - Python: Render 自动识别 Python 3
+- 必需环境变量：`REDIS_URL`
 
 部署流程：
 
@@ -96,7 +99,8 @@ Render 使用本仓库里的 `render.yaml` / `Procfile` 部署。
 2. Render 绑定该 GitHub 仓库。
 3. 创建 Web Service。
 4. 选择 `main` 分支。
-5. 等待自动部署完成。
+5. 配置 `REDIS_URL`，等待 API Server 自动部署完成。
+6. 独立启动 Worker 进程，使用同一个 `REDIS_URL`。
 
 当前线上地址：
 
@@ -233,7 +237,7 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 - 数据库：当前是 SQLite，商用后菜单、订单、积分流水、导出记录需要迁到 PostgreSQL。
 - 图片资产清洗后台：当前已有 AI 资产状态 API 和质量字段，仍缺自动识别品牌水印、菜品名水印、可复用图、需抠图图的完整人工审核工作台。
 - AI 接口：普通出图已接腾讯云混元；精修出图还需要后续接 Gemini/OpenAI 或其他高质量编辑模型。
-- 异步任务队列：当前已接入本地内存队列和 `/api/generation-jobs`，并补了队列满 429/队列不可用 503 与底层只读监控快照；正式商用仍应替换为 Redis/RQ/Celery 等跨进程 Worker，并补监控接口和告警。
+- 异步任务队列：SaaS 骨架已接入 Redis queue/status 和独立 Worker；旧 `/api/generation-jobs` monolith 入口仍保留，后续需要把前端正式出图完全迁到 `POST /generate` 与 `GET /status/<task_id>`。
 - 平台尺寸复核：上线前用美团/淘宝/京东商家后台最新规则再确认一次。
 
 完整产品化路线图、代理规则、邀请返积分、防盗图机制和 worker/sub-agent 拆分保存在：

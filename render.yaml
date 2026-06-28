@@ -4,12 +4,18 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180
-    healthCheckPath: /api/ops/readiness
+    startCommand: gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
+    healthCheckPath: /healthz
     autoDeployTrigger: commit
     envVars:
       - key: APP_ENV
         value: staging
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_NAMESPACE
+        value: waimai:saas
+      - key: REDIS_GENERATION_QUEUE
+        value: generate
       - key: ENABLE_LOCAL_DEMO_BILLING
         value: "false"
       - key: ENABLE_LOCAL_DEMO_STORAGE
