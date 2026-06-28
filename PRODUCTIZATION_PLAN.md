@@ -41,14 +41,14 @@
 - 风控日志筛选：`risk-events` 明细支持 `decision/riskLevel/eventType/userId/search/createdFrom/createdTo/sort/order/limit/offset`，用于后台排查注册、邀请、下载和生成相关风险判定。
 - 风控处置权限：`/api/admin/actions/risk` 支持 allow/review/deny 写入审计；allow/review 允许 operator/risk/admin 等角色，deny 限制为 risk/security/admin/owner 等角色，避免普通运营直接做拦截性处置。
 - 生产部署配置清单：`/api/ops/deployment-config` 已上线，按 runtime、AI 生图、对象存储、支付、队列分组输出缺失 env、阻塞项、推荐值和敏感字段脱敏状态；Render 线上当前仍缺 `TENCENT_TOKENHUB_API_KEY`、COS/object signing env、支付 provider/webhook、`ADMIN_API_TOKEN` 和 `APP_ENV`。
-- 真实支付 fail-closed 与支付宝本地闭环：`/api/payments/orders` 在凭证不完整时返回 503，不创建 pending 脏订单；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；微信支付仍在 adapter 未接入时 fail-closed。
+- 真实支付 fail-closed 与支付宝本地闭环：`/api/payments/orders` 在凭证不完整时返回 503，不创建 pending 脏订单；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；财务人工支付对账已支持后台核验后推进订单状态、复用积分入账/退款并写审计；微信支付仍在 adapter 未接入时 fail-closed。
 - 代理提现审批：代理可提交提现申请，后台可将提现状态更新为 approved/rejected/paid/canceled；每次后台状态变更会写入 `admin_audit_logs`，记录 actor、原因、金额、代理和状态迁移；paid 打款确认需要 finance/admin/owner 等财务权限，operator 只能做审批类状态。
 - 佣金结算权限：后台可释放 eligible 佣金并创建结算批次；结算 paid 打款确认需要 finance/admin/owner 等财务权限，operator 可创建/推进结算但不能确认 paid。
 - 契约测试保护：已有测试锁定前台不得回退到“真实图库/免费样图预览”等旧口径，正式出图必须走异步任务，后台必须保留 lists 明细接入。
 
 仍未完成或未接真实外部服务：
 
-- 手机短信、微信登录、微信支付、支付宝真实商户联调、退款补单和财务对账。
+- 手机短信、微信登录、微信支付、支付宝真实商户联调、退款 API、异常补单和完整异常订单运营流程。
 - PostgreSQL 迁移、生产迁移脚本、备份和索引复核。
 - 私有 COS/OSS/R2 全链路、低清/水印预览、Redis/DB 原子一次性下载 token。
 - Redis/RQ/Celery 等跨进程队列、任务恢复、失败重试和队列监控。
@@ -95,7 +95,7 @@
    - 支付回调校验。
    - 充值到账、退款、异常补单。
 
-当前本地 MVP 已识别 `wechat/alipay` provider；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账。仍未完成支付宝真实商户联调、退款 API、补单、财务对账；微信支付 adapter 仍未接入，凭证完整时也会 fail-closed。
+当前本地 MVP 已识别 `wechat/alipay` provider；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；财务人工支付对账已支持后台核验后推进订单状态、复用积分入账/退款并写审计。仍未完成支付宝真实商户联调、退款 API、异常补单运营流程；微信支付 adapter 仍未接入，凭证完整时也会 fail-closed。
 
 8. 代理机制
    - 代理用官网价格对外销售。

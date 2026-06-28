@@ -4761,6 +4761,92 @@ def api_alipay_payment_notify():
     return Response("success", mimetype="text/plain")
 
 
+@app.post("/api/admin/actions/payments/reconcile")
+def api_admin_reconcile_payment():
+    if not admin_finance_action_authorized():
+        if not admin_write_authorized():
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
+        return forbidden("支付对账权限不足", "admin_permission_forbidden")
+
+    body = request.get_json(silent=True) or {}
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "payment reconciliation reason is required", "code": "invalid_payment_reconciliation"}), 400
+
+    provider = str(body.get("provider") or "")
+    provider_order_id = str(
+        body.get("providerOrderId") or body.get("provider_order_id") or body.get("orderId") or body.get("order_id") or ""
+    )
+    target_status = str(body.get("status") or body.get("targetStatus") or body.get("target_status") or "").strip()
+    event_id = str(body.get("eventId") or body.get("event_id") or "").strip() or None
+    event_type = str(body.get("eventType") or body.get("event_type") or "").strip() or None
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    payload = {
+        **payload,
+        "manual": True,
+        "manualReason": reason,
+        "metadata": metadata,
+    }
+    actor_user_id = admin_actor_user_id()
+
+    conn = product_db_conn()
+    try:
+        result = payment_service.reconcile_payment_event(
+            conn,
+            provider=provider,
+            provider_order_id=provider_order_id,
+            target_status=target_status,
+            payload=payload,
+            event_id=event_id,
+            event_type=event_type,
+        )
+    except payment_service.PaymentServiceError as exc:
+        return payment_error_response(exc)
+    finally:
+        conn.close()
+
+    normalized_provider = str(result["order"]["provider"])
+    normalized_provider_order_id = str(result["provider_order_id"])
+    response_body, status = apply_payment_callback_effects(
+        result,
+        provider=normalized_provider,
+        provider_order_id=normalized_provider_order_id,
+        payload=payload,
+    )
+
+    conn = product_db_conn()
+    try:
+        audit = admin_actions.admin_audit_event(
+            conn,
+            actor_user_id=actor_user_id,
+            action="payment_reconciled",
+            target_type="payment_order",
+            target_id=str(result["order_id"]),
+            status="succeeded" if status == 200 and response_body.get("ok") else "failed",
+            reason=reason,
+            metadata={
+                "provider": normalized_provider,
+                "providerOrderId": normalized_provider_order_id,
+                "eventId": result.get("eventId"),
+                "eventType": result.get("eventType"),
+                "fromStatus": result.get("previousStatus"),
+                "toStatus": result.get("status"),
+                "pointsToCredit": result.get("pointsToCredit"),
+                "pointsToRefund": result.get("pointsToRefund"),
+                "billingOk": response_body.get("ok"),
+                "metadata": metadata,
+            },
+        )
+    finally:
+        conn.close()
+
+    response_body["audit"] = audit
+    if status != 200:
+        return jsonify(response_body), status
+    return jsonify(response_body)
+
+
 @app.post("/api/objects/sign")
 def api_sign_object_access():
     payload = request.get_json(silent=True) or {}

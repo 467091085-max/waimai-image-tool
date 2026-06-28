@@ -485,6 +485,67 @@ def handle_payment_callback(
     target_status = _target_status(event_type, payload)
     provider_event_id = _provider_event_id(provider, provider_order_id, event_type, payload)
 
+    return _record_payment_event(
+        conn,
+        provider=provider,
+        provider_order_id=provider_order_id,
+        event_type=event_type,
+        payload=payload,
+        target_status=target_status,
+        provider_event_id=provider_event_id,
+    )
+
+
+def reconcile_payment_event(
+    conn: sqlite3.Connection,
+    provider: str,
+    provider_order_id: str,
+    target_status: str,
+    payload: dict[str, Any] | None = None,
+    event_id: str | None = None,
+    event_type: str | None = None,
+) -> dict[str, Any]:
+    """Record a manually verified payment event without provider signature checks."""
+    init_payment_schema(conn)
+    provider = _clean_provider(provider)
+    provider_order_id = _clean_text(provider_order_id, "provider_order_id")
+    target_status = _clean_payment_status(target_status, "target_status")
+    event_type = _optional_clean_text(event_type, "event_type") or f"manual_{target_status}"
+    payload = _payload_dict(payload)
+    provider_event_id = (
+        _clean_text(event_id, "event_id")
+        if event_id is not None and str(event_id).strip()
+        else _provider_event_id(provider, provider_order_id, event_type, payload)
+    )
+
+    return _record_payment_event(
+        conn,
+        provider=provider,
+        provider_order_id=provider_order_id,
+        event_type=event_type,
+        payload=payload,
+        target_status=target_status,
+        provider_event_id=provider_event_id,
+    )
+
+
+def _record_payment_event(
+    conn: sqlite3.Connection,
+    *,
+    provider: str,
+    provider_order_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    target_status: str,
+    provider_event_id: str,
+) -> dict[str, Any]:
+    provider = _clean_provider(provider)
+    provider_order_id = _clean_text(provider_order_id, "provider_order_id")
+    event_type = _clean_text(event_type, "event_type")
+    target_status = _clean_payment_status(target_status, "target_status")
+    provider_event_id = _clean_text(provider_event_id, "provider_event_id")
+    payload = _payload_dict(payload)
+
     with _transaction(conn):
         existing_event = _fetch_event_by_provider_event_id(conn, provider, provider_event_id)
         if existing_event:
@@ -736,9 +797,7 @@ def _fetchone_dict(cursor: sqlite3.Cursor) -> dict[str, Any] | None:
 def _target_status(event_type: str, payload: dict[str, Any]) -> str:
     status = payload.get("status") or payload.get("payment_status") or payload.get("paymentStatus")
     if isinstance(status, str) and status.strip():
-        normalized_status = status.strip().lower()
-        if normalized_status in payment_rules.PAYMENT_STATUSES:
-            return normalized_status
+        return _clean_payment_status(status, "status")
 
     normalized = event_type.strip().lower().replace("-", "_").replace(".", "_")
     aliases = {
@@ -765,6 +824,13 @@ def _target_status(event_type: str, payload: dict[str, Any]) -> str:
     if normalized not in aliases:
         raise InvalidPaymentInput("Unsupported payment event type", eventType=event_type)
     return aliases[normalized]
+
+
+def _clean_payment_status(status: str, name: str) -> str:
+    normalized_status = _clean_text(status, name).lower()
+    if normalized_status not in payment_rules.PAYMENT_STATUSES:
+        raise InvalidPaymentInput("Unsupported payment status", **{name: status})
+    return normalized_status
 
 
 def _points_to_refund(payload: dict[str, Any], *, amount_cents: int, points: int) -> int:

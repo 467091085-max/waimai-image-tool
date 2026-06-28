@@ -14,7 +14,7 @@
 |---|---|---|---|
 | 数据库 | 部分完成 | SQLite MVP schema，覆盖生成任务、生成图、导出包、积分、代理、佣金、邀请、风控、资产访问 | PostgreSQL 迁移、迁移脚本、备份、索引复核、生产数据权限 |
 | 对象存储 | 部分完成 | 本地对象存储抽象、签名访问元数据、生产 readiness 评估；已接入腾讯 COS runtime backend，可通过 `OBJECT_STORAGE_PROVIDER=cos` 走私有桶逻辑对象 key 读写 | 菜单、原图、生成图、导出包、AI 资产全量迁到私有 COS，并在 Render 配置 `OBJECT_STORAGE_PROVIDER=cos`、bucket、region、SecretId/SecretKey、签名 secret；OSS/R2/S3 adapter 仍未接入 |
-| 积分/支付 | 部分完成 | 本地积分账本、扣费/退款、幂等订单、fake payment provider、回调验签抽象、支付 provider readiness scaffold、生产禁用 fake provider 防误用保护；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；微信 provider 仍 fail-closed；后台人工积分调整已要求财务角色并写账本/审计 | 支付宝真实商户联调、退款回调、补单、财务对账、异常订单处理；微信支付 adapter 仍未接入 |
+| 积分/支付 | 部分完成 | 本地积分账本、扣费/退款、幂等订单、fake payment provider、回调验签抽象、支付 provider readiness scaffold、生产禁用 fake provider 防误用保护；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；后台财务人工支付对账可推进 paid/refunded/closed/failed 并写账本/审计；微信 provider 仍 fail-closed；后台人工积分调整已要求财务角色并写账本/审计 | 支付宝真实商户联调、退款回调/API、补单和异常订单运营流程；微信支付 adapter 仍未接入 |
 | 账号/门店 | 部分完成 | 本地手机号 OTP/session/store schema、local/mock 短信 provider、webhook 短信 provider、生产无 provider 503 guard | 正式短信服务商账号/签名模板/回执、微信登录、正式会话、角色权限、门店归属全链路 |
 | 生成队列 | 部分完成 | 内存队列、并发 worker、job id、queued/running/completed/failed/canceled 状态/进度、取消、入队限流 helper、stale/timeout 判定、本地超时失败标记，底层只读监控快照，`/api/generation-jobs/*` 已展示 `stale/timedOut/elapsed`；前端正式出图走异步任务；队列满返回 429，队列不可用返回 503 | Redis/RQ/Celery 等跨进程队列、任务恢复、失败重试、队列监控接口/告警、跨进程定时 sweep |
 | AI 图库沉淀 | 部分完成 | JSONL AI asset repository，支持去重、筛选、复用匹配、状态标记；生成成功后写 manifest；本地质量评估可拒绝低质资产；后台已有 AI 资产 approve/reject/disable 状态 API 和审计记录；disable 已限制为 admin/super_admin/owner 角色 | 品类背景图、免费样图、正式菜品图全量沉淀到对象存储；完整人工审核队列、质量分层、复用策略生产化 |
@@ -41,6 +41,7 @@
 | 支付订单规则骨架 | 已完成（本地 MVP 级） | `payment_rules.py`, `payment_service.py` |
 | fake 支付防误用、provider readiness 与真实 provider fail-closed | 已完成（本地 MVP 级） | `payment_service.fake_payment_provider_enabled`, `payment_service.assess_payment_provider_readiness`, `payment_service.ensure_payment_checkout_available`, `/api/payments/orders`, `/api/payments/fake-callback` |
 | 支付宝电脑网站支付下单与通知验签 | 已完成（本地 MVP 级） | `payment_service.create_payment_checkout`, `/api/payments/alipay/notify`, `tests/test_payment_service.py`, `tests/test_product_api_integration.py` |
+| 财务人工支付对账 | 已完成（本地 MVP 级） | `payment_service.reconcile_payment_event`, `/api/admin/actions/payments/reconcile`, `admin_audit_logs`, `tests/test_payment_service.py`, `tests/test_product_api_integration.py` |
 | 后台人工积分调整 | 已完成（本地 MVP 级） | `/api/admin/actions/points-adjustments`, `admin_audit_logs`, `billing.ledger` |
 | 生产部署配置清单 | 已完成（本地 MVP 级） | `/api/ops/deployment-config`, `tests/test_product_api_integration.py` |
 | 代理/邀请规则函数 | 已完成（本地 MVP 级） | `growth_rules.py`, `auth_rules.py` |
@@ -62,7 +63,7 @@
 
 - 未上线生产：当前文档和本地代码都不能表述为已经商用上线。
 - 未完成真实登录：已有短信 provider 抽象和 webhook 接入，但还缺正式短信服务商账号、签名模板、发送回执处理、微信登录、正式会话和权限接入。
-- 未完成真实支付：已有 provider readiness scaffold，会在生产或关闭 `ENABLE_LOCAL_DEMO_BILLING` 时拒绝 fake/no provider；支付宝电脑网站支付本地 MVP 已支持 RSA2 签名下单链接和异步通知验签入账，但还未做真实商户联调、退款、补单和财务对账；微信支付仍未接入 adapter，继续 fail-closed。
+- 未完成真实支付：已有 provider readiness scaffold，会在生产或关闭 `ENABLE_LOCAL_DEMO_BILLING` 时拒绝 fake/no provider；支付宝电脑网站支付本地 MVP 已支持 RSA2 签名下单链接和异步通知验签入账，财务人工支付对账已可本地使用；但还未做真实商户联调、退款 API、补单和异常订单运营流程；微信支付仍未接入 adapter，继续 fail-closed。
 - 未完成生产对象存储全链路：已有配置 readiness 评估和 COS runtime backend，生产或关闭本地 demo 时会要求私有远程 provider 和签名 secret；但 Render 尚未切换 `OBJECT_STORAGE_PROVIDER=cos`，所有客户资产和 AI 资产还未统一进入私有桶并强制签名访问，OSS/R2/S3 SDK adapter 仍未接入。
 - 未完成生产一次性 token 消费存储：已有本地 replay 判定规则，但还未接 Redis/DB 原子写入和跨进程消费记录。
 - 未完成生产队列：内存队列不能支撑多实例、重启恢复和大批量任务。

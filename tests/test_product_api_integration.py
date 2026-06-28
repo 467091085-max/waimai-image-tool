@@ -134,6 +134,7 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
         ("POST", "/api/payments/orders"),
         ("POST", "/api/payments/fake-callback"),
         ("POST", "/api/payments/alipay/notify"),
+        ("POST", "/api/admin/actions/payments/reconcile"),
         ("POST", "/api/objects/sign"),
         ("GET", "/objects/<key>"),
         ("POST", "/api/generation-jobs"),
@@ -1271,6 +1272,114 @@ def test_alipay_notify_marks_order_paid_and_credits_points(
 
     account = billing.get_account("default", db_path=api.billing_db_path)
     assert account["balance"] >= 490
+
+
+def test_admin_payment_reconciliation_requires_finance_role_and_writes_audit(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+    login = _login(product_api.client)
+    target_user_id = "customer_payment_reconcile_1"
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        order = payment_service.create_payment_order(
+            conn,
+            user_id=target_user_id,
+            amount_cents=4900,
+            points=500,
+            provider="alipay",
+            order_id="manual-reconcile-pay-1",
+        )
+    finally:
+        conn.close()
+
+    request_body = {
+        "provider": "alipay",
+        "providerOrderId": order["providerOrderId"],
+        "status": "paid",
+        "eventId": "manual-reconcile-paid-1",
+        "eventType": "manual_paid",
+        "reason": "支付宝后台已核验到账",
+        "metadata": {"ticketId": "finance-ticket-1"},
+    }
+
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "operator"})
+    operator_response = product_api.client.post(
+        "/api/admin/actions/payments/reconcile",
+        json=request_body,
+        headers=_auth_header(login["token"]),
+    )
+    operator_payload = _json_for_status(operator_response, 403, "POST payment reconcile with operator role")
+    assert operator_payload["code"] == "admin_permission_forbidden"
+    assert billing.get_account(target_user_id, db_path=product_api.billing_db_path)["balance"] == 0
+
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "finance"})
+    finance_response = product_api.client.post(
+        "/api/admin/actions/payments/reconcile",
+        json=request_body,
+        headers=_auth_header(login["token"]),
+    )
+    payload = _json_for_status(finance_response, 200, "POST payment reconcile with finance role")
+
+    assert payload["callback"]["status"] == "paid"
+    assert payload["callback"]["previousStatus"] == "pending"
+    assert payload["callback"]["pointsToCredit"] == 500
+    assert payload["account"]["balance"] == 500
+    assert payload["audit"]["action"] == "payment_reconciled"
+    assert payload["audit"]["reason"] == "支付宝后台已核验到账"
+
+    duplicate_response = product_api.client.post(
+        "/api/admin/actions/payments/reconcile",
+        json=request_body,
+        headers=_auth_header(login["token"]),
+    )
+    duplicate_payload = _json_for_status(duplicate_response, 200, "POST duplicate payment reconcile")
+    assert duplicate_payload["callback"]["idempotent"] is True
+    assert duplicate_payload["callback"]["pointsToCredit"] == 0
+    assert duplicate_payload["account"]["balance"] == 500
+
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        order_row = conn.execute(
+            "SELECT status, paid_at FROM payment_orders WHERE order_id = ?",
+            (order["orderId"],),
+        ).fetchone()
+        audit_rows = conn.execute(
+            """
+            SELECT actor_user_id, action, target_type, target_id, reason, metadata_json
+            FROM admin_audit_logs
+            WHERE action = 'payment_reconciled' AND target_id = ?
+            ORDER BY datetime(created_at) ASC, created_at ASC, id ASC
+            """,
+            (order["orderId"],),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert order_row is not None
+    assert order_row["status"] == "paid"
+    assert order_row["paid_at"]
+    audit_row = None
+    audit_metadata = None
+    for candidate in audit_rows:
+        candidate_metadata = json.loads(candidate["metadata_json"])
+        if candidate_metadata.get("fromStatus") == "pending":
+            audit_row = candidate
+            audit_metadata = candidate_metadata
+            break
+    assert audit_row is not None
+    assert audit_metadata is not None
+    assert audit_row["actor_user_id"] == login["user"]["id"]
+    assert audit_row["target_type"] == "payment_order"
+    assert audit_row["reason"] == "支付宝后台已核验到账"
+    assert audit_metadata["provider"] == "alipay"
+    assert audit_metadata["providerOrderId"] == order["providerOrderId"]
+    assert audit_metadata["fromStatus"] == "pending"
+    assert audit_metadata["toStatus"] == "paid"
+    assert audit_metadata["pointsToCredit"] == 500
+    assert audit_metadata["metadata"] == {"ticketId": "finance-ticket-1"}
 
 
 def test_fake_payment_callback_forbidden_when_demo_billing_disabled_without_explicit_provider(

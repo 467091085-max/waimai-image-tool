@@ -411,6 +411,44 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertEqual(second["points_to_credit"], 0)
         self.assertEqual(self._count("payment_events"), 1)
 
+    def test_manual_reconciliation_marks_real_provider_paid_once(self) -> None:
+        order = payments.create_payment_order(
+            self.conn,
+            user_id="u1",
+            amount_cents=4900,
+            points=500,
+            provider="alipay",
+            order_id="manual-pay-1",
+        )
+
+        first = payments.reconcile_payment_event(
+            self.conn,
+            provider="alipay",
+            provider_order_id=order["provider_order_id"],
+            target_status="paid",
+            payload={"ticketId": "finance-ticket-1"},
+            event_id="manual-paid-1",
+            event_type="manual_paid",
+        )
+        second = payments.reconcile_payment_event(
+            self.conn,
+            provider="alipay",
+            provider_order_id=order["provider_order_id"],
+            target_status="paid",
+            payload={"ticketId": "finance-ticket-1"},
+            event_id="manual-paid-1",
+            event_type="manual_paid",
+        )
+
+        self.assertFalse(first["idempotent"])
+        self.assertEqual(first["previous_status"], "pending")
+        self.assertEqual(first["status"], "paid")
+        self.assertEqual(first["points_to_credit"], 500)
+        self.assertTrue(second["idempotent"])
+        self.assertEqual(second["points_to_credit"], 0)
+        self.assertEqual(self._order_status(order["order_id"]), "paid")
+        self.assertEqual(self._count("payment_events"), 1)
+
     def test_callback_rejects_invalid_fake_signature_without_writing_event(self) -> None:
         order = self._create_order()
 
