@@ -14,6 +14,7 @@ from unittest import mock
 import pytest
 from PIL import Image
 
+import ai_asset_repository
 import auth_service
 import billing
 import object_storage_service
@@ -1301,6 +1302,65 @@ def test_admin_write_rbac_accepts_token_and_admin_session(
     )
     admin_session_payload = _json_for_status(admin_session_response, 200, "POST admin risk with admin session")
     assert admin_session_payload["ok"] is True
+
+
+def test_ai_asset_status_requires_admin_for_disable(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+    app_module = importlib.import_module("app")
+    ai_asset_root = tmp_path / "ai-asset-rbac"
+    monkeypatch.setattr(app_module, "AI_ASSET_DIR", ai_asset_root)
+    manifest = app_module.ai_asset_manifest_path()
+    ai_asset_repository.AIAssetRepository(manifest).upsert(
+        {
+            "asset_id": "asset-rbac-1",
+            "kind": "product_image",
+            "category": "轻食健康餐",
+            "style_id": "style-1",
+            "product_name": "牛油果鸡胸沙拉",
+            "quality_score": 0.82,
+            "object_key": "ai-assets/products/asset-rbac-1.jpg",
+            "local_path": str(ai_asset_root / "asset-rbac-1.jpg"),
+            "sha256": "d" * 64,
+            "created_at": "2026-06-28T00:00:00Z",
+            "status": "approved",
+        }
+    )
+
+    login = _login(product_api.client)
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "operator"})
+    reject_response = product_api.client.post(
+        "/api/admin/actions/ai-assets/asset-rbac-1/status",
+        json={"status": "rejected"},
+        headers=_auth_header(login["token"]),
+    )
+    rejected = _json_for_status(reject_response, 200, "POST AI asset reject with operator role")["asset"]
+    assert rejected["status"] == "rejected"
+
+    operator_disable_response = product_api.client.post(
+        "/api/admin/actions/ai-assets/asset-rbac-1/status",
+        json={"status": "disabled"},
+        headers=_auth_header(login["token"]),
+    )
+    operator_disable_payload = _json_for_status(
+        operator_disable_response,
+        403,
+        "POST AI asset disable with operator role",
+    )
+    assert operator_disable_payload["code"] == "admin_permission_forbidden"
+
+    _set_user_metadata(product_api.storage_db_path, login["user"]["id"], {"role": "admin"})
+    admin_disable_response = product_api.client.post(
+        "/api/admin/actions/ai-assets/asset-rbac-1/status",
+        json={"status": "disabled"},
+        headers=_auth_header(login["token"]),
+    )
+    disabled = _json_for_status(admin_disable_response, 200, "POST AI asset disable with admin role")["asset"]
+    assert disabled["status"] == "disabled"
 
 
 def _insert_agent_with_paid_settlement(

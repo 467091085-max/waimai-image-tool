@@ -108,6 +108,8 @@ AI_ASSET_MANIFEST_LOCK = threading.Lock()
 ADMIN_ROLE_VALUES = {"admin", "super_admin", "superadmin", "ops", "operator"}
 ADMIN_FINANCE_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner", "finance", "financial", "accountant"}
 ADMIN_WITHDRAWAL_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | ADMIN_FINANCE_ROLE_VALUES | {"support", "reviewer"}
+ADMIN_AI_ASSET_REVIEW_ROLE_VALUES = ADMIN_ROLE_VALUES | {"reviewer", "quality_reviewer", "qa", "support"}
+ADMIN_AI_ASSET_DISABLE_ROLE_VALUES = {"admin", "super_admin", "superadmin", "owner"}
 MAX_LOGO_DATA_URL_CHARS = 1_500_000
 MAX_LOGO_BYTES = 1_000_000
 MAX_LOGO_PIXELS = 2_000_000
@@ -759,6 +761,28 @@ def admin_commission_settlement_status_authorized(status: str) -> bool:
     if status == "paid":
         return admin_finance_action_authorized()
     return admin_write_authorized()
+
+
+def admin_ai_asset_status_authorized(status: str) -> bool:
+    if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
+        return True
+    if not session_token_from_request():
+        return (
+            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
+            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
+            and is_local_request()
+        )
+
+    conn = product_db_conn()
+    try:
+        session = auth_service.get_session(conn, session_token_from_request())
+    finally:
+        conn.close()
+    user = session.get("user") if isinstance(session, dict) and isinstance(session.get("user"), dict) else None
+    roles = admin_user_role_values(user)
+    if status == "disabled":
+        return bool(roles & ADMIN_AI_ASSET_DISABLE_ROLE_VALUES)
+    return bool(roles & ADMIN_AI_ASSET_REVIEW_ROLE_VALUES)
 
 
 def admin_actor_user_id() -> str:
@@ -4723,9 +4747,16 @@ def api_admin_mark_ai_asset_status(asset_id: str):
     if not admin_write_authorized():
         return forbidden("管理写接口未授权", "admin_write_forbidden")
     payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"approve", "reject", "disable"}:
+        status = {"approve": "approved", "reject": "rejected", "disable": "disabled"}[status]
+    if status not in {"approved", "rejected", "disabled", "pending"}:
+        return jsonify({"error": "invalid AI asset status", "code": "invalid_admin_action"}), 400
+    if not admin_ai_asset_status_authorized(status):
+        return forbidden("AI 资产审核权限不足", "admin_permission_forbidden")
     repo = ai_asset_repository.AIAssetRepository(ai_asset_manifest_path())
     try:
-        record = admin_actions.mark_ai_asset_status(repo, asset_id, str(payload.get("status") or ""))
+        record = admin_actions.mark_ai_asset_status(repo, asset_id, status)
     except KeyError as exc:
         return jsonify({"error": str(exc), "code": "ai_asset_not_found"}), 404
     except (AttributeError, ValueError) as exc:
