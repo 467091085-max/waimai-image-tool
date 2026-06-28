@@ -28,6 +28,12 @@ services:
         value: auto
       - key: TENCENT_HUNYUAN_SYNC_LIMIT
         value: "6"
+      - key: TENCENT_TOKENHUB_API_KEY
+        sync: false
+      - key: TENCENT_TOKENHUB_IMAGE_MODEL
+        value: hy-image-v3.0
+      - key: TENCENT_TOKENHUB_POLL_TIMEOUT
+        value: "120"
       - key: TENCENTCLOUD_SECRET_ID
         sync: false
       - key: TENCENTCLOUD_SECRET_KEY

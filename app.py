@@ -92,8 +92,13 @@ TENCENT_AIART_VERSION = "2022-12-29"
 TENCENT_HUNYUAN_HOST = "hunyuan.tencentcloudapi.com"
 TENCENT_HUNYUAN_SERVICE = "hunyuan"
 TENCENT_HUNYUAN_VERSION = "2023-09-01"
+TENCENT_TOKENHUB_IMAGE_LITE_URL = "https://tokenhub.tencentmaas.com/v1/api/image/lite"
+TENCENT_TOKENHUB_IMAGE_SUBMIT_URL = "https://tokenhub.tencentmaas.com/v1/api/image/submit"
+TENCENT_TOKENHUB_IMAGE_QUERY_URL = "https://tokenhub.tencentmaas.com/v1/api/image/query"
 TENCENT_REQUEST_TIMEOUT = env_int("TENCENT_REQUEST_TIMEOUT", 55)
 TENCENT_SYNC_LIMIT = env_int("TENCENT_HUNYUAN_SYNC_LIMIT", 6)
+TENCENT_TOKENHUB_POLL_TIMEOUT = env_int("TENCENT_TOKENHUB_POLL_TIMEOUT", 120)
+TENCENT_TOKENHUB_POLL_INTERVAL = max(1, env_int("TENCENT_TOKENHUB_POLL_INTERVAL", 3))
 FINAL_GENERATION_WORKERS = max(1, env_int("FINAL_GENERATION_WORKERS", 3))
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
 DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
@@ -859,21 +864,49 @@ def tencent_config() -> dict[str, Any]:
     return {"secret_id": secret_id, "secret_key": secret_key, "region": region, "enabled": enabled, "mode": mode}
 
 
-def tencent_ready() -> bool:
+def tokenhub_config() -> dict[str, Any]:
+    api_key = (
+        os.environ.get("TENCENT_TOKENHUB_API_KEY")
+        or os.environ.get("TOKENHUB_API_KEY")
+        or os.environ.get("HUNYUAN_TOKENHUB_API_KEY")
+        or ""
+    ).strip()
+    model = (
+        os.environ.get("TENCENT_TOKENHUB_IMAGE_MODEL")
+        or os.environ.get("TOKENHUB_IMAGE_MODEL")
+        or "hy-image-v3.0"
+    ).strip()
+    enabled = env_truthy("TENCENT_TOKENHUB_ENABLED", default=bool(api_key))
+    return {"api_key": api_key, "model": model, "enabled": enabled}
+
+
+def tokenhub_ready() -> bool:
+    cfg = tokenhub_config()
+    return bool(cfg["enabled"] and cfg["api_key"])
+
+
+def tencent_cloud_ready() -> bool:
     cfg = tencent_config()
     return bool(cfg["enabled"] and cfg["secret_id"] and cfg["secret_key"])
 
 
+def tencent_ready() -> bool:
+    return tokenhub_ready() or tencent_cloud_ready()
+
+
 def tencent_status_payload() -> dict[str, Any]:
     cfg = tencent_config()
+    tokenhub = tokenhub_config()
     cos = tencent_cos_config()
     missing = []
-    if not cfg["enabled"]:
-        missing.append("TENCENT_HUNYUAN_ENABLED=true")
-    if not cfg["secret_id"]:
-        missing.append("TENCENTCLOUD_SECRET_ID")
-    if not cfg["secret_key"]:
-        missing.append("TENCENTCLOUD_SECRET_KEY")
+    if not tokenhub_ready() and not tencent_cloud_ready():
+        missing.append("TENCENT_TOKENHUB_API_KEY")
+        if not cfg["enabled"]:
+            missing.append("TENCENT_HUNYUAN_ENABLED=true")
+        if not cfg["secret_id"]:
+            missing.append("TENCENTCLOUD_SECRET_ID")
+        if not cfg["secret_key"]:
+            missing.append("TENCENTCLOUD_SECRET_KEY")
     return {
         "provider": "tencent-hunyuan" if tencent_ready() else "local-demo",
         "configured": tencent_ready(),
@@ -881,6 +914,9 @@ def tencent_status_payload() -> dict[str, Any]:
         "region": cfg["region"],
         "mode": cfg["mode"],
         "syncLimit": TENCENT_SYNC_LIMIT,
+        "tokenhubReady": tokenhub_ready(),
+        "tokenhubModel": tokenhub["model"],
+        "cloudApiReady": tencent_cloud_ready(),
         "cosReady": cos["ready"],
         "cosBucket": cos["bucket"] if cos["ready"] else "",
         "cosRegion": cos["region"],
@@ -913,8 +949,8 @@ def sha256_hex(value: str) -> str:
 
 def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, service: str, version: str, timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     cfg = tencent_config()
-    if not tencent_ready():
-        raise RuntimeError("腾讯云生图环境变量未配置完整")
+    if not tencent_cloud_ready():
+        raise RuntimeError("腾讯云旧版生图环境变量未配置完整")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     timestamp = int(time.time())
     date = time.strftime("%Y-%m-%d", time.gmtime(timestamp))
@@ -956,13 +992,136 @@ def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, s
     return response
 
 
+def tokenhub_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    cfg = tokenhub_config()
+    body: dict[str, Any] = {
+        "model": cfg["model"],
+        "prompt": str(payload.get("Prompt") or ""),
+    }
+    mappings = {
+        "NegativePrompt": "negative_prompt",
+        "Resolution": "resolution",
+        "RspImgType": "rsp_img_type",
+        "LogoAdd": "logo_add",
+    }
+    for source_key, target_key in mappings.items():
+        if source_key in payload and payload[source_key] not in (None, ""):
+            body[target_key] = payload[source_key]
+    return body
+
+
+def tokenhub_http_post(url: str, payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
+    cfg = tokenhub_config()
+    if not tokenhub_ready():
+        raise RuntimeError("TokenHub API Key 未配置：请在 Render 设置 TENCENT_TOKENHUB_API_KEY")
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"TokenHub HTTP {exc.code}: {raw[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"TokenHub 请求失败：{exc}") from exc
+    data = json.loads(raw)
+    if isinstance(data.get("error"), dict):
+        error = data["error"]
+        raise RuntimeError(f"TokenHub {error.get('code', 'Error')}: {error.get('message', '调用失败')}")
+    return data
+
+
+def tokenhub_result_image(response: dict[str, Any]) -> str:
+    data = response.get("data")
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            return str(first.get("url") or first.get("image_url") or first.get("b64_json") or "")
+    output = response.get("output")
+    if isinstance(output, dict):
+        images = output.get("images")
+        if isinstance(images, list) and images and isinstance(images[0], dict):
+            return str(images[0].get("url") or images[0].get("image_url") or images[0].get("b64_json") or "")
+        return str(output.get("url") or output.get("image_url") or "")
+    return str(response.get("url") or response.get("image_url") or response.get("result_url") or "")
+
+
+def tokenhub_request_id(response: dict[str, Any]) -> str:
+    return str(response.get("id") or response.get("task_id") or response.get("request_id") or response.get("RequestId") or "")
+
+
+def tokenhub_image_action(model: str) -> str:
+    return "TokenHubImageLite" if "lite" in model.lower() else "TokenHubImageV3"
+
+
+def normalize_tokenhub_image_response(response: dict[str, Any], model: str) -> dict[str, Any]:
+    result_image = tokenhub_result_image(response)
+    if not result_image:
+        raise RuntimeError(f"TokenHub {model} 未返回图片 URL")
+    return {
+        "ResultImage": result_image,
+        "RequestId": tokenhub_request_id(response),
+        "Seed": response.get("seed") or response.get("Seed"),
+        "_Endpoint": "tokenhub.tencentmaas.com",
+        "_Action": tokenhub_image_action(model),
+        "_Model": model,
+        "_Provider": "tencent-hunyuan",
+    }
+
+
+def tokenhub_image_request(payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
+    cfg = tokenhub_config()
+    model = str(cfg["model"] or "hy-image-v3.0")
+    body = tokenhub_image_payload(payload)
+    if "lite" in model.lower():
+        response = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_LITE_URL, body, timeout=timeout)
+        return normalize_tokenhub_image_response(response, model)
+
+    submitted = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_SUBMIT_URL, body, timeout=min(timeout, 30))
+    job_id = tokenhub_request_id(submitted)
+    if not job_id:
+        return normalize_tokenhub_image_response(submitted, model)
+    deadline = time.time() + max(1, TENCENT_TOKENHUB_POLL_TIMEOUT)
+    last_response = submitted
+    while time.time() < deadline:
+        status = str(last_response.get("status") or last_response.get("task_status") or "").lower()
+        if status in {"succeeded", "success", "completed", "finish", "finished"}:
+            return normalize_tokenhub_image_response(last_response, model)
+        if status in {"failed", "fail", "error", "canceled", "cancelled"}:
+            error = last_response.get("error")
+            raise RuntimeError(f"TokenHub {model} 任务失败：{error or last_response}")
+        time.sleep(TENCENT_TOKENHUB_POLL_INTERVAL)
+        remaining = max(1, int(deadline - time.time()))
+        last_response = tokenhub_http_post(
+            TENCENT_TOKENHUB_IMAGE_QUERY_URL,
+            {"model": model, "id": job_id},
+            timeout=min(timeout, remaining, 30),
+        )
+    status = str(last_response.get("status") or last_response.get("task_status") or "unknown")
+    raise RuntimeError(f"TokenHub {model} 任务超时：{job_id} status={status}")
+
+
 def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     if action == "TextToImageLite":
+        errors = []
+        if tokenhub_ready():
+            try:
+                return tokenhub_image_request(payload, timeout=timeout)
+            except RuntimeError as exc:
+                errors.append(str(exc))
         endpoints = [
             (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
             (TENCENT_HUNYUAN_HOST, TENCENT_HUNYUAN_SERVICE, TENCENT_HUNYUAN_VERSION),
         ]
-        errors = []
         for host, service, version in endpoints:
             try:
                 response = tencent_cloud_api_request(action, payload, host, service, version, timeout)
@@ -1161,12 +1320,13 @@ def tencent_text_to_image(row: dict[str, Any], style_id: str, quality: str | Non
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
     return {
-        "provider": "tencent-hunyuan",
-        "action": "TextToImageLite",
+        "provider": str(response.get("_Provider") or "tencent-hunyuan"),
+        "action": str(response.get("_Action") or "TextToImageLite"),
         "promptType": prompt_type,
         "requestId": response.get("RequestId"),
         "seed": response.get("Seed"),
         "endpoint": response.get("_Endpoint"),
+        "model": response.get("_Model"),
     }
 
 
@@ -1194,12 +1354,13 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         )
         save_result_image(str(response.get("ResultImage") or ""), target)
         return {
-            "provider": "tencent-hunyuan",
-            "action": "TextToImageLite",
+            "provider": str(response.get("_Provider") or "tencent-hunyuan"),
+            "action": str(response.get("_Action") or "TextToImageLite"),
             "promptType": "style_background",
             "requestId": response.get("RequestId"),
             "seed": response.get("Seed"),
             "endpoint": response.get("_Endpoint"),
+            "model": response.get("_Model"),
         }
     source_candidate = style_background_seed_candidate()
     product_url = model_input_public_url(source_candidate)

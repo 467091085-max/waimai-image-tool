@@ -219,6 +219,72 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][1]["NegativePrompt"], app_module.NEGATIVE_IMAGE_PROMPT)
             self.assertEqual(payloads[1][1]["ProductUrl"], source["url"])
 
+    def test_tencent_status_accepts_tokenhub_key_without_legacy_secret_pair(self) -> None:
+        with mock.patch.dict(
+            app_module.os.environ,
+            {
+                "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+            },
+            clear=True,
+        ):
+            status = app_module.tencent_status_payload()
+
+        self.assertTrue(status["configured"])
+        self.assertTrue(status["tokenhubReady"])
+        self.assertFalse(status["cloudApiReady"])
+        self.assertEqual(status["tokenhubModel"], "hy-image-v3.0")
+        self.assertEqual(status["missing"], [])
+
+    def test_text_to_image_prefers_tokenhub_when_key_is_configured(self) -> None:
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+                },
+                clear=True,
+            ),
+            mock.patch.object(app_module, "tokenhub_image_request", return_value={
+                "ResultImage": "https://cdn.example.test/tokenhub.jpg",
+                "RequestId": "job-1",
+                "_Endpoint": "tokenhub.tencentmaas.com",
+                "_Action": "TokenHubImageV3",
+                "_Model": "hy-image-v3.0",
+            }) as tokenhub,
+            mock.patch.object(app_module, "tencent_cloud_api_request") as legacy,
+        ):
+            response = app_module.tencent_api_request("TextToImageLite", {"Prompt": "测试"})
+
+        self.assertEqual(response["_Action"], "TokenHubImageV3")
+        tokenhub.assert_called_once()
+        legacy.assert_not_called()
+
+    def test_tokenhub_payload_maps_legacy_text_to_image_fields(self) -> None:
+        with mock.patch.dict(
+            app_module.os.environ,
+            {
+                "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-lite",
+            },
+            clear=True,
+        ):
+            payload = app_module.tokenhub_image_payload({
+                "Prompt": "辣椒炒肉外卖主图",
+                "NegativePrompt": "文字 水印",
+                "Resolution": "1024:768",
+                "RspImgType": "url",
+                "LogoAdd": 0,
+            })
+
+        self.assertEqual(payload["model"], "hy-image-lite")
+        self.assertEqual(payload["prompt"], "辣椒炒肉外卖主图")
+        self.assertEqual(payload["negative_prompt"], "文字 水印")
+        self.assertEqual(payload["resolution"], "1024:768")
+        self.assertEqual(payload["rsp_img_type"], "url")
+        self.assertEqual(payload["logo_add"], 0)
+
     def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
         calls: list[str] = []
 
@@ -226,7 +292,10 @@ class AppGenerationTests(unittest.TestCase):
             calls.append(host)
             raise RuntimeError(f"{host} ResourceInsufficient: 资源不足")
 
-        with mock.patch.object(app_module, "tencent_cloud_api_request", side_effect=fake_cloud):
+        with (
+            mock.patch.dict(app_module.os.environ, {"TENCENT_TOKENHUB_ENABLED": "false"}, clear=False),
+            mock.patch.object(app_module, "tencent_cloud_api_request", side_effect=fake_cloud),
+        ):
             with self.assertRaisesRegex(RuntimeError, "aiart.tencentcloudapi.com.*hunyuan.tencentcloudapi.com"):
                 app_module.tencent_api_request("TextToImageLite", {"Prompt": "测试"})
 

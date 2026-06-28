@@ -269,15 +269,18 @@ data/library/_ai_asset_library/manifest.jsonl
 
 ## 腾讯云生图配置
 
-当前版本已经预留并接入腾讯云混元生图 API 3.0：
+当前版本支持两套腾讯云图像接口：
 
-- `TextToImageLite`：用于没有可复用参考图或 AI 资产时的普通文生图。
-- `ReplaceBackground`：用于已有菜品图可公网访问时，按所选风格替换背景。
+- TokenHub `HY-Image-3.0` / `HY-Image-Lite`：用于背景风格图、无图库命中时的文生图，优先消耗 TokenHub 图像额度。
+- 旧版 `TextToImageLite` / `ReplaceBackground`：作为 fallback，并继续用于 COS、商品背景旧接口等路径。
 
 Render 环境变量：
 
 ```text
 TENCENT_HUNYUAN_ENABLED=true
+TENCENT_TOKENHUB_API_KEY=你的 TokenHub API Key
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
+TENCENT_TOKENHUB_POLL_TIMEOUT=120
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
@@ -293,6 +296,8 @@ AI_ASSET_UPLOAD_TO_COS=true
 
 说明：
 
+- `TENCENT_TOKENHUB_API_KEY` 是新 TokenHub 平台的 API Key，和腾讯云访问管理里的 `SecretId/SecretKey` 不是同一个东西。购买 `HY-Image-3.0` 额度后，必须创建并配置这个 Key，Render 才能消耗对应额度。
+- `TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0` 会使用异步 submit/query 生成，质量优先；如果要更快预览，可以改成 `hy-image-lite`，但需要确认该模型有可用额度或后付费。
 - 商品背景生成要求腾讯云能下载 `ProductUrl`。Render 域名在腾讯云侧可能下载失败，所以正式联调建议配置腾讯 COS。
 - 当前腾讯 COS 临时图桶是 `waimai-image-tool-inputs-1311836560`，地域是 `ap-guangzhou`。
 - `TENCENT_COS_BUCKET` 需要使用完整 bucket 名，例如 `waimai-image-tool-125xxxxxxx`。
@@ -310,6 +315,7 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 ```
 
 返回里的 `configured` 为 `true` 才代表 Render 已读取到密钥。
+返回里的 `tokenhubReady` 为 `true` 才代表 Render 可以调用 TokenHub `HY-Image-3.0`。
 
 ## 2026-06-20 交付说明
 
@@ -341,6 +347,8 @@ Render 部署需要的核心环境变量：
 
 ```text
 TENCENT_HUNYUAN_ENABLED=true
+TENCENT_TOKENHUB_API_KEY=你的 TokenHub API Key
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
