@@ -57,6 +57,8 @@ class RedisTaskQueue:
             "payload_json": _json(clean_payload),
             "created_at": str(now),
             "updated_at": str(now),
+            "started_at": "",
+            "finished_at": "",
         }
         self.redis.hset(self.config.task_key(resolved_task_id), mapping=task)
         self.redis.rpush(self.config.queue_key, _json({"task_id": resolved_task_id, "payload": clean_payload}))
@@ -82,12 +84,14 @@ class RedisTaskQueue:
         return {"task_id": task_id, "payload": payload}
 
     def mark_running(self, task_id: str, *, attempts: int) -> dict[str, Any]:
+        now = _now_ms()
         return self._update(
             task_id,
             {
                 "status": TASK_RUNNING,
                 "attempts": str(_non_negative_int(attempts, "attempts")),
-                "updated_at": str(_now_ms()),
+                "started_at": str(now),
+                "updated_at": str(now),
             },
         )
 
@@ -101,22 +105,74 @@ class RedisTaskQueue:
                 "error": "",
                 "result_json": _json(dict(result or {})),
                 "updated_at": str(_now_ms()),
+                "finished_at": str(_now_ms()),
             },
         )
 
     def mark_failed(self, task_id: str, *, error: str, attempts: int) -> dict[str, Any]:
+        now = _now_ms()
         return self._update(
             task_id,
             {
                 "status": TASK_FAILED,
                 "error": str(error or "worker failed"),
                 "attempts": str(_non_negative_int(attempts, "attempts")),
-                "updated_at": str(_now_ms()),
+                "updated_at": str(now),
+                "finished_at": str(now),
             },
         )
 
     def requeue(self, task_id: str, payload: Mapping[str, Any]) -> None:
         self.redis.rpush(self.config.queue_key, _json({"task_id": task_id, "payload": dict(payload)}))
+
+    def recover_stale_running(
+        self,
+        *,
+        stale_after_ms: int,
+        max_attempts: int,
+        max_recovered: int = 100,
+    ) -> dict[str, Any]:
+        stale_after_ms = _non_negative_int(stale_after_ms, "stale_after_ms")
+        max_attempts = _non_negative_int(max_attempts, "max_attempts")
+        max_recovered = _non_negative_int(max_recovered, "max_recovered")
+        now = _now_ms()
+        recovered: list[str] = []
+        failed: list[str] = []
+        pattern = self.config.task_key("*")
+        for raw_key in self.redis.scan_iter(match=pattern, count=max_recovered):
+            if len(recovered) + len(failed) >= max_recovered:
+                break
+            key = _decode(raw_key)
+            raw = self.redis.hgetall(key)
+            if not raw:
+                continue
+            task = _decode_task(raw)
+            if task["status"] != TASK_RUNNING:
+                continue
+            updated_at = int(task.get("updated_at") or 0)
+            if updated_at and now - updated_at < stale_after_ms:
+                continue
+            task_id = str(task["task_id"])
+            attempts = int(task.get("attempts") or 0)
+            if attempts >= max_attempts:
+                self.mark_failed(
+                    task_id,
+                    error="task recovered as failed after worker timeout",
+                    attempts=attempts,
+                )
+                failed.append(task_id)
+                continue
+            self._update(
+                task_id,
+                {
+                    "status": TASK_PENDING,
+                    "error": "recovered stale running task",
+                    "updated_at": str(now),
+                },
+            )
+            self.requeue(task_id, task.get("payload") if isinstance(task.get("payload"), dict) else {})
+            recovered.append(task_id)
+        return {"recovered": recovered, "failed": failed}
 
     def _update(self, task_id: str, mapping: Mapping[str, Any]) -> dict[str, Any]:
         self.get(task_id)
@@ -166,6 +222,8 @@ def _decode_task(raw: Mapping[Any, Any]) -> dict[str, Any]:
         "result": result if isinstance(result, dict) else {},
         "created_at": int(decoded.get("created_at") or 0),
         "updated_at": int(decoded.get("updated_at") or 0),
+        "started_at": int(decoded.get("started_at") or 0),
+        "finished_at": int(decoded.get("finished_at") or 0),
     }
 
 

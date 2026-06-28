@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,16 @@ class FakeRedis:
         if not values:
             return None
         return key, values.pop()
+
+    def scan_iter(self, match: str, count: int = 10):
+        prefix = match.rstrip("*")
+        yielded = 0
+        for key in list(self.hashes.keys()):
+            if key.startswith(prefix):
+                yield key
+                yielded += 1
+                if yielded >= count:
+                    return
 
 
 def test_api_server_generate_only_enqueues_and_status_reads_task(monkeypatch) -> None:
@@ -84,6 +95,45 @@ def test_worker_retries_twice_then_marks_failed(monkeypatch) -> None:
     assert result["status"] == "failed"
     assert result["attempts"] == 3
     assert "provider unavailable" in result["error"]
+
+
+def test_worker_times_out_handler_and_marks_failed() -> None:
+    queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
+    queue.enqueue({"prompt": "超时任务"}, task_id="task-timeout")
+    worker = GenerationWorker(
+        queue,
+        handler=lambda _payload: (time.sleep(0.05) or {"image_url": "https://cdn.example/slow.jpg"}),
+        max_retries=0,
+        task_timeout_seconds=0.01,
+    )
+
+    assert worker.process_one(timeout_seconds=0) is True
+    result = queue.get("task-timeout")
+    assert result["status"] == "failed"
+    assert result["attempts"] == 1
+    assert "timed out" in result["error"]
+
+
+def test_worker_recovers_stale_running_task_before_dequeue() -> None:
+    redis = FakeRedis()
+    queue = RedisTaskQueue(redis, RedisQueueConfig(namespace="test", queue_name="generate"))
+    queue.enqueue({"prompt": "恢复任务"}, task_id="task-recover")
+    queue.dequeue(timeout_seconds=0)
+    queue.mark_running("task-recover", attempts=1)
+    redis.hashes[queue.config.task_key("task-recover")]["updated_at"] = "1"
+
+    worker = GenerationWorker(
+        queue,
+        handler=lambda _payload: {"image_url": "https://cdn.example/recovered.jpg"},
+        max_retries=2,
+        recovery_stale_seconds=0.001,
+    )
+
+    assert worker.process_one(timeout_seconds=0) is True
+    result = queue.get("task-recover")
+    assert result["status"] == "done"
+    assert result["image_url"] == "https://cdn.example/recovered.jpg"
+    assert result["attempts"] == 2
 
 
 def _load_api_server_module():
