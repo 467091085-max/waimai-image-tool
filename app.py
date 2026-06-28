@@ -452,6 +452,17 @@ def local_demo_billing_allowed(user_id: str) -> bool:
     )
 
 
+def local_demo_admin_allowed() -> bool:
+    app_env = runtime_environment_label()
+    if app_env in {"production", "prod", "staging", "render"} or render_runtime_detected():
+        return False
+    return (
+        env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
+        and not os.environ.get("ADMIN_API_TOKEN", "").strip()
+        and is_local_request()
+    )
+
+
 def generation_write_authorized() -> bool:
     return configured_request_token(("GENERATION_API_TOKEN", "ADMIN_API_TOKEN"), "X-Generation-Token")
 
@@ -731,22 +742,14 @@ def admin_write_authorized() -> bool:
         return True
     if session_token_from_request():
         return admin_session_authorized()
-    return (
-        env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
-        and not os.environ.get("ADMIN_API_TOKEN", "").strip()
-        and is_local_request()
-    )
+    return local_demo_admin_allowed()
 
 
 def admin_finance_action_authorized() -> bool:
     if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
         return True
     if not session_token_from_request():
-        return (
-            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
-            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
-            and is_local_request()
-        )
+        return local_demo_admin_allowed()
 
     conn = product_db_conn()
     try:
@@ -761,11 +764,7 @@ def admin_withdrawal_status_authorized(status: str) -> bool:
     if status == "paid":
         return admin_finance_action_authorized()
     if not session_token_from_request():
-        return (
-            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
-            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
-            and is_local_request()
-        )
+        return local_demo_admin_allowed()
 
     conn = product_db_conn()
     try:
@@ -787,11 +786,7 @@ def admin_ai_asset_status_authorized(status: str) -> bool:
     if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
         return True
     if not session_token_from_request():
-        return (
-            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
-            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
-            and is_local_request()
-        )
+        return local_demo_admin_allowed()
 
     conn = product_db_conn()
     try:
@@ -809,11 +804,7 @@ def admin_risk_decision_authorized(decision: str) -> bool:
     if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
         return True
     if not session_token_from_request():
-        return (
-            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
-            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
-            and is_local_request()
-        )
+        return local_demo_admin_allowed()
 
     conn = product_db_conn()
     try:

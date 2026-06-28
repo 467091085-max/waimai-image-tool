@@ -1403,6 +1403,29 @@ def test_admin_write_rbac_accepts_token_and_admin_session(
     assert admin_session_payload["ok"] is True
 
 
+def test_local_demo_admin_is_disabled_on_render_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV=None,
+        PUBLIC_BASE_URL="https://waimai-image-tool-1.onrender.com",
+        ADMIN_API_TOKEN=None,
+        ENABLE_LOCAL_DEMO_ADMIN="true",
+    )
+
+    response = fixture.client.post(
+        "/api/admin/actions/risk",
+        json={"eventType": "render_local_demo_admin", "decision": "review", "riskLevel": "low"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    payload = _json_for_status(response, 403, "POST admin risk local demo on render runtime")
+
+    assert payload["code"] == "admin_write_forbidden"
+
+
 def test_admin_risk_deny_requires_risk_or_admin_role(
     product_api: ProductApiFixture,
     monkeypatch: pytest.MonkeyPatch,
