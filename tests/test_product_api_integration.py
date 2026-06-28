@@ -129,6 +129,7 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
         ("GET", "/api/generation-jobs/<job_id>"),
         ("POST", "/api/generation-jobs/<job_id>/cancel"),
         ("GET", "/api/ops/readiness"),
+        ("GET", "/api/ops/deployment-config"),
         ("GET", "/api/admin/queue-snapshot"),
         ("POST", "/api/admin/actions/risk"),
         ("POST", "/api/admin/actions/withdrawals/<withdrawal_id>/status"),
@@ -454,6 +455,63 @@ def test_ops_readiness_is_false_when_payment_provider_is_not_ready(
     assert payload["objectStorage"]["ready"] is True
     assert payload["payments"]["ready"] is False
     assert payload["payments"]["blockingIssues"] == ["real_payment_provider_required"]
+
+
+def test_ops_deployment_config_reports_required_env_without_secret_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PUBLIC_BASE_URL="https://waimai-image-tool-1.onrender.com",
+        ADMIN_API_TOKEN=None,
+        TENCENT_TOKENHUB_API_KEY=None,
+        TOKENHUB_API_KEY=None,
+        HUNYUAN_TOKENHUB_API_KEY=None,
+        TENCENT_TOKENHUB_IMAGE_MODEL="hy-image-v3.0",
+        TENCENTCLOUD_SECRET_ID="cos-secret-id-value",
+        TENCENTCLOUD_SECRET_KEY="cos-secret-key-value",
+        OBJECT_STORAGE_PROVIDER="cos",
+        OBJECT_STORAGE_PRIVATE="true",
+        OBJECT_STORAGE_BUCKET="waimai-assets-prod",
+        OBJECT_STORAGE_REGION="ap-guangzhou",
+        OBJECT_SIGNING_SECRET="object-secret-value",
+        PAYMENT_PROVIDER=None,
+        PAYMENT_WEBHOOK_SECRET="payment-secret-value",
+        ENABLE_LOCAL_DEMO_BILLING="false",
+    )
+
+    response = fixture.client.get("/api/ops/deployment-config")
+
+    payload = _json_for_status(response, 200, "GET /api/ops/deployment-config")
+    raw_payload = json.dumps(payload, ensure_ascii=False)
+    items = {
+        item["key"]: item
+        for section in payload["sections"]
+        for item in section.get("items", [])
+    }
+
+    assert payload["ok"] is True
+    assert payload["ready"] is False
+    assert payload["appEnv"] == "staging"
+    assert payload["renderDetected"] is True
+    assert payload["secretsRedacted"] is True
+    assert "TENCENT_TOKENHUB_API_KEY" in payload["missingRequiredEnv"]
+    assert "PAYMENT_PROVIDER" in payload["missingRequiredEnv"]
+    assert "ADMIN_API_TOKEN" in payload["missingRequiredEnv"]
+    assert "object-secret-value" not in raw_payload
+    assert "payment-secret-value" not in raw_payload
+    assert "cos-secret-id-value" not in raw_payload
+    assert "cos-secret-key-value" not in raw_payload
+    assert items["tencent_tokenhub_api_key"]["sensitive"] is True
+    assert items["tencent_tokenhub_api_key"]["configured"] is False
+    assert items["object_storage_secret_id"]["configured"] is True
+    assert items["object_storage_secret_id"]["value"] == "configured"
+    assert items["payment_webhook_secret"]["configured"] is True
+    assert items["payment_webhook_secret"]["value"] == "configured"
+    assert items["payment_provider"]["allowedValues"] == ["alipay", "wechat"]
 
 
 def test_admin_queue_snapshot_returns_read_only_queue_metrics(

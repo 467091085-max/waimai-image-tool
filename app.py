@@ -1133,6 +1133,183 @@ def generation_provider_readiness() -> dict[str, Any]:
     }
 
 
+SENSITIVE_ENV_NAME_PARTS = ("SECRET", "KEY", "TOKEN", "PASSWORD", "PRIVATE", "CERT")
+
+
+def first_configured_env(env_names: tuple[str, ...] | list[str], values: Any = None) -> str:
+    env = os.environ if values is None else values
+    for name in env_names:
+        if str(env.get(name) or "").strip():
+            return name
+    return ""
+
+
+def deployment_config_item(
+    key: str,
+    env_names: tuple[str, ...] | list[str],
+    *,
+    required: bool = True,
+    sensitive: bool | None = None,
+    recommended: str = "",
+    description: str = "",
+    allowed_values: tuple[str, ...] | list[str] = (),
+    values: Any = None,
+) -> dict[str, Any]:
+    env = os.environ if values is None else values
+    configured_env = first_configured_env(env_names, env)
+    if sensitive is None:
+        sensitive = any(part in name.upper() for name in env_names for part in SENSITIVE_ENV_NAME_PARTS)
+    item: dict[str, Any] = {
+        "key": key,
+        "env": list(env_names),
+        "required": required,
+        "sensitive": bool(sensitive),
+        "configured": bool(configured_env),
+        "status": "configured" if configured_env else ("missing" if required else "optional"),
+    }
+    if configured_env:
+        item["configuredEnv"] = configured_env
+        item["value"] = "configured" if sensitive else str(env.get(configured_env) or "")
+    if recommended:
+        item["recommended"] = recommended
+    if description:
+        item["description"] = description
+    if allowed_values:
+        item["allowedValues"] = list(allowed_values)
+    return item
+
+
+def deployment_config_section(
+    section_id: str,
+    title: str,
+    items: list[dict[str, Any]],
+    blocking_issues: list[str] | tuple[str, ...] = (),
+    warnings: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    missing_required = [item["env"][0] for item in items if item.get("required") and not item.get("configured")]
+    issues = list(blocking_issues)
+    return {
+        "id": section_id,
+        "title": title,
+        "ready": not missing_required and not issues,
+        "missingRequiredEnv": missing_required,
+        "blockingIssues": issues,
+        "warnings": list(warnings),
+        "items": items,
+    }
+
+
+def deployment_config_report() -> dict[str, Any]:
+    object_storage = object_storage_service.assess_object_storage_readiness()
+    payments = payment_service.assess_payment_provider_readiness()
+    generation_provider = generation_provider_readiness()
+    app_env = runtime_environment_label()
+    live_env = app_env in {"production", "prod", "staging", "render"}
+    queue = generation_queue.snapshot()
+
+    runtime_section = deployment_config_section(
+        "runtime",
+        "Runtime",
+        [
+            deployment_config_item("app_env", ("APP_ENV",), required=live_env, recommended="staging"),
+            deployment_config_item("public_base_url", ("PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"), required=False),
+            deployment_config_item("admin_api_token", ("ADMIN_API_TOKEN",), required=live_env),
+        ],
+        warnings=["admin_api_token_recommended_for_ops_endpoints"] if live_env and not os.environ.get("ADMIN_API_TOKEN", "").strip() else [],
+    )
+
+    generation_section = deployment_config_section(
+        "generationProvider",
+        "AI Generation Provider",
+        [
+            deployment_config_item(
+                "tencent_tokenhub_api_key",
+                ("TENCENT_TOKENHUB_API_KEY", "TOKENHUB_API_KEY", "HUNYUAN_TOKENHUB_API_KEY"),
+                required=bool(generation_provider.get("tokenhubRequired")),
+                description="TokenHub HY-Image-3.0 API key used for real background and product image generation.",
+            ),
+            deployment_config_item(
+                "tencent_tokenhub_image_model",
+                ("TENCENT_TOKENHUB_IMAGE_MODEL",),
+                required=False,
+                recommended="hy-image-v3.0",
+            ),
+            deployment_config_item("tencent_hunyuan_enabled", ("TENCENT_HUNYUAN_ENABLED",), required=False, recommended="true"),
+        ],
+        generation_provider.get("blockingIssues", []),
+        generation_provider.get("warnings", []),
+    )
+
+    object_section = deployment_config_section(
+        "objectStorage",
+        "Object Storage",
+        [
+            deployment_config_item("object_storage_provider", ("OBJECT_STORAGE_PROVIDER",), required=live_env, recommended="cos"),
+            deployment_config_item("object_storage_private", ("OBJECT_STORAGE_PRIVATE",), required=live_env, recommended="true"),
+            deployment_config_item("object_storage_bucket", ("OBJECT_STORAGE_BUCKET", "TENCENT_COS_BUCKET"), required=live_env),
+            deployment_config_item("object_storage_region", ("OBJECT_STORAGE_REGION", "TENCENT_COS_REGION", "TENCENTCLOUD_REGION"), required=live_env, recommended=DEFAULT_TENCENT_COS_REGION),
+            deployment_config_item("object_storage_prefix", ("OBJECT_STORAGE_PREFIX", "TENCENT_COS_PREFIX"), required=False, recommended="app-objects"),
+            deployment_config_item("object_signing_secret", ("OBJECT_SIGNING_SECRET", "DOWNLOAD_SIGNING_SECRET"), required=live_env),
+            deployment_config_item("object_storage_secret_id", ("OBJECT_STORAGE_SECRET_ID", "TENCENTCLOUD_SECRET_ID", "TENCENT_SECRET_ID"), required=live_env),
+            deployment_config_item("object_storage_secret_key", ("OBJECT_STORAGE_SECRET_KEY", "TENCENTCLOUD_SECRET_KEY", "TENCENT_SECRET_KEY"), required=live_env),
+        ],
+        object_storage.get("blockingIssues", []),
+        object_storage.get("warnings", []),
+    )
+
+    payment_required_items = [
+        deployment_config_item(
+            "payment_provider",
+            ("PAYMENT_PROVIDER",),
+            required=live_env,
+            recommended="wechat",
+            allowed_values=tuple(sorted(payment_service.REAL_PAYMENT_PROVIDERS)),
+        ),
+        deployment_config_item("payment_webhook_secret", ("PAYMENT_WEBHOOK_SECRET",), required=live_env),
+    ]
+    for required_config in payments.get("requiredConfig", []):
+        env_names = tuple(str(name) for name in required_config.get("env", ()) if str(name))
+        if env_names and not any(item["env"] == list(env_names) for item in payment_required_items):
+            payment_required_items.append(
+                deployment_config_item(
+                    str(required_config.get("key") or env_names[0]).lower(),
+                    env_names,
+                    required=live_env,
+                    allowed_values=tuple(required_config.get("allowedValues", ())),
+                )
+            )
+
+    payment_section = deployment_config_section(
+        "payments",
+        "Payments",
+        payment_required_items,
+        payments.get("blockingIssues", []),
+        payments.get("warnings", []),
+    )
+
+    queue_section = deployment_config_section(
+        "generationQueue",
+        "Generation Queue",
+        [],
+        ["generation_queue_closed"] if queue.get("closed") else [],
+    )
+
+    sections = [runtime_section, generation_section, object_section, payment_section, queue_section]
+    missing_required_env = sorted({env for section in sections for env in section.get("missingRequiredEnv", [])})
+    blocking_issues = [issue for section in sections for issue in section.get("blockingIssues", [])]
+
+    return {
+        "ok": True,
+        "ready": not missing_required_env and not blocking_issues,
+        "appEnv": app_env,
+        "renderDetected": render_runtime_detected(),
+        "secretsRedacted": True,
+        "missingRequiredEnv": missing_required_env,
+        "blockingIssues": blocking_issues,
+        "sections": sections,
+    }
+
+
 def tencent_cos_config() -> dict[str, Any]:
     cfg = tencent_config()
     bucket = os.environ.get("TENCENT_COS_BUCKET", DEFAULT_TENCENT_COS_BUCKET).strip()
@@ -4952,6 +5129,11 @@ def api_ops_readiness():
             "generationQueue": queue,
         }
     )
+
+
+@app.get("/api/ops/deployment-config")
+def api_ops_deployment_config():
+    return jsonify(deployment_config_report())
 
 
 @app.get("/api/admin/queue-snapshot")
