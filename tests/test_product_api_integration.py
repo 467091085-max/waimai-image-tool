@@ -798,6 +798,41 @@ def test_agent_withdrawal_api_uses_session_agent_and_admin_status_flow(product_a
     assert paid["status"] == "paid"
     assert paid["paidAt"]
 
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        audit_rows = conn.execute(
+            """
+            SELECT * FROM admin_audit_logs
+            WHERE action = 'withdrawal_status_updated'
+              AND target_type = 'agent_withdrawal_request'
+              AND target_id = ?
+            ORDER BY datetime(created_at) ASC, created_at ASC, id ASC
+            """,
+            (withdrawal["id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(audit_rows) == 2
+    audit_by_status = {
+        json.loads(row["metadata_json"])["toStatus"]: row
+        for row in audit_rows
+    }
+    approve_audit = audit_by_status["approved"]
+    approve_metadata = json.loads(approve_audit["metadata_json"])
+    assert approve_audit["actor_user_id"] == "ops_1"
+    assert approve_audit["reason"] == "manual review passed"
+    assert approve_metadata["fromStatus"] == "pending"
+    assert approve_metadata["toStatus"] == "approved"
+    assert approve_metadata["agentId"] == agent_id
+    assert approve_metadata["amountCents"] == 20000
+
+    paid_audit = audit_by_status["paid"]
+    paid_metadata = json.loads(paid_audit["metadata_json"])
+    assert paid_audit["action"] == "withdrawal_status_updated"
+    assert paid_audit["reason"] == "finance transfer confirmed"
+    assert paid_metadata["fromStatus"] == "approved"
+    assert paid_metadata["toStatus"] == "paid"
+
     final_balance_response = product_api.client.get(
         "/api/growth/withdrawals/balance",
         headers=_auth_header(auth["token"]),

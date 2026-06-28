@@ -4590,17 +4590,37 @@ def api_admin_update_withdrawal_status(withdrawal_id: str):
     if status not in {"approved", "rejected", "paid", "canceled"}:
         return jsonify({"error": "invalid withdrawal status", "code": "invalid_withdrawal_input"}), 400
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    actor_user_id = admin_actor_user_id()
+    reason = str(payload.get("reason") or "")
     conn = product_db_conn()
     try:
         record = withdrawal_service.update_withdrawal_request_status(
             conn,
             withdrawal_id,
             status,
-            reason=str(payload.get("reason") or ""),
+            reason=reason,
             metadata={
                 **metadata,
-                "actorUserId": admin_actor_user_id(),
+                "actorUserId": actor_user_id,
                 "source": "admin_api",
+            },
+        )
+        status_history = record.get("metadata", {}).get("statusHistory")
+        last_transition = status_history[-1] if isinstance(status_history, list) and status_history else {}
+        admin_actions.admin_audit_event(
+            conn,
+            actor_user_id=actor_user_id,
+            action="withdrawal_status_updated",
+            target_type="agent_withdrawal_request",
+            target_id=str(record.get("id") or withdrawal_id),
+            reason=reason,
+            metadata={
+                "withdrawalId": record.get("id"),
+                "agentId": record.get("agentId"),
+                "amountCents": record.get("amountCents"),
+                "fromStatus": last_transition.get("from") if isinstance(last_transition, dict) else None,
+                "toStatus": record.get("status"),
+                "statusReason": record.get("statusReason"),
             },
         )
     except withdrawal_service.WithdrawalServiceError as exc:
