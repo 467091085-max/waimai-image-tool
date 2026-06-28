@@ -1,18 +1,25 @@
 from __future__ import annotations
 
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-import billing
-import generation_jobs
 from flask import Blueprint, Response, jsonify, render_template, request
 
 MENU_EXTS = {".xls", ".xlsx"}
 REQUIRED_SOURCES = ("clean", "watermark", "internal")
-CLEANING_LOW_QUALITY_SCORE = 0.7
+DEFAULT_AI_ASSET_MANIFEST_PATH = Path("data/library/_ai_asset_library/manifest.jsonl")
+ADMIN_LIST_RESOURCES = {
+    "users": "list_users",
+    "stores": "list_stores",
+    "orders": "list_orders",
+    "generation-tasks": "list_generation_tasks",
+    "asset-access": "list_asset_access_logs",
+    "risk-events": "list_risk_events",
+    "commission-settlements": "list_commission_settlements",
+    "withdrawals": "list_withdrawals",
+}
 
 
 @dataclass(frozen=True)
@@ -22,8 +29,8 @@ class AdminDependencies:
     current_menu_path: Callable[[], Path | None]
     parse_menu: Callable[[Path | None], Mapping[str, Any]]
     upload_dir: Path
-    billing_db_path: Path | str | None = None
-    jobs_db_path: Path | str | None = None
+    db_path: Path | str | None = None
+    ai_asset_manifest_path: Path | str | None = None
 
 
 def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
@@ -46,11 +53,27 @@ def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
         payload = menu_audit_payload(deps, limit)
         return jsonify(payload)
 
-    @blueprint.get("/api/admin/operations")
-    def admin_operations():
-        limit = _bounded_int(request.args.get("limit"), default=40, minimum=1, maximum=100)
-        payload = operations_payload(deps, limit)
-        status = 200 if payload.get("ok", False) else 500
+    @blueprint.get("/api/admin/dashboard")
+    def admin_dashboard():
+        payload = admin_dashboard_payload(deps)
+        return jsonify(payload)
+
+    @blueprint.get("/api/admin/ai-assets")
+    def admin_ai_assets():
+        payload = ai_assets_payload(deps)
+        return jsonify(payload)
+
+    @blueprint.post("/api/admin/actions/ai-assets/<asset_id>/status")
+    def admin_ai_asset_status_action(asset_id: str):
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        body, status = ai_asset_status_action_payload(deps, asset_id, payload, request.headers)
+        return jsonify(body), status
+
+    @blueprint.get("/api/admin/lists/<resource>")
+    def admin_list_resource(resource: str):
+        payload, status = admin_list_payload(deps, resource, request.args)
         return jsonify(payload), status
 
     @blueprint.after_request
@@ -68,12 +91,8 @@ def library_sample_payload(deps: AdminDependencies, limit: int = 18) -> dict[str
         sources.setdefault(source, 0)
 
     stores = {str(_field(image, "store", "")) for image in images if _field(image, "store", "")}
-    styles = {
-        str(_first_field(image, "style_id", "styleId", "style", default=""))
-        for image in images
-        if _first_field(image, "style_id", "styleId", "style", default="")
-    }
-    cleaning = library_cleaning_summary(images)
+    styles = {str(_field(image, "style_id", "")) for image in images if _field(image, "style_id", "")}
+    reusable = sum(1 for image in images if bool(_field(image, "reusable", False)))
 
     by_source: dict[str, list[dict[str, Any]]] = {source: [] for source in sorted(sources)}
     sample_pool: dict[str, list[dict[str, Any]]] = {source: [] for source in sorted(sources)}
@@ -91,46 +110,14 @@ def library_sample_payload(deps: AdminDependencies, limit: int = 18) -> dict[str
         "ok": True,
         "summary": {
             "total": len(images),
-            "reusable": cleaning["reusable"],
-            "referenceOnly": max(0, len(images) - cleaning["reusable"]),
+            "reusable": reusable,
+            "referenceOnly": max(0, len(images) - reusable),
             "stores": len(stores),
             "styles": len(styles),
-            "cleaning": cleaning,
         },
-        "cleaningSummary": cleaning,
         "sources": dict(sorted(sources.items())),
         "samples": samples[:limit],
         "bySource": by_source,
-    }
-
-
-def library_cleaning_summary(images: Sequence[Any]) -> dict[str, int]:
-    reusable = 0
-    watermark_risk = 0
-    needs_review = 0
-    low_quality = 0
-
-    for image in images:
-        if _as_bool(_field(image, "reusable", False)):
-            reusable += 1
-
-        has_watermark = _image_has_watermark_risk(image)
-        has_dish_text = _as_bool(_first_field(image, "has_dish_text", "hasDishText", default=False))
-        quality_score = _quality_score(image)
-        reasons = _review_reasons(image)
-
-        if has_watermark:
-            watermark_risk += 1
-        if quality_score is not None and quality_score < CLEANING_LOW_QUALITY_SCORE:
-            low_quality += 1
-        if has_watermark or has_dish_text or reasons or (quality_score is not None and quality_score < CLEANING_LOW_QUALITY_SCORE):
-            needs_review += 1
-
-    return {
-        "reusable": reusable,
-        "watermarkRisk": watermark_risk,
-        "needsReview": needs_review,
-        "lowQuality": low_quality,
     }
 
 
@@ -148,111 +135,257 @@ def menu_audit_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, An
     }
 
 
-def operations_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, Any]:
-    billing_payload = billing.admin_billing_payload(deps.billing_db_path, limit=limit)
-    generation_payload = generation_status_payload(deps.jobs_db_path, limit=limit)
-    billing_summary = billing_payload.get("summary", {}) if isinstance(billing_payload, Mapping) else {}
-    generation_summary = generation_payload.get("summary", {}) if isinstance(generation_payload, Mapping) else {}
-    payment_readiness = billing_payload.get("paymentReadiness", {}) if isinstance(billing_payload, Mapping) else {}
-    ok = bool(billing_payload.get("ok")) and bool(generation_payload.get("ok"))
-    return {
-        "ok": ok,
-        "summary": {
-            "totalBalance": int(billing_summary.get("totalBalance", 0) or 0),
-            "orderCount": int(billing_summary.get("orderCount", 0) or 0),
-            "ledgerCount": int(billing_summary.get("ledgerCount", 0) or 0),
-            "refundCount": int(billing_summary.get("refundCount", 0) or 0),
-            "refundPoints": int(billing_summary.get("refundPoints", 0) or 0),
-            "generationJobCount": int(generation_summary.get("jobCount", 0) or 0),
-            "runningJobs": int(generation_summary.get("runningJobs", 0) or 0),
-            "failedJobs": int(generation_summary.get("failedJobs", 0) or 0),
-            "paymentOrderCount": int(billing_summary.get("paymentOrderCount", 0) or 0),
-            "pendingPaymentOrders": int(billing_summary.get("pendingPaymentOrders", 0) or 0),
-            "paidPaymentOrders": int(billing_summary.get("paidPaymentOrders", 0) or 0),
-            "failedPaymentOrders": int(billing_summary.get("failedPaymentOrders", 0) or 0),
-            "paymentWebhookEventCount": int(billing_summary.get("paymentWebhookEventCount", 0) or 0),
-            "realPaymentConfigured": bool(payment_readiness.get("realPaymentConfigured", False)),
-            "paymentMode": str(payment_readiness.get("mode") or "mock"),
-        },
-        "paymentReadiness": payment_readiness,
-        "billing": billing_payload,
-        "generation": generation_payload,
-    }
-
-
-def generation_status_payload(
-    db_path: str | Path | None = None,
-    *,
-    limit: int = 40,
-) -> dict[str, Any]:
-    capped_limit = max(1, min(100, int(limit)))
-    path = generation_jobs.resolve_db_path(db_path)
-    if str(path) != ":memory:" and not path.exists():
-        return _empty_generation_payload()
+def admin_dashboard_payload(deps: AdminDependencies) -> dict[str, Any]:
     try:
-        with sqlite3.connect(str(path)) as conn:
-            conn.row_factory = sqlite3.Row
-            if not _table_exists(conn, "generation_jobs"):
-                return _empty_generation_payload()
-            jobs = [
-                _generation_job_payload(row)
-                for row in conn.execute(
-                    """
-                    SELECT *
-                    FROM generation_jobs
-                    ORDER BY updated_at DESC, created_at DESC, id DESC
-                    LIMIT ?
-                    """,
-                    (capped_limit,),
-                ).fetchall()
-            ]
-            status_counts = {
-                str(row["status"]): int(row["count"])
-                for row in conn.execute(
-                    "SELECT status, COUNT(*) AS count FROM generation_jobs GROUP BY status"
-                ).fetchall()
-            }
-            totals = conn.execute(
-                """
-                SELECT
-                    COUNT(*) AS jobs,
-                    COALESCE(SUM(total_items), 0) AS total_items,
-                    COALESCE(SUM(completed_items), 0) AS completed_items,
-                    COALESCE(SUM(failed_items), 0) AS failed_items,
-                    COALESCE(SUM(pending_items), 0) AS pending_items,
-                    COALESCE(SUM(points), 0) AS points
-                FROM generation_jobs
-                """
-            ).fetchone()
-    except sqlite3.Error as exc:
-        payload = _empty_generation_payload()
-        payload.update(
-            {
-                "ok": False,
-                "error": "Generation status unavailable",
-                "code": "generation_status_unavailable",
-                "details": {"type": type(exc).__name__, "message": str(exc)},
-            }
-        )
-        return payload
+        import admin_data
+        import storage_db
+    except Exception as exc:
+        return _empty_dashboard_payload(f"{type(exc).__name__}: {exc}")
 
-    running_jobs = sum(status_counts.get(status, 0) for status in ("queued", "running", "paid"))
-    failed_jobs = sum(status_counts.get(status, 0) for status in ("failed", "partially_failed"))
+    try:
+        conn = storage_db.init_db(deps.db_path)
+        should_close = True
+    except Exception as exc:
+        return _empty_dashboard_payload(f"{type(exc).__name__}: {exc}")
+
+    try:
+        return {
+            "ok": True,
+            "summary": admin_data.dashboard_summary(conn),
+            "recentJobs": admin_data.recent_jobs(conn, limit=12),
+            "commissions": admin_data.commission_summary(conn),
+            "risk": admin_data.risk_summary(conn),
+            "assetAccess": admin_data.asset_access_summary(conn),
+            "generatedAt": storage_db.utc_now(),
+        }
+    except Exception as exc:
+        return _empty_dashboard_payload(f"{type(exc).__name__}: {exc}")
+    finally:
+        if should_close:
+            conn.close()
+
+
+def ai_assets_payload(deps: AdminDependencies, limit: int = 50) -> dict[str, Any]:
+    max_assets = max(0, min(int(limit), 50))
+    try:
+        import ai_asset_repository
+
+        repository_cls = getattr(ai_asset_repository, "AiAssetRepository", None) or getattr(ai_asset_repository, "AIAssetRepository")
+        manifest_path = deps.ai_asset_manifest_path or DEFAULT_AI_ASSET_MANIFEST_PATH
+        records = repository_cls(manifest_path).list_assets()
+    except Exception:
+        records = []
+
+    statuses = Counter(_asset_admin_status(record) for record in records)
+    by_kind = Counter(str(record.get("kind") or "unknown") for record in records)
+    by_category = Counter(str(record.get("category") or "未分类") for record in records)
+    pending = statuses.get("pending", 0)
+
     return {
         "ok": True,
         "summary": {
-            "jobCount": int(totals["jobs"]),
-            "totalItems": int(totals["total_items"]),
-            "completedItems": int(totals["completed_items"]),
-            "failedItems": int(totals["failed_items"]),
-            "pendingItems": int(totals["pending_items"]),
-            "points": int(totals["points"]),
-            "runningJobs": int(running_jobs),
-            "failedJobs": int(failed_jobs),
-            "statusCounts": status_counts,
+            "total": len(records),
+            "approved": statuses.get("approved", 0),
+            "rejected": statuses.get("rejected", 0),
+            "disabled": statuses.get("disabled", 0),
+            "pending": pending,
+            "byKind": dict(sorted(by_kind.items())),
+            "byCategory": dict(sorted(by_category.items())),
         },
-        "jobs": jobs,
+        "assets": [_ai_asset_admin_view(record) for record in records[:max_assets]],
     }
+
+
+def ai_asset_status_action_payload(
+    deps: AdminDependencies,
+    asset_id: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], int]:
+    status = _payload_text(payload, "status", "action")
+    reason = _payload_text(payload, "qualityNote", "quality_note", "note", "reason")
+    actor = (
+        _payload_text(payload, "actorUserId", "actor_user_id", "actor")
+        or _arg(headers or {}, "X-Admin-User")
+        or "admin"
+    )
+
+    conn = None
+    try:
+        import admin_actions
+        import ai_asset_repository
+        import storage_db
+
+        repository_cls = getattr(ai_asset_repository, "AiAssetRepository", None) or getattr(ai_asset_repository, "AIAssetRepository")
+        manifest_path = deps.ai_asset_manifest_path or DEFAULT_AI_ASSET_MANIFEST_PATH
+        repo = repository_cls(manifest_path)
+        previous = repo.get(asset_id)
+        if previous is None:
+            return _admin_action_error("ai_asset_not_found", f"AI asset not found: {asset_id}", 404)
+
+        conn = storage_db.init_db(deps.db_path)
+        updated = admin_actions.mark_ai_asset_status(repo, asset_id, status, quality_note=reason)
+        audit = admin_actions.admin_audit_event(
+            conn,
+            actor,
+            "ai_asset_status_updated",
+            "ai_asset",
+            str(updated.get("asset_id") or asset_id),
+            metadata={
+                "fromStatus": _asset_admin_status(previous),
+                "toStatus": _asset_admin_status(updated),
+                "qualityNote": reason,
+                "assetKind": str(updated.get("kind") or ""),
+                "category": str(updated.get("category") or ""),
+                "styleId": str(updated.get("style_id") or ""),
+                "productName": str(updated.get("product_name") or ""),
+            },
+            reason=reason,
+        )
+        return {
+            "ok": True,
+            "asset": _ai_asset_admin_view(updated),
+            "audit": {
+                "id": audit["id"],
+                "action": audit["action"],
+                "target": audit["target"],
+                "status": audit["status"],
+                "createdAt": audit["createdAt"],
+            },
+        }, 200
+    except ValueError as exc:
+        return _admin_action_error("invalid_ai_asset_status_action", str(exc), 400)
+    except KeyError as exc:
+        return _admin_action_error("ai_asset_not_found", str(exc), 404)
+    except Exception as exc:
+        return _admin_action_error("ai_asset_status_action_failed", f"{type(exc).__name__}: {exc}", 500)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def admin_list_payload(deps: AdminDependencies, resource: str, args: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
+    normalized_resource = _normalize_resource(resource)
+    function_name = ADMIN_LIST_RESOURCES.get(normalized_resource)
+    if not function_name:
+        return {
+            "ok": False,
+            "error": "unsupported admin list resource",
+            "code": "unsupported_admin_list_resource",
+            "resource": normalized_resource,
+        }, 404
+
+    conn = None
+    try:
+        admin_data, storage_db, conn = _admin_data_conn(deps)
+        list_fn = getattr(admin_data, function_name)
+        page = list_fn(conn, **_admin_list_args(normalized_resource, args))
+        return {
+            "ok": True,
+            "resource": normalized_resource,
+            **page,
+            "generatedAt": storage_db.utc_now(),
+        }, 200
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "code": "admin_list_failed",
+            "resource": normalized_resource,
+            "items": [],
+            "total": 0,
+        }, 500
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _empty_dashboard_payload(error: str = "") -> dict[str, Any]:
+    return {
+        "ok": True,
+        "error": error,
+        "summary": {
+            "jobs": {"total": 0, "queued": 0, "running": 0, "succeeded": 0, "failed": 0, "canceled": 0},
+            "images": {"total": 0, "generated": 0, "failed": 0, "rejected": 0},
+            "exports": {"total": 0, "ready": 0, "failed": 0, "expired": 0},
+            "points": {"credits": 0, "debits": 0, "net": 0},
+            "commissions": {"pendingAmount": 0, "eligibleAmount": 0, "settledAmount": 0, "orderCount": 0},
+            "risk": {"total": 0, "review": 0, "denied": 0},
+            "assetAccess": {"total": 0, "allowed": 0, "denied": 0},
+        },
+        "recentJobs": [],
+        "commissions": {"byStatus": {}, "pendingAmount": 0, "eligibleAmount": 0, "settledAmount": 0},
+        "risk": {"byDecision": {}, "byLevel": {}, "highestLevel": "info"},
+        "assetAccess": {"byAction": {}, "allowed": 0, "denied": 0, "topDenyReason": ""},
+        "generatedAt": "",
+    }
+
+
+def _admin_data_conn(deps: AdminDependencies):
+    import admin_actions
+    import admin_data
+    import auth_service
+    import payment_service
+    import storage_db
+
+    conn = storage_db.init_db(deps.db_path)
+    auth_service.init_auth_schema(conn)
+    payment_service.init_payment_schema(conn)
+    admin_actions.init_admin_actions_schema(conn)
+    return admin_data, storage_db, conn
+
+
+def _admin_list_args(resource: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "limit": _bounded_int(_arg(args, "limit"), default=50, minimum=0, maximum=200),
+        "offset": _bounded_int(_arg(args, "offset"), default=0, minimum=0, maximum=100_000),
+        "sort": _arg(args, "sort") or "created_at",
+        "order": _arg(args, "order") or "desc",
+    }
+    for source, target in (
+        ("search", "search"),
+        ("createdFrom", "created_from"),
+        ("created_from", "created_from"),
+        ("createdTo", "created_to"),
+        ("created_to", "created_to"),
+    ):
+        value = _arg(args, source)
+        if value and target not in payload:
+            payload[target] = value
+
+    filters: dict[str, tuple[str, ...]] = {
+        "users": ("status",),
+        "stores": ("status", "createdByUserId", "created_by_user_id"),
+        "orders": ("status", "userId", "user_id", "provider"),
+        "generation-tasks": ("status", "menuUploadId", "menu_upload_id", "storeName", "store_name", "styleId", "style_id"),
+        "asset-access": ("status", "action", "assetType", "asset_type", "userId", "user_id", "agentId", "agent_id", "assetId", "asset_id"),
+        "risk-events": ("decision", "riskLevel", "risk_level", "eventType", "event_type", "userId", "user_id"),
+        "commission-settlements": ("status", "agentId", "agent_id"),
+        "withdrawals": ("status", "agentId", "agent_id"),
+    }
+    aliases = {
+        "createdByUserId": "created_by_user_id",
+        "userId": "user_id",
+        "menuUploadId": "menu_upload_id",
+        "storeName": "store_name",
+        "styleId": "style_id",
+        "assetType": "asset_type",
+        "agentId": "agent_id",
+        "assetId": "asset_id",
+        "riskLevel": "risk_level",
+        "eventType": "event_type",
+    }
+    for name in filters.get(resource, ()):
+        value = _arg(args, name)
+        if value:
+            payload[aliases.get(name, name)] = value
+
+    if resource == "asset-access":
+        allowed = _optional_bool(_arg(args, "allowed"))
+        if allowed is not None:
+            payload["allowed"] = allowed
+
+    return payload
 
 
 def _parse_current_menu(deps: AdminDependencies) -> dict[str, Any]:
@@ -339,66 +472,6 @@ def _menu_summary(menu: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _empty_generation_payload() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "summary": {
-            "jobCount": 0,
-            "totalItems": 0,
-            "completedItems": 0,
-            "failedItems": 0,
-            "pendingItems": 0,
-            "points": 0,
-            "runningJobs": 0,
-            "failedJobs": 0,
-            "statusCounts": {},
-        },
-        "jobs": [],
-    }
-
-
-def _generation_job_payload(row: sqlite3.Row) -> dict[str, Any]:
-    total = int(row["total_items"])
-    completed = int(row["completed_items"])
-    failed = int(row["failed_items"])
-    percent = 100 if total == 0 else round((completed + failed) / total * 100, 1)
-    return {
-        "id": row["id"],
-        "userId": row["user_id"],
-        "status": row["status"],
-        "style": row["style"],
-        "quality": row["quality"],
-        "totalItems": total,
-        "completedItems": completed,
-        "failedItems": failed,
-        "pendingItems": int(row["pending_items"]),
-        "points": int(row["points"]),
-        "orderId": row["order_id"],
-        "error": row["error"],
-        "progress": {
-            "total": total,
-            "completed": completed,
-            "failed": failed,
-            "pending": int(row["pending_items"]),
-            "percent": percent,
-        },
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "paidAt": row["paid_at"],
-        "queuedAt": row["queued_at"],
-        "startedAt": row["started_at"],
-        "completedAt": row["completed_at"],
-    }
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def _balanced_samples(by_source: Mapping[str, Sequence[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     seen_ids = set()
@@ -419,22 +492,38 @@ def _balanced_samples(by_source: Mapping[str, Sequence[dict[str, Any]]], limit: 
     return samples
 
 
+def _ai_asset_admin_view(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "assetId": str(record.get("asset_id") or ""),
+        "kind": str(record.get("kind") or ""),
+        "category": str(record.get("category") or ""),
+        "styleId": str(record.get("style_id") or ""),
+        "productName": str(record.get("product_name") or ""),
+        "qualityScore": float(record.get("quality_score") or 0),
+        "qualityReasons": [str(reason) for reason in record.get("quality_reasons", []) if str(reason or "").strip()],
+        "status": _asset_admin_status(record),
+        "createdAt": str(record.get("created_at") or ""),
+    }
+
+
+def _asset_admin_status(record: Mapping[str, Any]) -> str:
+    status = str(record.get("status") or "").strip().lower()
+    if status in {"approved", "rejected", "disabled"}:
+        return status
+    return "pending"
+
+
 def _image_sample(image: Any, deps: AdminDependencies) -> dict[str, Any]:
     path_value = _field(image, "path", "")
     path = Path(path_value) if path_value else Path()
-    style_id = str(_first_field(image, "style_id", "styleId", "style", default=""))
     return {
-        "imageId": str(_first_field(image, "image_id", "imageId", "id", default="")),
-        "dishName": str(_first_field(image, "dish", "dishName", "name", default="")),
+        "imageId": str(_field(image, "image_id", "")),
+        "dishName": str(_field(image, "dish", "")),
         "store": str(_field(image, "store", "")),
         "source": str(_field(image, "source", "unknown") or "unknown"),
-        "styleId": style_id,
-        "styleName": _style_label(style_id),
-        "reusable": _as_bool(_field(image, "reusable", False)),
-        "hasBrandWatermark": _image_has_watermark_risk(image),
-        "hasDishText": _as_bool(_first_field(image, "has_dish_text", "hasDishText", default=False)),
-        "qualityScore": _quality_score(image),
-        "reviewReasons": _review_reasons(image),
+        "styleId": str(_field(image, "style_id", "")),
+        "styleName": _style_label(str(_field(image, "style_id", ""))),
+        "reusable": bool(_field(image, "reusable", False)),
         "url": deps.media_url_for_path(path) if path_value else "",
     }
 
@@ -453,50 +542,45 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-def _first_field(value: Any, *names: str, default: Any = None) -> Any:
-    for name in names:
-        item = _field(value, name, None)
-        if item is not None:
-            return item
-    return default
-
-
-def _as_bool(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() not in {"", "0", "false", "no", "none", "null"}
-    return bool(value)
-
-
-def _quality_score(image: Any) -> float | None:
-    value = _first_field(image, "quality_score", "qualityScore", default=None)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _review_reasons(image: Any) -> list[str]:
-    value = _first_field(image, "review_reasons", "reviewReasons", default=[])
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return [str(item) for item in value if str(item)]
-    return []
-
-
-def _image_has_watermark_risk(image: Any) -> bool:
-    explicit = _first_field(image, "has_brand_watermark", "hasBrandWatermark", default=None)
-    source = str(_field(image, "source", "") or "").lower()
-    path_value = str(_field(image, "path", "") or "").lower()
-    inferred = source == "watermark" or "watermarkpic" in source or "watermarkpic" in path_value
-    return (explicit is not None and _as_bool(explicit)) or inferred
-
-
 def _bounded_int(value: str | None, default: int, minimum: int, maximum: int) -> int:
     try:
         number = int(str(value))
     except (TypeError, ValueError):
         number = default
     return max(minimum, min(maximum, number))
+
+
+def _normalize_resource(value: str) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _arg(args: Mapping[str, Any], name: str) -> str:
+    value = args.get(name) if hasattr(args, "get") else None
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _payload_text(payload: Mapping[str, Any], *names: str) -> str:
+    for name in names:
+        value = payload.get(name) if hasattr(payload, "get") else None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _admin_action_error(code: str, message: str, status: int) -> tuple[dict[str, Any], int]:
+    return {
+        "ok": False,
+        "code": code,
+        "error": message,
+    }, status
+
+
+def _optional_bool(value: str) -> bool | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on", "allowed"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", "denied"}:
+        return False
+    return None

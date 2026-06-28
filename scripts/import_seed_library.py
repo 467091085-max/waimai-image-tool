@@ -45,43 +45,6 @@ SKIP_TERMS = (
     "更安全",
     "欢迎到店",
     "味道(taste)",
-    "勿点",
-    "温馨提示",
-    "提示",
-    "背景",
-    "扩背景",
-    "不需要",
-    "需加购",
-    "默认不需要",
-    "电子餐饮",
-    "票",
-    "P图",
-    "p图",
-    "拷贝",
-)
-LOW_PRIORITY_TERMS = (
-    "米饭",
-    "白饭",
-    "大米饭",
-    "饮料",
-    "饮品",
-    "可乐",
-    "雪碧",
-    "美年达",
-    "王老吉",
-    "豆浆",
-    "矿泉水",
-    "纯净水",
-    "小料",
-    "调料",
-    "蘸料",
-    "辣椒包",
-    "醋包",
-    "生抽包",
-    "白糖",
-    "香菜沫",
-    "餐具",
-    "纸巾",
 )
 
 
@@ -92,23 +55,11 @@ def safe_part(value: str, fallback: str = "item") -> str:
     return text[:70] or fallback
 
 
-def should_skip(path: Path) -> bool:
-    stem = path.stem.lower()
-    normalized = unicodedata.normalize("NFKC", stem)
-    if re.search(r"20\d{2}[.\-_年]\d{1,2}[.\-_月]\d{1,2}", normalized):
-        return True
-    return any(skip.lower() in stem or skip.lower() in normalized for skip in SKIP_TERMS)
-
-
 def priority(path: Path) -> tuple[int, str]:
     stem = path.stem.lower()
     for skip in SKIP_TERMS:
         if skip in stem:
             return (99, str(path))
-    normalized = unicodedata.normalize("NFKC", stem)
-    for low_term in LOW_PRIORITY_TERMS:
-        if low_term.lower() in stem or low_term.lower() in normalized:
-            return (len(PRIORITY_TERMS) + 20, str(path))
     for idx, term in enumerate(PRIORITY_TERMS):
         if term.lower() in stem:
             return (idx, str(path))
@@ -120,47 +71,8 @@ def style_for_item(store: str, dish: str) -> str:
     return STYLE_IDS[digest % len(STYLE_IDS)]
 
 
-def background_signature(source: Path) -> str:
-    try:
-        with Image.open(source) as raw:
-            image = ImageOps.exif_transpose(raw).convert("RGB")
-            image.thumbnail((96, 96), Image.Resampling.BILINEAR)
-            width, height = image.size
-            strip = max(2, min(width, height) // 8)
-            pixels = []
-            for box in (
-                (0, 0, width, strip),
-                (0, max(0, height - strip), width, height),
-                (0, 0, strip, height),
-                (max(0, width - strip), 0, width, height),
-            ):
-                pixels.extend(image.crop(box).getdata())
-            if not pixels:
-                return hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:8]
-            count = len(pixels)
-            red = sum(pixel[0] for pixel in pixels) // count
-            green = sum(pixel[1] for pixel in pixels) // count
-            blue = sum(pixel[2] for pixel in pixels) // count
-            return f"{red // 32}-{green // 32}-{blue // 32}"
-    except Exception:
-        return hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:8]
-
-
-def style_map_for_images(files: list[Path]) -> dict[str, str]:
-    signatures: dict[str, int] = {}
-    for source_file in files:
-        signature = background_signature(source_file)
-        signatures[signature] = signatures.get(signature, 0) + 1
-    ordered = sorted(signatures, key=lambda item: (-signatures[item], item))
-    return {signature: STYLE_IDS[index % len(STYLE_IDS)] for index, signature in enumerate(ordered)}
-
-
 def iter_images(source: Path) -> list[Path]:
-    files = [
-        path
-        for path in source.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTS and not should_skip(path)
-    ]
+    files = [path for path in source.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTS]
     return sorted(files, key=priority)
 
 
@@ -186,9 +98,7 @@ def import_seed(source: Path, output: Path, limit: int, max_side: int, quality: 
                 shutil.rmtree(child)
     count = 0
     seen: set[str] = set()
-    source_files = iter_images(source)
-    style_map = style_map_for_images(source_files)
-    for source_file in source_files:
+    for source_file in iter_images(source):
         if count >= limit:
             break
         rel = source_file.relative_to(source)
@@ -200,7 +110,7 @@ def import_seed(source: Path, output: Path, limit: int, max_side: int, quality: 
         seen.add(key)
         store_slug = safe_part(store, "store")
         store_hash = hashlib.sha1(store.encode("utf-8")).hexdigest()[:6]
-        style_id = style_map.get(background_signature(source_file), style_for_item(store, dish))
+        style_id = style_for_item(store, dish)
         target = output / f"seed_{store_hash}_{store_slug}" / style_id / f"{dish}.jpg"
         if convert_image(source_file, target, max_side=max_side, quality=quality):
             count += 1

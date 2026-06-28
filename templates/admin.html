@@ -17,6 +17,320 @@
   </header>
 
   <main class="admin-shell">
+    <section class="metric-grid ops-grid" aria-label="运营概览">
+      <article class="metric-card">
+        <span>生成任务</span>
+        <b id="opsJobs">-</b>
+      </article>
+      <article class="metric-card">
+        <span>生成图片</span>
+        <b id="opsImages">-</b>
+      </article>
+      <article class="metric-card">
+        <span>导出包</span>
+        <b id="opsExports">-</b>
+      </article>
+      <article class="metric-card">
+        <span>积分变动</span>
+        <b id="opsPoints">-</b>
+      </article>
+      <article class="metric-card">
+        <span>待结算佣金</span>
+        <b id="opsCommission">-</b>
+      </article>
+      <article class="metric-card">
+        <span>风控事件</span>
+        <b id="opsRisk">-</b>
+      </article>
+    </section>
+
+    <section class="admin-section ops-readiness" id="opsReadinessPanel" data-ui-contract="ops-readiness-status">
+      <div class="section-head">
+        <div>
+          <h2>运维状态</h2>
+          <p id="opsReadinessHint">读取中</p>
+        </div>
+        <button id="refreshReadiness" type="button">刷新状态</button>
+      </div>
+      <div id="opsReadinessCards" class="ops-readiness-grid" aria-live="polite"></div>
+    </section>
+
+    <section class="admin-section">
+      <div class="section-head">
+        <div>
+          <h2>运营数据</h2>
+          <p id="opsHint">读取中</p>
+        </div>
+        <button id="refreshOps" type="button">刷新数据</button>
+      </div>
+      <div class="ops-layout">
+        <div>
+          <h3>最近任务</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th>风格</th>
+                  <th>完成</th>
+                  <th>失败</th>
+                  <th>创建时间</th>
+                </tr>
+              </thead>
+              <tbody id="opsJobRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>风险与资产访问</h3>
+          <dl id="opsRiskList" class="detail-list"></dl>
+        </div>
+      </div>
+    </section>
+
+    <section class="admin-section product-console" id="productConsole">
+      <div class="section-head">
+        <div>
+          <h2>产品化运营台</h2>
+          <p id="productConsoleHint">读取中</p>
+        </div>
+        <span class="api-pill">Dashboard + Lists API</span>
+      </div>
+      <div class="admin-product-grid">
+        <article class="admin-module" id="taskModule" data-ui-contract="task-container">
+          <div class="module-head">
+            <div>
+              <h3>生成任务</h3>
+              <p>队列状态、完成率和最近生成记录</p>
+            </div>
+            <span id="taskModuleBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>全部任务</span><b id="taskTotal">-</b></div>
+            <div><span>执行中</span><b id="taskRunning">-</b></div>
+            <div><span>成功率</span><b id="taskSuccessRate">-</b></div>
+          </div>
+          <div class="table-wrap module-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>质量</th>
+                  <th>进度</th>
+                  <th>扣费</th>
+                  <th>导出</th>
+                </tr>
+              </thead>
+              <tbody id="taskRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="admin-module risk-module" id="riskEventModule" data-ui-contract="risk-events-container">
+          <div class="module-head">
+            <div>
+              <h3>风险事件</h3>
+              <p>注册、邀请、资产访问和生成链路的风控决策明细</p>
+            </div>
+            <span id="riskEventBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>事件总数</span><b id="riskEventTotal">-</b></div>
+            <div><span>待复核</span><b id="riskEventReview">-</b></div>
+            <div><span>已拒绝</span><b id="riskEventDenied">-</b></div>
+          </div>
+          <div id="riskEventChips" class="module-chips"></div>
+          <div class="table-wrap module-table risk-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>决策</th>
+                  <th>风险等级</th>
+                  <th>事件</th>
+                  <th>用户</th>
+                  <th>拒绝原因</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="riskEventRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="admin-module" id="assetAuditModule" data-ui-contract="asset-audit-container">
+          <div class="module-head">
+            <div>
+              <h3>资产审计</h3>
+              <p>下载、预览和拒绝访问的审计信号</p>
+            </div>
+            <span id="assetAuditBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>访问总数</span><b id="assetAccessTotal">-</b></div>
+            <div><span>允许</span><b id="assetAccessAllowed">-</b></div>
+            <div><span>拒绝</span><b id="assetAccessDenied">-</b></div>
+          </div>
+          <div id="assetAuditChips" class="module-chips"></div>
+          <div class="table-wrap module-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>资产</th>
+                  <th>动作</th>
+                  <th>原因</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="assetDeniedRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="admin-module" id="commissionModule" data-ui-contract="commission-container">
+          <div class="module-head">
+            <div>
+              <h3>佣金</h3>
+              <p>待结算、可结算和已结算佣金</p>
+            </div>
+            <span id="commissionBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>待结算</span><b id="commissionPending">-</b></div>
+            <div><span>可结算</span><b id="commissionEligible">-</b></div>
+            <div><span>已结算</span><b id="commissionSettled">-</b></div>
+          </div>
+          <div id="commissionStatusChips" class="module-chips"></div>
+          <div class="table-wrap module-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>代理</th>
+                  <th>订单</th>
+                  <th>订单金额</th>
+                  <th>佣金</th>
+                </tr>
+              </thead>
+              <tbody id="commissionAgentRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="admin-module withdrawal-module" id="withdrawalModule" data-ui-contract="withdrawal-container">
+          <div class="module-head">
+            <div>
+              <h3>提现申请</h3>
+              <p>代理提现申请、余额快照和审批打款状态</p>
+            </div>
+            <span id="withdrawalBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>待审批</span><b id="withdrawalPending">-</b></div>
+            <div><span>展示金额</span><b id="withdrawalAmount">-</b></div>
+            <div><span>已打款</span><b id="withdrawalPaid">-</b></div>
+          </div>
+          <div class="table-wrap module-table withdrawal-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>代理</th>
+                  <th>状态</th>
+                  <th>金额</th>
+                  <th>余额</th>
+                  <th>申请时间</th>
+                  <th>审批</th>
+                </tr>
+              </thead>
+              <tbody id="withdrawalRows"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="admin-module" id="orderModule" data-ui-contract="order-container">
+          <div class="module-head">
+            <div>
+              <h3>订单</h3>
+              <p>支付订单、积分和返佣订单信号</p>
+            </div>
+            <span id="orderBadge">-</span>
+          </div>
+          <div class="module-stats">
+            <div><span>返佣订单</span><b id="orderTotal">-</b></div>
+            <div><span>订单金额</span><b id="orderAmount">-</b></div>
+            <div><span>积分净变动</span><b id="orderPointsNet">-</b></div>
+          </div>
+          <div class="table-wrap module-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>来源</th>
+                  <th>状态</th>
+                  <th>积分</th>
+                  <th>金额</th>
+                </tr>
+              </thead>
+              <tbody id="orderSignalRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="admin-section">
+      <div class="section-head">
+        <div>
+          <h2>AI 资产库</h2>
+          <p id="aiAssetHint">读取中</p>
+        </div>
+        <button id="refreshAiAssets" type="button">刷新资产</button>
+      </div>
+      <div class="asset-summary">
+        <article>
+          <span>总资产</span>
+          <b id="aiAssetTotal">-</b>
+        </article>
+        <article>
+          <span>已通过</span>
+          <b id="aiAssetApproved">-</b>
+        </article>
+        <article>
+          <span>待处理</span>
+          <b id="aiAssetPending">-</b>
+        </article>
+        <article>
+          <span>已拒绝</span>
+          <b id="aiAssetRejected">-</b>
+        </article>
+        <article>
+          <span>已停用</span>
+          <b id="aiAssetDisabled">-</b>
+        </article>
+        <article>
+          <span>类型 / 品类</span>
+          <b id="aiAssetKinds">-</b>
+        </article>
+      </div>
+      <div id="aiAssetBreakdown" class="asset-breakdown"></div>
+      <div class="table-wrap">
+        <table class="asset-table" data-ui-contract="ai-asset-review-table">
+          <thead>
+            <tr>
+              <th>资产</th>
+              <th>类型</th>
+              <th>品类</th>
+              <th>名称</th>
+              <th>风格</th>
+              <th>状态</th>
+              <th>质量</th>
+              <th>创建时间</th>
+              <th>审核</th>
+            </tr>
+          </thead>
+          <tbody id="aiAssetRows"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="metric-grid" aria-label="图库统计">
       <article class="metric-card">
         <span>图库图片</span>
@@ -39,127 +353,9 @@
         <b id="metricReusable">-</b>
       </article>
       <article class="metric-card">
-        <span>水印风险</span>
-        <b id="metricWatermarkRisk">-</b>
-      </article>
-      <article class="metric-card">
-        <span>需人工审核</span>
-        <b id="metricNeedsReview">-</b>
-      </article>
-      <article class="metric-card">
-        <span>低质量</span>
-        <b id="metricLowQuality">-</b>
-      </article>
-      <article class="metric-card">
         <span>门店 / 风格</span>
         <b id="metricStores">-</b>
       </article>
-    </section>
-
-    <section class="admin-section">
-      <div class="section-head">
-        <div>
-          <h2>运营计费</h2>
-          <p id="operationsHint">读取中</p>
-        </div>
-        <button id="refreshOperations" type="button">刷新运营</button>
-      </div>
-      <div class="ops-summary">
-        <article>
-          <span>账户余额池</span>
-          <b id="opsBalance">-</b>
-        </article>
-        <article>
-          <span>订单流水</span>
-          <b id="opsOrders">-</b>
-        </article>
-        <article>
-          <span>失败退款</span>
-          <b id="opsRefunds">-</b>
-        </article>
-        <article>
-          <span>生成任务</span>
-          <b id="opsJobs">-</b>
-        </article>
-        <article>
-          <span>支付订单</span>
-          <b id="opsPayments">-</b>
-        </article>
-        <article>
-          <span>支付接入</span>
-          <b id="opsPaymentReady">-</b>
-        </article>
-      </div>
-      <div class="ops-layout">
-        <div>
-          <h3>支付订单</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>订单</th>
-                  <th>状态</th>
-                  <th>渠道</th>
-                  <th>金额</th>
-                  <th>积分</th>
-                </tr>
-              </thead>
-              <tbody id="opsPaymentRows"></tbody>
-            </table>
-          </div>
-        </div>
-        <div>
-          <h3>生成状态</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>任务</th>
-                  <th>状态</th>
-                  <th>进度</th>
-                  <th>积分</th>
-                  <th>订单</th>
-                </tr>
-              </thead>
-              <tbody id="opsJobRows"></tbody>
-            </table>
-          </div>
-        </div>
-        <div>
-          <h3>积分流水</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>方向</th>
-                  <th>积分</th>
-                  <th>余额</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody id="opsLedgerRows"></tbody>
-            </table>
-          </div>
-        </div>
-        <div>
-          <h3>失败退款</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>退款</th>
-                  <th>原订单</th>
-                  <th>失败图</th>
-                  <th>积分</th>
-                  <th>原因</th>
-                </tr>
-              </thead>
-              <tbody id="opsRefundRows"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
     </section>
 
     <section class="admin-section">

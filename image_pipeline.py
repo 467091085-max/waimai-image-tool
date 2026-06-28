@@ -8,55 +8,15 @@ import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import ProxyHandler, Request, build_opener
 
 import pandas as pd
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
 
 PLATFORMS = {
-    "meituan": {
-        "name": "美团外卖",
-        "width": 800,
-        "height": 600,
-        "aspect": "4:3",
-        "maxKB": 5120,
-        "formats": ["jpg", "png"],
-        "defaultFormat": "jpg",
-        "mode": "RGB",
-        "default": True,
-    },
-    "taobao": {
-        "name": "淘宝外卖/饿了么",
-        "width": 800,
-        "height": 800,
-        "aspect": "1:1",
-        "maxKB": 20480,
-        "formats": ["jpg", "png"],
-        "defaultFormat": "jpg",
-        "mode": "RGB",
-        "default": False,
-    },
-    "jd": {
-        "name": "京东外卖/京东秒送",
-        "width": 800,
-        "height": 800,
-        "aspect": "1:1",
-        "maxKB": 5120,
-        "formats": ["jpg", "jpeg", "png"],
-        "defaultFormat": "jpg",
-        "mode": "RGB",
-        "default": False,
-    },
+    "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 5120, "default": True},
+    "taobao": {"name": "淘宝外卖/饿了么", "width": 800, "height": 800, "maxKB": 20480, "default": False},
+    "jd": {"name": "京东外卖/京东秒送", "width": 800, "height": 800, "maxKB": 5120, "default": False},
 }
-
-EXTRA_PLATFORM_POINTS = 100
-REMOTE_IMAGE_TIMEOUT_SECONDS = 10
-REMOTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
-REMOTE_IMAGE_CHUNK_BYTES = 64 * 1024
-REMOTE_IMAGE_USER_AGENT = "waimai-image-tool/4.0 export-remote-media"
-REMOTE_IMAGE_OPENER = build_opener(ProxyHandler({}))
 
 REPORT_COLUMNS = [
     "菜品名",
@@ -72,14 +32,22 @@ REPORT_COLUMNS = [
     "交付文件",
 ]
 
+MAX_LOGO_DATA_URL_CHARS = 1_500_000
+MAX_LOGO_BYTES = 1_000_000
+MAX_LOGO_PIXELS = 2_000_000
+MAX_EXPORT_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_EXPORT_IMAGE_PIXELS = 24_000_000
+MAX_EXPORT_IMAGE_SIDE = 12_000
+ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
+QUALITY_MIN_SIDE = 320
+QUALITY_SAMPLE_SIZE = (96, 96)
+QUALITY_MIN_PASS_SCORE = 0.65
+
 
 def safe_filename(name: str) -> str:
     value = unicodedata.normalize("NFKC", str(name))
-    value = re.sub(r"[\x00-\x1f/:*?\"<>|\\]+", "_", value)
-    value = re.sub(r"\s+", " ", value).strip(" .")
-    if value.upper() in {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "LPT1", "LPT2", "LPT3"}:
-        value = f"{value}_"
-    return value[:90] or "file"
+    value = re.sub(r"[/:*?\"<>|\\]+", "_", value)
+    return re.sub(r"\s+", " ", value).strip()[:90] or "file"
 
 
 def font(size: int) -> ImageFont.ImageFont:
@@ -106,16 +74,7 @@ def watermark_position(base_size: tuple[int, int], mark_size: tuple[int, int], p
         "bottom-right": (bw - mw - margin, bh - mh - margin),
         "center": ((bw - mw) // 2, (bh - mh) // 2),
     }
-    x, y = positions.get(position, positions["bottom-right"])
-    if mw + (margin * 2) <= bw:
-        x = max(margin, min(x, bw - mw - margin))
-    else:
-        x = max(0, (bw - mw) // 2)
-    if mh + (margin * 2) <= bh:
-        y = max(margin, min(y, bh - mh - margin))
-    else:
-        y = max(0, (bh - mh) // 2)
-    return x, y
+    return positions.get(position, positions["bottom-right"])
 
 
 def watermark_text_fill(color: str) -> tuple[int, int, int, int]:
@@ -138,11 +97,17 @@ def make_text_watermark(text: str, width: int, color: str = "black") -> Image.Im
 
 def make_logo_watermark(data_url: str, width: int) -> Image.Image | None:
     payload = str(data_url or "")
+    if len(payload) > MAX_LOGO_DATA_URL_CHARS:
+        return None
     if "," in payload:
         payload = payload.split(",", 1)[1]
     try:
-        raw = base64.b64decode(payload)
-        logo = Image.open(io.BytesIO(raw)).convert("RGBA")
+        raw = base64.b64decode(payload, validate=True)
+        if len(raw) > MAX_LOGO_BYTES:
+            return None
+        with Image.open(io.BytesIO(raw)) as src:
+            validate_image_bounds(src, max_pixels=MAX_LOGO_PIXELS)
+            logo = src.convert("RGBA")
     except Exception:
         return None
     max_w = max(90, width // 5)
@@ -151,31 +116,13 @@ def make_logo_watermark(data_url: str, width: int) -> Image.Image | None:
     return logo
 
 
-def fit_watermark_to_safe_area(mark: Image.Image, base_size: tuple[int, int], margin: int) -> Image.Image:
-    max_w = max(1, base_size[0] - (margin * 2))
-    max_h = max(1, base_size[1] - (margin * 2))
-    if mark.width <= max_w and mark.height <= max_h:
-        return mark
-    fitted = mark.copy()
-    fitted.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-    return fitted
-
-
-def paste_tiled(overlay: Image.Image, mark: Image.Image, margin: int = 0) -> None:
+def paste_tiled(overlay: Image.Image, mark: Image.Image) -> None:
     gap_x = max(40, mark.width // 2)
     gap_y = max(38, mark.height)
-    bottom = max(margin, overlay.height - margin - mark.height)
-    right = max(margin, overlay.width - margin - mark.width)
-    y = margin
-    row = 0
-    while y <= bottom:
-        offset = 0 if row % 2 == 0 else (mark.width + gap_x) // 2
-        x = margin + offset
-        while x <= right:
+    for y in range(-mark.height, overlay.height + mark.height, mark.height + gap_y):
+        offset = 0 if (y // max(1, mark.height + gap_y)) % 2 == 0 else (mark.width + gap_x) // 2
+        for x in range(-mark.width + offset, overlay.width + mark.width, mark.width + gap_x):
             overlay.alpha_composite(mark, (x, y))
-            x += mark.width + gap_x
-        y += mark.height + gap_y
-        row += 1
 
 
 def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.Image:
@@ -189,66 +136,28 @@ def apply_watermark(img: Image.Image, settings: dict[str, Any] | None) -> Image.
     if mark.width <= 0 or mark.height <= 0:
         return base
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    margin = max(24, base.width // 34)
-    mark = fit_watermark_to_safe_area(mark, base.size, margin)
     if str(settings.get("pattern") or "corner") == "tile":
         if mark_type == "text":
             mark = mark.rotate(-22, expand=True)
-            mark = fit_watermark_to_safe_area(mark, base.size, margin)
-        paste_tiled(overlay, mark, margin)
+        paste_tiled(overlay, mark)
     else:
+        margin = max(24, base.width // 34)
         position = str(settings.get("position") or "bottom-right")
         overlay.alpha_composite(mark, watermark_position(base.size, mark.size, position, margin))
     return Image.alpha_composite(base, overlay)
 
 
-def parse_platforms(value: Any, *, default: list[str] | tuple[str, ...] | None = ("meituan",)) -> list[str]:
+def parse_platforms(value: Any) -> list[str]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        value = list(default or [])
+        value = ["meituan"]
     out = []
     for item in value:
         key = str(item)
         if key in PLATFORMS and key not in out:
             out.append(key)
-    return out or list(default or [])
-
-
-def require_platforms(value: Any) -> list[str]:
-    selected = parse_platforms(value, default=[])
-    if not selected:
-        raise ValueError("请至少选择一个导出平台")
-    return selected
-
-
-def platform_extra_points(platforms: list[str] | str | None, extra_points: int = EXTRA_PLATFORM_POINTS) -> int:
-    selected = parse_platforms(platforms, default=[])
-    return max(len(selected) - 1, 0) * int(extra_points)
-
-
-def normalize_image_format(image_format: str | None, platform_id: str) -> tuple[str, str, str]:
-    spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
-    requested = str(image_format or spec.get("defaultFormat") or "jpg").lower().strip().lstrip(".")
-    if requested in {"image/jpg", "image/jpeg", "image/png"}:
-        requested = requested.split("/", 1)[1]
-    allowed = {str(item).lower() for item in spec.get("formats", ["jpg"])}
-    requested_is_supported_jpeg = requested in {"jpg", "jpeg"} and bool(allowed.intersection({"jpg", "jpeg"}))
-    if requested == "png" and "png" not in allowed:
-        requested = str(spec.get("defaultFormat") or "jpg").lower()
-    elif requested in {"jpg", "jpeg"} and not requested_is_supported_jpeg:
-        requested = str(spec.get("defaultFormat") or "jpg").lower()
-    elif requested not in allowed and not requested_is_supported_jpeg:
-        requested = str(spec.get("defaultFormat") or "jpg").lower()
-    if requested == "png":
-        return "png", ".png", "PNG"
-    if requested == "jpeg" and "jpeg" in allowed:
-        return "jpeg", ".jpeg", "JPEG"
-    return "jpg", ".jpg", "JPEG"
-
-
-def platform_folder_name(platform_id: str, spec: dict[str, Any]) -> str:
-    return f"{platform_id}_{safe_filename(str(spec['name']))}_{spec['width']}x{spec['height']}"
+    return out or ["meituan"]
 
 
 def edge_background(img: Image.Image) -> tuple[int, int, int, int]:
@@ -262,160 +171,203 @@ def edge_background(img: Image.Image) -> tuple[int, int, int, int]:
     return tuple(int(sum(pixel[i] for pixel in samples) / len(samples)) for i in range(4))
 
 
-def expanded_bbox(bbox: tuple[int, int, int, int], size: tuple[int, int], padding_ratio: float = 0.04) -> tuple[int, int, int, int]:
-    width, height = size
-    pad = max(8, int(max(width, height) * padding_ratio))
-    left, top, right, bottom = bbox
-    return max(0, left - pad), max(0, top - pad), min(width, right + pad), min(height, bottom + pad)
-
-
-def subject_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
-    rgba = img.convert("RGBA")
-    alpha_bbox = rgba.getchannel("A").getbbox()
-    if alpha_bbox and alpha_bbox != (0, 0, rgba.width, rgba.height):
-        return expanded_bbox(alpha_bbox, rgba.size)
-
-    background = Image.new("RGBA", rgba.size, edge_background(rgba))
-    diff = ImageChops.difference(rgba, background).convert("L")
-    mask = diff.point(lambda value: 255 if value > 22 else 0)
-    bbox = mask.getbbox()
-    if not bbox:
-        return None
-    if bbox == (0, 0, rgba.width, rgba.height):
-        return None
-    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-    image_area = rgba.width * rgba.height
-    if bbox_area < image_area * 0.02:
-        return None
-    return expanded_bbox(bbox, rgba.size)
-
-
-def crop_to_subject(img: Image.Image) -> Image.Image:
-    bbox = subject_bbox(img)
-    if not bbox:
-        return img
-    left, top, right, bottom = bbox
-    if (right - left) <= 1 or (bottom - top) <= 1:
-        return img
-    return img.crop(bbox)
-
-
-def fit_to_platform(img: Image.Image, platform_id: str, *, crop: bool = True) -> Image.Image:
+def fit_to_platform(img: Image.Image, platform_id: str) -> Image.Image:
     spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
     target = (int(spec["width"]), int(spec["height"]))
     src = img.convert("RGBA")
-    subject = crop_to_subject(src) if crop else src
-    fitted = ImageOps.contain(subject, target, Image.Resampling.LANCZOS)
+    fitted = ImageOps.contain(src, target, Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", target, edge_background(src))
     canvas.alpha_composite(fitted, ((target[0] - fitted.width) // 2, (target[1] - fitted.height) // 2))
     return canvas
 
 
-def prepare_platform_image(img: Image.Image, platform_id: str, watermark: dict[str, Any] | None = None) -> Image.Image:
-    fitted = fit_to_platform(img, platform_id)
-    return apply_watermark(fitted, watermark)
-
-
-def save_platform_image(img: Image.Image, target: Path, max_kb: int, image_format: str = "jpg") -> int:
+def save_platform_image(img: Image.Image, target: Path, max_kb: int) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     max_bytes = max(64, int(max_kb)) * 1024
     rgb = img.convert("RGB")
-    if str(image_format).lower() == "png":
-        rgb.save(target, "PNG", optimize=True, compress_level=9)
-        if target.stat().st_size > max_bytes:
-            rgb.quantize(colors=256).convert("RGB").save(target, "PNG", optimize=True, compress_level=9)
-        return target.stat().st_size
-
-    for quality in list(range(92, 34, -5)) + [30, 25, 20, 15, 10, 5]:
+    for quality in list(range(92, 34, -5)) + [30, 25, 20]:
         rgb.save(target, "JPEG", quality=quality, optimize=True, progressive=True, subsampling=2)
         if target.stat().st_size <= max_bytes:
             return target.stat().st_size
     return target.stat().st_size
 
 
-class RemoteImageDownloadError(Exception):
-    pass
+def validate_image_bounds(img: Image.Image, *, max_pixels: int = MAX_EXPORT_IMAGE_PIXELS) -> None:
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        raise ValueError("invalid image dimensions")
+    if width > MAX_EXPORT_IMAGE_SIDE or height > MAX_EXPORT_IMAGE_SIDE:
+        raise ValueError("image dimensions exceed limit")
+    if width * height > max_pixels:
+        raise ValueError("image pixel count exceeds limit")
+    if img.format and img.format.upper() not in ALLOWED_IMAGE_FORMATS:
+        raise ValueError("unsupported image format")
 
 
-def is_http_url(value: Any) -> bool:
-    parsed = urlparse(str(value or "").strip())
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def download_remote_image(url: str, *, timeout: int = REMOTE_IMAGE_TIMEOUT_SECONDS, max_bytes: int = REMOTE_IMAGE_MAX_BYTES) -> bytes:
-    request = Request(
-        str(url),
-        headers={
-            "User-Agent": REMOTE_IMAGE_USER_AGENT,
-            "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
-        },
-    )
+def open_export_image(path: Path) -> Image.Image:
+    if path.stat().st_size > MAX_EXPORT_IMAGE_BYTES:
+        raise ValueError("image file size exceeds limit")
+    img = Image.open(path)
     try:
-        with REMOTE_IMAGE_OPENER.open(request, timeout=timeout) as response:
-            status = getattr(response, "status", response.getcode())
-            if status and int(status) >= 400:
-                raise RemoteImageDownloadError(f"HTTP {status}")
-
-            content_length = response.headers.get("Content-Length")
-            if content_length:
-                try:
-                    if int(content_length) > max_bytes:
-                        raise RemoteImageDownloadError("remote image is too large")
-                except ValueError:
-                    pass
-
-            payload = io.BytesIO()
-            total = 0
-            while True:
-                chunk = response.read(REMOTE_IMAGE_CHUNK_BYTES)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise RemoteImageDownloadError("remote image is too large")
-                payload.write(chunk)
-            return payload.getvalue()
-    except RemoteImageDownloadError:
+        validate_image_bounds(img)
+        img.load()
+        return img
+    except Exception:
+        img.close()
         raise
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        raise RemoteImageDownloadError(str(exc)) from exc
 
 
-def open_image_file(path: Path) -> Image.Image:
-    with Image.open(path) as opened:
-        return ImageOps.exif_transpose(opened).copy()
+def assess_generated_asset_quality(source: Image.Image | str | Path) -> dict[str, Any]:
+    """Deterministic local quality gate for generated reusable assets."""
+    img = _quality_source_image(source)
+    width, height = img.size
+    sample = img.resize(QUALITY_SAMPLE_SIZE, Image.Resampling.BILINEAR)
+    rgb = sample.convert("RGB")
+    rgba_pixels = list(sample.getdata())
+    rgb_pixels = list(rgb.getdata())
+    total = max(1, len(rgb_pixels))
+
+    stat = ImageStat.Stat(rgb)
+    mean_stddev = sum(float(value) for value in stat.stddev) / 3.0
+    dominant_ratio = _dominant_color_ratio(rgb)
+    transparent_ratio = sum(1 for _r, _g, _b, alpha in rgba_pixels if alpha < 245) / total
+    edge_pixels = _edge_rgb_pixels(rgb)
+    edge_color = _mean_rgb(edge_pixels)
+    edge_stddev = _rgb_stddev(edge_pixels)
+    content_bbox, content_ratio = _content_bbox_from_edge(rgba_pixels, sample.size, edge_color)
+
+    reasons: list[str] = []
+    if min(width, height) < QUALITY_MIN_SIDE:
+        reasons.append("too_small")
+    if transparent_ratio > 0.02:
+        reasons.append("background_not_filled")
+    if mean_stddev < 6.0 or dominant_ratio >= 0.985:
+        reasons.append("solid_or_placeholder")
+
+    bbox_metrics = {
+        "content_area_ratio": round(content_ratio, 4),
+        "content_width_ratio": 0.0,
+        "content_height_ratio": 0.0,
+        "content_margin_min_ratio": 0.0,
+    }
+    if content_bbox is not None:
+        x0, y0, x1, y1 = content_bbox
+        sample_w, sample_h = sample.size
+        width_ratio = (x1 - x0) / sample_w
+        height_ratio = (y1 - y0) / sample_h
+        margin_min_ratio = min(x0 / sample_w, y0 / sample_h, (sample_w - x1) / sample_w, (sample_h - y1) / sample_h)
+        bbox_metrics.update(
+            {
+                "content_width_ratio": round(width_ratio, 4),
+                "content_height_ratio": round(height_ratio, 4),
+                "content_margin_min_ratio": round(margin_min_ratio, 4),
+            }
+        )
+        if edge_stddev < 10.0 and width_ratio <= 0.58 and height_ratio <= 0.58 and margin_min_ratio >= 0.08:
+            reasons.append("small_center_frame")
+    elif "solid_or_placeholder" not in reasons:
+        reasons.append("solid_or_placeholder")
+
+    reasons = _unique_quality_reasons(reasons)
+    penalty = {
+        "too_small": 0.2,
+        "background_not_filled": 0.35,
+        "solid_or_placeholder": 0.65,
+        "small_center_frame": 0.45,
+    }
+    score = max(0.0, min(1.0, 1.0 - sum(penalty.get(reason, 0.25) for reason in reasons)))
+    score = round(score, 3)
+    passed = not reasons and score >= QUALITY_MIN_PASS_SCORE
+
+    return {
+        "passed": passed,
+        "status": "passed" if passed else "failed",
+        "score": score,
+        "quality_score": score,
+        "reasons": reasons,
+        "metrics": {
+            "width": width,
+            "height": height,
+            "mean_stddev": round(mean_stddev, 3),
+            "dominant_color_ratio": round(dominant_ratio, 4),
+            "transparent_ratio": round(transparent_ratio, 4),
+            "edge_stddev": round(edge_stddev, 3),
+            **bbox_metrics,
+        },
+    }
 
 
-def open_image_bytes(payload: bytes) -> Image.Image:
-    with Image.open(io.BytesIO(payload)) as opened:
-        return ImageOps.exif_transpose(opened).convert("RGB").copy()
+def _quality_source_image(source: Image.Image | str | Path) -> Image.Image:
+    if isinstance(source, Image.Image):
+        return ImageOps.exif_transpose(source).convert("RGBA")
+
+    path = Path(source)
+    with Image.open(path) as img:
+        validate_image_bounds(img)
+        img.load()
+        return ImageOps.exif_transpose(img).convert("RGBA")
 
 
-def load_candidate_image(candidate: dict[str, Any] | None) -> tuple[Image.Image | None, str]:
-    if not candidate:
-        return None, "待补图"
+def _dominant_color_ratio(img: Image.Image) -> float:
+    colors = img.getcolors(maxcolors=img.width * img.height)
+    if not colors:
+        return 0.0
+    return max(count for count, _color in colors) / max(1, img.width * img.height)
 
-    path_value = str(candidate.get("path") or "").strip()
-    if path_value:
-        src = Path(path_value)
-        if src.is_file():
-            try:
-                return open_image_file(src), ""
-            except Exception:
-                return None, "图片无效"
 
-    url = str(candidate.get("url") or "").strip()
-    if is_http_url(url):
-        try:
-            payload = download_remote_image(url)
-        except RemoteImageDownloadError:
-            return None, "图片下载失败"
-        try:
-            return open_image_bytes(payload), ""
-        except Exception:
-            return None, "图片无效"
+def _edge_rgb_pixels(img: Image.Image) -> list[tuple[int, int, int]]:
+    band = max(3, int(min(img.size) * 0.08))
+    pixels: list[tuple[int, int, int]] = []
+    width, height = img.size
+    for y in range(height):
+        for x in range(width):
+            if x < band or x >= width - band or y < band or y >= height - band:
+                pixels.append(img.getpixel((x, y)))
+    return pixels
 
-    return None, "待补图"
+
+def _mean_rgb(pixels: list[tuple[int, int, int]]) -> tuple[float, float, float]:
+    total = max(1, len(pixels))
+    return (
+        sum(pixel[0] for pixel in pixels) / total,
+        sum(pixel[1] for pixel in pixels) / total,
+        sum(pixel[2] for pixel in pixels) / total,
+    )
+
+
+def _rgb_stddev(pixels: list[tuple[int, int, int]]) -> float:
+    if not pixels:
+        return 0.0
+    mean = _mean_rgb(pixels)
+    channel_variance = [
+        sum((pixel[index] - mean[index]) ** 2 for pixel in pixels) / len(pixels)
+        for index in range(3)
+    ]
+    return sum(value ** 0.5 for value in channel_variance) / 3.0
+
+
+def _content_bbox_from_edge(
+    rgba_pixels: list[tuple[int, int, int, int]],
+    size: tuple[int, int],
+    edge_color: tuple[float, float, float],
+) -> tuple[tuple[int, int, int, int] | None, float]:
+    width, height = size
+    mask = []
+    for red, green, blue, alpha in rgba_pixels:
+        distance = abs(red - edge_color[0]) + abs(green - edge_color[1]) + abs(blue - edge_color[2])
+        mask.append(255 if alpha >= 245 and distance >= 45 else 0)
+    mask_img = Image.new("L", size)
+    mask_img.putdata(mask)
+    content_pixels = sum(1 for value in mask if value)
+    return mask_img.getbbox(), content_pixels / max(1, width * height)
+
+
+def _unique_quality_reasons(reasons: list[str]) -> list[str]:
+    output: list[str] = []
+    for reason in reasons:
+        if reason not in output:
+            output.append(reason)
+    return output
 
 
 def selected_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -427,95 +379,22 @@ def selected_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def normalize_selected_rows(value: Any) -> set[int]:
-    if not isinstance(value, (list, tuple, set)):
-        return set()
-    selected: set[int] = set()
-    for item in value:
-        if isinstance(item, bool):
-            continue
-        try:
-            selected.add(int(item))
-        except (TypeError, ValueError):
-            continue
-    return selected
-
-
-def normalize_selected_ids(value: Any) -> set[str]:
-    if not isinstance(value, (list, tuple, set)):
-        return set()
-    return {str(item).strip() for item in value if str(item).strip()}
-
-
-def row_identity_values(row: dict[str, Any], row_number: int) -> set[str]:
-    values = {str(row_number)}
-    for key in ("row", "id", "itemId", "rowId", "dishId", "skuId"):
-        value = row.get(key)
-        if value is not None and str(value).strip():
-            values.add(str(value).strip())
-    candidate = selected_candidate(row)
-    if candidate:
-        for key in ("imageId", "id", "objectKey"):
-            value = candidate.get(key)
-            if value is not None and str(value).strip():
-                values.add(str(value).strip())
-    return values
-
-
-def selected_filter_matches(row: dict[str, Any], row_number: int, selected_rows: set[int], selected_ids: set[str]) -> bool:
-    row_number_values = {row_number}
-    try:
-        row_number_values.add(int(row.get("row")))
-    except (TypeError, ValueError):
-        pass
-    if selected_rows and row_number_values.intersection(selected_rows):
-        return True
-    if selected_ids and row_identity_values(row, row_number).intersection(selected_ids):
-        return True
-    return False
-
-
-def should_export_row(
-    row: dict[str, Any],
-    row_number: int,
-    selected_rows: set[int],
-    scope: str,
-    selected_ids: set[str] | None = None,
-) -> bool:
-    selected_ids = selected_ids or set()
+def should_export_row(row: dict[str, Any], row_number: int, selected_rows: set[int], scope: str) -> bool:
     candidate = selected_candidate(row)
     action = row.get("backgroundAction")
-    normalized_scope = str(scope or "all")
-    if selected_rows or selected_ids:
-        if not selected_filter_matches(row, row_number, selected_rows, selected_ids):
-            return False
-    elif normalized_scope == "selected":
+    if selected_rows and row_number not in selected_rows:
         return False
-    if normalized_scope == "direct" and action != "背景一致，直接复用":
+    if scope == "direct" and action != "背景一致，直接复用":
         return False
-    if normalized_scope == "need_bg" and action != "需抠图换背景":
+    if scope == "need_bg" and action != "需抠图换背景":
         return False
-    if normalized_scope == "missing" and candidate is not None:
+    if scope == "missing" and candidate is not None:
         return False
-    if normalized_scope == "single" and row.get("kind") != "单品":
+    if scope == "single" and row.get("kind") != "单品":
         return False
-    if normalized_scope == "combo" and row.get("kind") != "套餐/组合":
-        return False
-    if normalized_scope == "other" and row.get("kind") in {"单品", "套餐/组合"}:
+    if scope == "combo" and row.get("kind") != "套餐/组合":
         return False
     return True
-
-
-def unique_filename(name: str, ext: str, used_names: set[str]) -> str:
-    stem = safe_filename(name or "dish")
-    suffix = ext if ext.startswith(".") else f".{ext}"
-    candidate = f"{stem}{suffix}"
-    counter = 2
-    while candidate.lower() in used_names:
-        candidate = f"{stem}_{counter}{suffix}"
-        counter += 1
-    used_names.add(candidate.lower())
-    return candidate
 
 
 def report_row(
@@ -524,7 +403,6 @@ def report_row(
     file_size: int | None = None,
     delivery_file: str = "",
     watermark_enabled: bool = False,
-    status: str = "待补图",
 ) -> dict[str, Any]:
     if platform is None:
         data = {
@@ -535,7 +413,7 @@ def report_row(
             "尺寸": "",
             "文件大小KB": "",
             "平台上限KB": "",
-            "图片状态": status,
+            "图片状态": "待补图",
             "预计积分": row.get("points", ""),
             "品牌水印": "未添加",
             "交付文件": "",
@@ -562,46 +440,50 @@ def export_delivery_zip(
     export_dir: Path,
     scope: str = "all",
     selected_rows: list[int] | None = None,
-    selected_ids: list[str] | None = None,
     image_format: str = "jpg",
     watermark: dict[str, Any] | None = None,
     platforms: list[str] | str | None = None,
     run_name: str | None = None,
 ) -> dict[str, Any]:
     export_dir.mkdir(parents=True, exist_ok=True)
-    selected = normalize_selected_rows(selected_rows)
-    selected_id_set = normalize_selected_ids(selected_ids)
+    selected = {int(item) for item in selected_rows or []}
     selected_platforms = parse_platforms(platforms)
     watermark_enabled = isinstance(watermark, dict) and bool(watermark.get("enabled"))
+    normalized_format = str(image_format or "jpg").lower()
+    ext = ".jpg" if normalized_format in {"jpg", "jpeg"} else ".jpg"
 
-    safe_run_name = safe_filename(run_name) if run_name else f"export_{int(time.time())}_{time.time_ns() % 1_000_000_000:09d}"
-    run_dir = export_dir / safe_run_name
+    run_dir = export_dir / (run_name or f"export_{int(time.time())}_{time.time_ns() % 1_000_000_000:09d}")
     image_dir = run_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
     image_count = 0
-    used_names_by_platform: dict[str, set[str]] = {}
     for row_number, row in enumerate(plan_results, start=1):
-        if not should_export_row(row, row_number, selected, str(scope or "all"), selected_id_set):
+        if not should_export_row(row, row_number, selected, str(scope or "all")):
             continue
 
-        raw_img, image_status = load_candidate_image(selected_candidate(row))
-        if raw_img is None:
-            rows.append(report_row(row, status=image_status))
+        candidate = selected_candidate(row)
+        src = Path(str(candidate.get("path", ""))) if candidate else None
+        if src is None or not src.is_file():
+            rows.append(report_row(row))
             continue
 
-        for platform_id in selected_platforms:
-            spec = PLATFORMS[platform_id]
-            normalized_format, ext, _ = normalize_image_format(image_format, platform_id)
-            platform_dir = image_dir / platform_folder_name(platform_id, spec)
-            used_names = used_names_by_platform.setdefault(platform_id, set())
-            target = platform_dir / unique_filename(str(row.get("name") or "dish"), ext, used_names)
-            img = prepare_platform_image(raw_img, platform_id, watermark)
-            file_size = save_platform_image(img, target, int(spec["maxKB"]), normalized_format)
-            image_count += 1
-            delivery_file = f"{platform_dir.name}/{target.name}"
-            rows.append(report_row(row, spec, file_size, delivery_file, watermark_enabled))
+        try:
+            raw_img = open_export_image(src)
+        except Exception:
+            rows.append(report_row(row))
+            continue
+        with raw_img:
+            for platform_id in selected_platforms:
+                spec = PLATFORMS[platform_id]
+                platform_dir = image_dir / f"{platform_id}_{spec['name']}_{spec['width']}x{spec['height']}"
+                target = platform_dir / f"{row_number:03d}_{safe_filename(str(row.get('name') or 'dish'))}{ext}"
+                img = fit_to_platform(raw_img, platform_id)
+                img = apply_watermark(img, watermark)
+                file_size = save_platform_image(img, target, int(spec["maxKB"]))
+                image_count += 1
+                delivery_file = f"{platform_dir.name}/{target.name}"
+                rows.append(report_row(row, spec, file_size, delivery_file, watermark_enabled))
 
     report = run_dir / "delivery_report.xlsx"
     pd.DataFrame(rows, columns=REPORT_COLUMNS).to_excel(report, index=False)
@@ -617,7 +499,6 @@ def export_delivery_zip(
         "rows": len(rows),
         "images": image_count,
         "platforms": selected_platforms,
-        "extraPlatformPoints": platform_extra_points(selected_platforms),
         "watermark": watermark_enabled,
         "download": f"/download/{zip_path.relative_to(export_dir).as_posix()}",
     }

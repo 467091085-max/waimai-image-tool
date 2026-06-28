@@ -1,14 +1,46 @@
 services:
   - type: web
     name: waimai-image-tool
-    env: python
+    runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180
+    healthCheckPath: /api/ops/readiness
+    autoDeployTrigger: commit
     envVars:
+      - key: APP_ENV
+        value: staging
+      - key: ENABLE_LOCAL_DEMO_BILLING
+        value: "true"
+      - key: ENABLE_LOCAL_DEMO_STORAGE
+        value: "true"
+      - key: OBJECT_SIGNING_SECRET
+        generateValue: true
+      - key: DOWNLOAD_SIGNING_SECRET
+        generateValue: true
+      - key: PAYMENT_WEBHOOK_SECRET
+        generateValue: true
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: TENCENT_HUNYUAN_ENABLED
+        value: "true"
+      - key: TENCENT_HUNYUAN_MODE
+        value: auto
+      - key: TENCENT_HUNYUAN_SYNC_LIMIT
+        value: "6"
+      - key: TENCENTCLOUD_SECRET_ID
+        sync: false
+      - key: TENCENTCLOUD_SECRET_KEY
+        sync: false
+      - key: TENCENTCLOUD_REGION
+        value: ap-guangzhou
       - key: TENCENT_COS_BUCKET
         value: waimai-image-tool-inputs-1311836560
       - key: TENCENT_COS_REGION
         value: ap-guangzhou
       - key: TENCENT_COS_PREFIX
         value: waimai-model-inputs
+      - key: TENCENT_COS_AI_ASSET_PREFIX
+        value: ai-assets
+      - key: AI_ASSET_UPLOAD_TO_COS
+        value: "true"

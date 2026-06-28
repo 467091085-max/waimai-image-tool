@@ -10,63 +10,38 @@ from typing import Any
 
 import pandas as pd
 
-MENU_EXTS = {".csv", ".xls", ".xlsx"}
+MENU_EXTS = {".xls", ".xlsx"}
 DEFAULT_MENU_DIR = Path.home() / "Documents" / "menus"
-DEFAULT_POINTS_PER_IMAGE = 10
 
 KIND_SINGLE = "单品"
 KIND_COMBO = "套餐/组合"
 KIND_SNACK = "饮品/小食"
-KIND_OTHER = "其他"
-
-BASIC_COMBO = "套餐"
-BASIC_BEVERAGE = "饮品"
-BASIC_ADDON = "小料"
-BASIC_STAPLE = "主食"
-BASIC_RICE_NOODLE = "米粉/米线"
-BASIC_NOODLE = "面食/抄手"
-BASIC_PORRIDGE = "粥/汤饭"
-BASIC_MAIN = "炒菜/盖饭"
-BASIC_SNACK = "小吃"
-BASIC_OTHER = "其他"
 
 NAME_HEADERS = {
-    "*商品名称",
     "菜单名",
-    "菜单名称",
     "菜品名",
     "菜品名称",
-    "菜品",
     "菜名",
-    "餐品",
     "餐品名",
     "餐品名称",
-    "商品",
     "商品名",
     "商品名称",
     "产品名",
     "产品名称",
-    "外卖名称",
     "名称",
     "品名",
     "门店菜品",
 }
 NAME_HEADER_PRIORITY = {
-    "*商品名称": 119,
     "菜单名": 120,
-    "菜单名称": 119,
     "商品名称": 118,
     "商品名": 116,
-    "商品": 92,
     "菜品名称": 114,
     "菜品名": 112,
-    "菜品": 94,
     "餐品名称": 110,
     "餐品名": 108,
-    "餐品": 94,
     "产品名称": 106,
     "产品名": 104,
-    "外卖名称": 102,
     "菜名": 102,
     "品名": 96,
     "名称": 90,
@@ -81,10 +56,8 @@ CATEGORY_HEADERS = {
     "分类名",
     "分类名称",
     "商品分类",
-    "商品分组",
     "菜单分类",
     "分组",
-    "分组名称",
     "品类",
 }
 CATEGORY_IGNORE_VALUES = {"全部", "所有", "未分类", "默认", "无", "-"}
@@ -97,9 +70,6 @@ PRICE_HEADER_PRIORITY = {
     "售价": 120,
     "销售价": 118,
     "价格": 116,
-    "美团价": 115,
-    "外卖价": 115,
-    "线上价": 115,
     "门店价格": 112,
     "会员价": 110,
     "打包价": 96,
@@ -140,218 +110,6 @@ DISCOURAGED_NAME_PARTS = {
     "配送",
 }
 
-MARKETING_WORDS = (
-    "招牌",
-    "爆款",
-    "热销",
-    "人气",
-    "福利",
-    "特惠",
-    "优惠",
-    "新品",
-    "必点",
-    "推荐",
-    "现炒",
-    "现煎",
-    "手打",
-    "手作",
-    "手工",
-    "入店必点",
-    "秘制",
-    "正宗",
-    "经典",
-    "老长沙",
-    "严选",
-    "超值",
-    "精品",
-    "厨师",
-    "收藏",
-    "宠粉",
-    "粉丝",
-    "会员",
-    "专享",
-)
-
-PLATFORM_WORDS = (
-    "美团",
-    "饿了么",
-    "大众点评",
-    "外卖",
-    "堂食",
-    "到店",
-    "门店",
-    "下单",
-    "打包",
-    "配送",
-)
-
-SPEC_WORDS = (
-    "大份",
-    "中份",
-    "小份",
-    "超大份",
-    "标准份",
-    "一份",
-    "单份",
-    "堂食份量",
-    "堂食分量",
-    "加量",
-    "双倍加量",
-    "微辣",
-    "中辣",
-    "重辣",
-    "特辣",
-    "少辣",
-    "免辣",
-    "不辣",
-    "加辣",
-    "常温",
-    "冰镇",
-    "去冰",
-    "少冰",
-    "正常冰",
-    "咸鲜",
-)
-
-FORMAT_WORDS = (
-    "盖码饭",
-    "盖浇饭",
-    "盖饭",
-    "木桶饭",
-    "套餐",
-    "组合",
-    "单人餐",
-    "双人餐",
-)
-
-COMBO_WORDS = (
-    "套餐",
-    "组合",
-    "套饭",
-    "套餐饭",
-    "双拼",
-    "三拼",
-    "四拼",
-    "多拼",
-    "拼盘",
-    "自选",
-    "任选",
-    "搭配",
-    "搭子",
-    "多人餐",
-    "单人餐",
-    "双人餐",
-    "三人餐",
-    "四人餐",
-    "亲子餐",
-    "分享餐",
-    "大礼包",
-    "全家桶",
-)
-
-BEVERAGE_WORDS = (
-    "可乐",
-    "雪碧",
-    "芬达",
-    "王老吉",
-    "冰红茶",
-    "绿茶",
-    "矿泉水",
-    "纯净水",
-    "椰子水",
-    "豆浆",
-    "果汁",
-    "柠檬水",
-    "柠檬茶",
-    "金桔",
-    "酸梅汤",
-    "奶茶",
-    "咖啡",
-    "酸奶",
-    "冰沙",
-    "饮品",
-    "饮料",
-)
-
-ADDON_WORDS = (
-    "小料",
-    "加料",
-    "配料",
-    "蘸料",
-    "蘸水",
-    "蘸碟",
-    "调料",
-    "酱汁",
-    "料汁",
-    "辣椒包",
-    "生抽包",
-    "醋包",
-    "白糖包",
-    "香菜",
-    "葱花",
-    "蒜粒",
-    "泡菜",
-    "沙拉汁",
-)
-
-ADDON_EXACT_WORDS = {
-    "加鸡蛋",
-    "加煎蛋",
-    "加荷包蛋",
-    "加卤蛋",
-    "加茶叶蛋",
-    "加肠",
-    "加火腿",
-    "加肉",
-    "加粉",
-    "加面",
-}
-
-SERVICE_WORDS = (
-    "餐具",
-    "发票",
-    "纸巾",
-    "打包盒",
-    "包装费",
-    "配送费",
-    "补差价",
-    "差价",
-    "勿点",
-    "勿拍",
-    "不要点",
-    "不要拍",
-    "请勿下单",
-    "温馨提示",
-    "提示",
-    "说明",
-    "公告",
-    "收藏",
-    "福利",
-    "满减",
-    "红包",
-)
-
-PLAIN_RICE_WORDS = ("米饭", "白米饭", "白饭", "珍珠饭", "杂粮饭", "糙米饭", "主食")
-RICE_DISH_WORDS = ("炒饭", "盖饭", "盖码饭", "盖浇饭", "拌饭", "汤饭", "煲仔饭", "木桶饭")
-RICE_NOODLE_WORDS = ("螺蛳粉", "米粉", "米线", "酸辣粉", "河粉", "粉丝", "土豆粉")
-NOODLE_WORDS = ("面", "抄手", "馄饨", "水饺", "饺子", "包子", "烧麦", "肠粉", "云吞")
-PORRIDGE_WORDS = ("粥", "豆汤饭", "汤饭")
-SNACK_WORDS = (
-    "小食",
-    "小吃",
-    "甜品",
-    "茶叶蛋",
-    "溏心蛋",
-    "煎蛋",
-    "荷包蛋",
-    "卤蛋",
-    "锅贴",
-    "汤圆",
-    "凉菜",
-    "卤味",
-    "花生米",
-)
-
 
 @dataclass
 class TableCandidate:
@@ -385,37 +143,26 @@ def clean_header(value: Any) -> str:
     return re.sub(r"\s+", "", text)
 
 
-def _compact_text(text: str) -> str:
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")).lower())
-
-
-def _is_plain_rice_text(compact: str) -> bool:
-    if not compact:
-        return False
-    if any(word in compact for word in RICE_DISH_WORDS):
-        return False
-    return bool(re.fullmatch(r"(一碗|一份|半份|小份|大份|加|配|赠|送|另加|单点)?(白米饭|米饭|白饭|主食)", compact))
-
-
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or "")).lower()
-    compact = re.sub(r"\s+", "", text)
-    if _is_plain_rice_text(compact):
-        return "米饭"
     text = re.sub(r"[【\[].*?[】\]]", "", text)
-    text = re.sub(r"[（(][^）)]{0,40}[）)]", "", text)
-    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|串|枚|盒|杯|碗|两)", "", text)
-    text = re.sub(r"(买一送一|第二份半价|限时|折扣|满减|赠|送)", "", text)
-    text = text.replace("西红柿", "番茄")
-    text = text.replace("番茄炒鸡蛋", "番茄炒蛋")
-    text = text.replace("紫菜鸡蛋汤", "紫菜蛋花汤")
-    text = text.replace("爆炒黄牛肉", "小炒黄牛肉")
-    text = text.replace("辣椒小炒肉", "辣椒炒肉")
-    text = text.replace("农家小炒肉", "辣椒炒肉")
-    text = text.replace("农家一碗香", "一碗香")
-    text = text.replace("肉沫", "肉末")
-    text = text.replace("宫爆鸡丁", "宫保鸡丁")
-    for word in MARKETING_WORDS + PLATFORM_WORDS + SPEC_WORDS + FORMAT_WORDS:
+    text = re.sub(r"[（(][^）)]{0,30}[）)]", "", text)
+    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|克|g|斤|个|只|份|瓶|罐|串|枚|盒|杯|碗)", "", text)
+    for word in [
+        "招牌",
+        "爆款",
+        "热销",
+        "福利",
+        "收藏",
+        "现炒",
+        "现煎",
+        "盖码饭",
+        "盖浇饭",
+        "木桶饭",
+        "套餐",
+        "单人餐",
+        "米饭",
+    ]:
         text = text.replace(word, "")
     return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
 
@@ -569,126 +316,6 @@ def _find_table_candidates(df: pd.DataFrame, sheet_name: str, sheet_index: int) 
     return candidates
 
 
-def _looks_like_menu_name_value(value: str) -> bool:
-    text = clean_cell(value)
-    if not text or _is_price_like(text):
-        return False
-    compact = _compact_text(text)
-    if len(compact) < 2 or len(compact) > 80:
-        return False
-    if clean_header(text) in CATEGORY_IGNORE_VALUES:
-        return False
-    if re.fullmatch(r"\d+(\.\d+)?", compact):
-        return False
-    if not re.search(r"[\u4e00-\u9fffA-Za-z]", compact):
-        return False
-    if _is_service_text(compact, compact):
-        return False
-    return len(normalize(text)) >= 2
-
-
-def _column_values(df: pd.DataFrame, col: int, start_row: int = 0, sample: int = 80) -> list[str]:
-    if col >= df.shape[1]:
-        return []
-    return [clean_cell(value) for value in df.iloc[start_row : start_row + sample, col].tolist()]
-
-
-def _infer_price_col(df: pd.DataFrame, name_col: int, data_start: int) -> int | None:
-    best: tuple[float, int] | None = None
-    for col in range(df.shape[1]):
-        if col == name_col:
-            continue
-        ratio = _numeric_ratio(df, col, data_start, sample=40)
-        if ratio < 0.45:
-            continue
-        score = ratio * 100 - abs(col - name_col) * 2
-        if best is None or score > best[0]:
-            best = (score, col)
-    return best[1] if best else None
-
-
-def _infer_category_cols(df: pd.DataFrame, name_col: int, price_col: int | None, data_start: int) -> list[int]:
-    candidates: list[tuple[float, int]] = []
-    for col in range(df.shape[1]):
-        if col in {name_col, price_col}:
-            continue
-        values = []
-        for row_index in range(data_start, min(len(df), data_start + 40)):
-            name_value = clean_cell(df.iloc[row_index, name_col]) if name_col < df.shape[1] else ""
-            if not _looks_like_menu_name_value(name_value):
-                continue
-            value = clean_cell(df.iloc[row_index, col])
-            if value:
-                values.append(value)
-        if len(values) < 2:
-            continue
-        if sum(1 for value in values if _is_price_like(value)) / len(values) > 0.25:
-            continue
-        unique = {clean_header(value) for value in values if clean_header(value)}
-        avg_len = sum(len(_compact_text(value)) for value in values) / len(values)
-        if 1 < len(unique) <= min(12, max(3, len(values) // 2)) and avg_len <= 12:
-            candidates.append((len(values) / max(1, len(unique)), col))
-    candidates.sort(reverse=True)
-    return [col for _, col in candidates[:2]]
-
-
-def _find_inferred_table_candidates(df: pd.DataFrame, sheet_name: str, sheet_index: int) -> list[TableCandidate]:
-    """Infer a menu table when exports omit recognized headers.
-
-    This is intentionally conservative: it only triggers when one column has
-    several dish-like names, not mostly numbers/categories. Bad inference is
-    worse than asking the user to generate missing images, so low-confidence
-    sheets still fail with an actionable parser error.
-    """
-    if df.empty or df.shape[1] == 0:
-        return []
-    best: tuple[float, int, int] | None = None
-    max_start = min(12, len(df))
-    for data_start in range(max_start):
-        remaining = len(df) - data_start
-        if remaining < 2:
-            continue
-        for col in range(df.shape[1]):
-            values = [value for value in _column_values(df, col, data_start, sample=60) if value]
-            if len(values) < 3:
-                continue
-            name_like = sum(1 for value in values if _looks_like_menu_name_value(value))
-            numeric = sum(1 for value in values if _is_price_like(value))
-            ratio = name_like / len(values)
-            if name_like < 3 or ratio < 0.52 or numeric:
-                continue
-            score = 96 + ratio * 40 + min(name_like, 20) - data_start * 1.5
-            if best is None or score > best[0]:
-                best = (score, data_start, col)
-    if best is None:
-        return []
-    score, data_start, name_col = best
-    price_col = _infer_price_col(df, name_col, data_start)
-    category_cols = _infer_category_cols(df, name_col, price_col, data_start)
-    headers = [f"列{idx + 1}" for idx in range(df.shape[1])]
-    headers[name_col] = "菜品名"
-    if price_col is not None:
-        headers[price_col] = "价格"
-    for col in category_cols:
-        headers[col] = "分类"
-    return [
-        TableCandidate(
-            sheet_name=sheet_name,
-            sheet_index=sheet_index,
-            header_row=data_start - 1,
-            headers=headers,
-            name_col=name_col,
-            price_col=price_col,
-            category_cols=category_cols,
-            attribute_cols=[],
-            name_extra_cols=[],
-            score=score,
-            primary=_sheet_primary(sheet_name),
-            discouraged=_sheet_discouraged(sheet_name),
-        )
-    ]
-
-
 def _meaningful_category(values: list[str], current: str) -> str:
     for value in values:
         text = clean_cell(value)
@@ -720,7 +347,6 @@ def split_components(name: str, attrs: str) -> list[str]:
     source = unicodedata.normalize("NFKC", f"{name} {attrs}")
     source = re.sub(r"#{2,}", "#", source)
     source = re.sub(r"(口味|份量|规格|主食|基底|自选一|自选二|赠品三选一|味由您定)[:：]?", "#", source)
-    source = re.sub(r"(?<!不)(?:包含|内含|含|搭配|配)(?=[\u4e00-\u9fffA-Za-z0-9])", "#", source)
     parts = re.split(r"[+#/／、,，|丨;；\n]+", source)
     out = []
     seen = set()
@@ -728,87 +354,70 @@ def split_components(name: str, attrs: str) -> list[str]:
         clean = re.sub(r"[【\[].*?[】\]]", "", part)
         clean = re.sub(r"[（(].*?[）)]", "", clean)
         clean = re.sub(r"^[#\s:：-]+|[#\s:：-]+$", "", clean).strip()
-        clean = re.sub(r"(套餐|组合|单人餐|双人餐|盖码饭|盖浇饭|木桶饭)$", "", clean).strip()
         norm = normalize(clean)
-        if len(norm) < 2 or norm in seen or _basic_category_from_text(clean, "", "") in {BASIC_OTHER, BASIC_ADDON, BASIC_STAPLE}:
+        if len(norm) < 2 or norm in seen:
             continue
         seen.add(norm)
         out.append(clean)
     return out[:8]
 
 
-def _has_combo_signal(text: str) -> bool:
-    if any(word in text for word in COMBO_WORDS):
-        return True
-    if re.search(r"[+＋&/／、,，|丨;；]", text):
-        return True
-    return bool(re.search(r"(?<!不)(?:包含|内含|含|搭配)(?=[\u4e00-\u9fffA-Za-z0-9])", text))
-
-
-def _is_service_text(name_text: str, text: str) -> bool:
-    if not text:
-        return False
-    if any(word in name_text for word in ("餐具", "发票", "包装费", "配送费", "打包盒", "补差价", "差价")):
-        return True
-    if any(word in name_text for word in ("勿点", "勿拍", "不要点", "不要拍", "温馨提示", "公告", "说明")):
-        return True
-    if any(word in name_text for word in ("福利", "收藏", "满减", "红包")):
-        food_signal = any(word in text for word in BEVERAGE_WORDS + RICE_NOODLE_WORDS + NOODLE_WORDS + SNACK_WORDS + ("肉", "鸡", "鸭", "鱼", "虾", "菜", "粉", "面", "饭", "汤", "粥", "蛋", "豆", "肠", "丸"))
-        return not food_signal
-    return False
-
-
-def _is_addon_text(name_text: str, text: str) -> bool:
-    if name_text in ADDON_EXACT_WORDS:
-        return True
-    if any(word in name_text for word in ADDON_WORDS):
-        return True
-    if re.fullmatch(r".{1,8}(酱|汁|蘸料|调料)", name_text):
-        return True
-    if any(word in text for word in ("小料", "加料", "配料")) and len(name_text) <= 8:
-        return True
-    return bool(re.fullmatch(r"(加|另加|单加|配)(鸡蛋|煎蛋|荷包蛋|卤蛋|茶叶蛋|火腿|香肠|肉|菜|粉|面|饭)", name_text))
-
-
-def _basic_category_from_text(name: str, attrs: str = "", category: str = "") -> str:
-    raw = unicodedata.normalize("NFKC", f"{category or ''} {name or ''} {attrs or ''}")
-    text = _compact_text(raw)
-    name_text = _compact_text(name)
-    category_text = _compact_text(category)
-    if _is_service_text(name_text, text):
-        return BASIC_OTHER
-    if _has_combo_signal(raw):
-        return BASIC_COMBO
-    if any(word in text for word in BEVERAGE_WORDS):
-        return BASIC_BEVERAGE
-    if _is_addon_text(name_text, text):
-        return BASIC_ADDON
-    if _is_plain_rice_text(name_text) or category_text == "主食":
-        return BASIC_STAPLE
-    if any(word in text for word in RICE_NOODLE_WORDS):
-        return BASIC_RICE_NOODLE
-    if any(word in text for word in PORRIDGE_WORDS):
-        return BASIC_PORRIDGE
-    if any(word in text for word in NOODLE_WORDS):
-        return BASIC_NOODLE
-    if "汤" in text and not any(word in text for word in ("汤饭", "汤面", "汤粉", "汤锅", "汤包")):
-        return BASIC_SNACK
-    if any(word in text for word in SNACK_WORDS):
-        return BASIC_SNACK
-    return BASIC_MAIN
-
-
-def classify_basic_category(name: str, attrs: str = "", category: str = "") -> str:
-    return _basic_category_from_text(name, attrs, category)
-
-
 def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
-    basic = classify_basic_category(name, attrs, category)
-    if basic == BASIC_COMBO:
+    text = unicodedata.normalize("NFKC", f"{category} {name} {attrs}")
+    name_text = unicodedata.normalize("NFKC", f"{category} {name}")
+    combo_words = [
+        "套餐",
+        "组合",
+        "双拼",
+        "三拼",
+        "四拼",
+        "多拼",
+        "自选",
+        "任选",
+        "多人餐",
+        "单人餐",
+        "大礼包",
+        "全家桶",
+        "+",
+    ]
+    if any(word in text for word in combo_words):
         return KIND_COMBO
-    if basic == BASIC_OTHER:
-        return KIND_OTHER
-    if basic in {BASIC_BEVERAGE, BASIC_ADDON, BASIC_STAPLE, BASIC_SNACK}:
+
+    snack_words = [
+        "可乐",
+        "雪碧",
+        "芬达",
+        "王老吉",
+        "冰红茶",
+        "矿泉水",
+        "椰子水",
+        "豆浆",
+        "果汁",
+        "柠檬茶",
+        "酸梅汤",
+        "饮品",
+        "饮料",
+        "小食",
+        "小吃",
+        "甜品",
+        "冰沙",
+        "酸奶",
+        "茶叶蛋",
+        "溏心蛋",
+        "煎蛋",
+        "荷包蛋",
+        "泡菜",
+        "蘸水",
+        "沙拉汁",
+    ]
+    if any(word in name_text for word in snack_words):
+        return KIND_SNACK
+    norm = normalize(name)
+    if re.search(r"(米饭|白饭|珍珠饭|杂粮饭|糙米饭)$", norm) and len(norm) <= 8:
+        return KIND_SNACK
+    if re.search(r"(酱|汁|蘸料)$", norm) and len(norm) <= 8:
+        return KIND_SNACK
+    if "汤" in text and not any(word in text for word in ["汤饭", "汤面", "汤粉", "汤锅", "汤包"]):
         return KIND_SNACK
     return KIND_SINGLE
 
@@ -816,28 +425,8 @@ def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
 def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     single = sum(1 for item in items if item.get("kind") == KIND_SINGLE)
     combo = sum(1 for item in items if item.get("kind") == KIND_COMBO)
-    snack = sum(1 for item in items if item.get("kind") == KIND_SNACK)
-    other = max(0, len(items) - single - combo - snack)
-    return {"single": single, "combo": combo, "snack": snack, "other": other, "total": len(items)}
-
-
-def basic_category_counts(items: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {
-        BASIC_COMBO: 0,
-        BASIC_BEVERAGE: 0,
-        BASIC_ADDON: 0,
-        BASIC_STAPLE: 0,
-        BASIC_RICE_NOODLE: 0,
-        BASIC_NOODLE: 0,
-        BASIC_PORRIDGE: 0,
-        BASIC_MAIN: 0,
-        BASIC_SNACK: 0,
-        BASIC_OTHER: 0,
-    }
-    for item in items:
-        category = str(item.get("basicCategory") or BASIC_OTHER)
-        counts[category] = counts.get(category, 0) + 1
-    return counts
+    snack = max(0, len(items) - single - combo)
+    return {"single": single, "combo": combo, "snack": snack, "total": len(items)}
 
 
 def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[str, Any]]:
@@ -865,7 +454,6 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             price = _price_number(row[candidate.price_col])
 
         attrs = " ".join(_collect_columns(row, candidate.name_extra_cols + candidate.attribute_cols))
-        basic_category = classify_basic_category(name, attrs, category)
         item = {
             "row": row_index + 1,
             "sheet": candidate.sheet_name,
@@ -873,7 +461,6 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             "name": name,
             "price": price,
             "kind": detect_kind(name, attrs, category),
-            "basicCategory": basic_category,
             "norm": norm,
             "components": split_components(name, attrs),
         }
@@ -918,95 +505,12 @@ def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-def menu_image_stats(items: list[dict[str, Any]], points_per_image: int = DEFAULT_POINTS_PER_IMAGE) -> dict[str, int]:
-    counts = kind_counts(items)
-    single = counts.get("single", 0)
-    combo = counts.get("combo", 0)
-    snack = counts.get("snack", 0)
-    other = counts.get("other", 0)
-    formal_total = single + combo + snack
-    points = formal_total * int(points_per_image)
-    return {
-        "singleImages": single,
-        "packageImages": combo,
-        "snackImages": snack,
-        "otherImages": other,
-        "snackOtherImages": snack + other,
-        "formalImages": formal_total,
-        "formalImageTotal": formal_total,
-        "officialImageTotal": formal_total,
-        "estimatedPoints": points,
-        "points": points,
-    }
-
-
 def guess_store(path: Path) -> str:
     stem = path.stem
     stem = re.sub(r"^运营数据[_-]?", "", stem)
     stem = re.sub(r"[（(]\d+[）)]$", "", stem)
     stem = re.sub(r"(活动及)?菜单方案$", "", stem)
     return stem.strip(" _-") or path.stem
-
-
-def _read_csv_menu(source: Path) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    errors: list[dict[str, str]] = []
-    for encoding in ("utf-8-sig", "gb18030", "utf-16"):
-        try:
-            return (
-                pd.read_csv(
-                    source,
-                    header=None,
-                    dtype=str,
-                    keep_default_na=False,
-                    encoding=encoding,
-                    sep=None,
-                    engine="python",
-                ).fillna(""),
-                [],
-            )
-        except UnicodeError as exc:
-            errors.append({"sheet": source.stem, "message": f"{encoding}: {exc}"})
-        except Exception as exc:
-            errors.append({"sheet": source.stem, "message": f"{encoding}: {exc}"})
-    return pd.DataFrame(), errors
-
-
-def _collect_all_candidates(source: Path) -> tuple[list[tuple[TableCandidate, pd.DataFrame]], list[dict[str, str]], list[str]]:
-    errors: list[dict[str, str]] = []
-    diagnostics: list[str] = []
-    all_candidates: list[tuple[TableCandidate, pd.DataFrame]] = []
-    if source.suffix.lower() == ".csv":
-        df, csv_errors = _read_csv_menu(source)
-        errors.extend(csv_errors)
-        if not df.empty:
-            candidates = _find_table_candidates(df, source.stem, 0)
-            if not candidates:
-                candidates = _find_inferred_table_candidates(df, source.stem, 0)
-            if not candidates:
-                diagnostics.append(f"{source.name}: 未找到菜品名/商品名称/菜单名等表头，也未能保守推断菜品列")
-            for candidate in candidates:
-                all_candidates.append((candidate, df))
-        return all_candidates, errors, diagnostics
-
-    with pd.ExcelFile(source) as workbook:
-        for sheet_index, sheet_name in enumerate(workbook.sheet_names):
-            try:
-                df = pd.read_excel(workbook, sheet_name=sheet_name, header=None, dtype=str).fillna("")
-            except Exception as exc:
-                errors.append({"sheet": sheet_name, "message": str(exc)})
-                continue
-            candidates = _find_table_candidates(df, sheet_name, sheet_index)
-            if not candidates:
-                candidates = _find_inferred_table_candidates(df, sheet_name, sheet_index)
-            if not candidates:
-                non_empty = sum(1 for row in df.head(40).itertuples(index=False) if any(clean_cell(value) for value in row))
-                if non_empty:
-                    diagnostics.append(f"{sheet_name}: 前40行未找到菜品名/商品名称/菜单名等表头，也未能保守推断菜品列")
-                else:
-                    diagnostics.append(f"{sheet_name}: 空表或前40行无有效内容")
-            for candidate in candidates:
-                all_candidates.append((candidate, df))
-    return all_candidates, errors, diagnostics
 
 
 def parse_menu(path: str | Path) -> dict[str, Any]:
@@ -1016,7 +520,17 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
     if not source.exists():
         raise FileNotFoundError(source)
 
-    all_candidates, errors, diagnostics = _collect_all_candidates(source)
+    errors: list[dict[str, str]] = []
+    all_candidates: list[tuple[TableCandidate, pd.DataFrame]] = []
+    with pd.ExcelFile(source) as workbook:
+        for sheet_index, sheet_name in enumerate(workbook.sheet_names):
+            try:
+                df = pd.read_excel(workbook, sheet_name=sheet_name, header=None, dtype=str).fillna("")
+            except Exception as exc:
+                errors.append({"sheet": sheet_name, "message": str(exc)})
+                continue
+            for candidate in _find_table_candidates(df, sheet_name, sheet_index):
+                all_candidates.append((candidate, df))
 
     selected = _select_candidates([candidate for candidate, _ in all_candidates])
     selected_ids = {(candidate.sheet_name, candidate.header_row, candidate.name_col) for candidate in selected}
@@ -1041,22 +555,13 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
     items = _dedupe_items(items)
     if not items:
         detail = "; ".join(f"{err['sheet']}: {err['message']}" for err in errors)
-        if all_candidates and not detail:
-            selected_summary = ", ".join(f"{candidate.sheet_name}@{candidate.header_row + 1}" for candidate in selected) or "无"
-            detail = f"识别到候选表头但有效菜品为空或菜品名列为空；候选={selected_summary}"
-        elif not detail:
-            detail = "; ".join(diagnostics[:6]) or "未找到可识别的菜单表头"
-        raise ValueError(f"未能从菜单中解析出菜品: {source.name} ({detail})")
+        raise ValueError(f"未能从菜单中解析出菜品: {source.name}" + (f" ({detail})" if detail else ""))
 
-    stats = menu_image_stats(items)
     return {
         "store": guess_store(source),
         "file": source.name,
         "count": len(items),
         "kindCounts": kind_counts(items),
-        "basicCategoryCounts": basic_category_counts(items),
-        "imageStats": stats,
-        **stats,
         "items": items,
         "sheets": parsed_sheets,
         "errors": errors,
@@ -1087,7 +592,6 @@ def audit_menus(directory: str | Path) -> dict[str, Any]:
                 "file": menu["file"],
                 "count": menu["count"],
                 "kindCounts": menu["kindCounts"],
-                "basicCategoryCounts": menu.get("basicCategoryCounts", {}),
                 "sheets": menu.get("sheets", []),
                 "errors": menu.get("errors", []),
             }
@@ -1110,8 +614,8 @@ def _format_sheet_summary(sheets: list[dict[str, Any]]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Audit local xls/xlsx/csv menu parsing.")
-    parser.add_argument("directory", nargs="?", default=str(DEFAULT_MENU_DIR), help="Directory containing menu xls/xlsx/csv files.")
+    parser = argparse.ArgumentParser(description="Audit local xls/xlsx menu parsing.")
+    parser.add_argument("directory", nargs="?", default=str(DEFAULT_MENU_DIR), help="Directory containing menu xls/xlsx files.")
     args = parser.parse_args(argv)
 
     try:
@@ -1122,16 +626,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for menu in audit["menus"]:
         counts = menu["kindCounts"]
-        basic_counts = menu.get("basicCategoryCounts", {})
-        basic_summary = ",".join(f"{key}:{value}" for key, value in basic_counts.items() if value)
         sheet_summary = _format_sheet_summary(menu.get("sheets", []))
         suffix = ""
         if menu.get("errors"):
             suffix = f" warnings={len(menu['errors'])}"
         print(
             f"OK  {menu['file']} | count={menu['count']} "
-            f"single={counts['single']} combo={counts['combo']} snack={counts['snack']} other={counts.get('other', 0)} "
-            f"| basic={basic_summary or 'none'} | {sheet_summary}{suffix}"
+            f"single={counts['single']} combo={counts['combo']} snack={counts['snack']} | {sheet_summary}{suffix}"
         )
     for error in audit["errors"]:
         print(f"ERR {error['file']} | {error['error']}")
