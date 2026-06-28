@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,51 @@ def test_admin_commission_settlement_api_releases_batches_and_marks_paid(tmp_pat
         conn.close()
 
 
+def test_admin_commission_settlement_paid_requires_finance_role(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "storage.sqlite3"
+    monkeypatch.setenv("STORAGE_DB_PATH", str(db_path))
+    monkeypatch.setenv("AUTH_EXPOSE_MOCK_OTP", "1")
+    monkeypatch.setenv("ENABLE_LOCAL_DEMO_ADMIN", "0")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "")
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+    login = _login(client)
+    _seed_commission(db_path)
+
+    _set_user_metadata(db_path, login["user"]["id"], {"role": "operator"})
+    release_response = client.post(
+        "/api/admin/actions/commissions/release-eligible",
+        json={"agentId": "agent_1", "minAgeDays": 7, "now": NOW},
+        headers=_auth_header(login["token"]),
+    )
+    assert _json_for_status(release_response, 200)["released"] == 2
+    create_response = client.post(
+        "/api/admin/actions/commission-settlements",
+        json={"agentId": "agent_1"},
+        headers=_auth_header(login["token"]),
+    )
+    settlement = _json_for_status(create_response, 200)["settlement"]
+
+    operator_paid_response = client.post(
+        f"/api/admin/actions/commission-settlements/{settlement['id']}/status",
+        json={"status": "paid", "paidAt": "2026-06-29T00:00:00+00:00"},
+        headers=_auth_header(login["token"]),
+    )
+    operator_paid_payload = _json_for_status(operator_paid_response, 403)
+    assert operator_paid_payload["code"] == "admin_permission_forbidden"
+
+    _set_user_metadata(db_path, login["user"]["id"], {"role": "finance"})
+    finance_paid_response = client.post(
+        f"/api/admin/actions/commission-settlements/{settlement['id']}/status",
+        json={"status": "paid", "paidAt": "2026-06-29T00:00:00+00:00"},
+        headers=_auth_header(login["token"]),
+    )
+    paid = _json_for_status(finance_paid_response, 200)["settlement"]
+    assert paid["status"] == "paid"
+    assert paid["paidAt"] == "2026-06-29T00:00:00+00:00"
+
+
 def _seed_commission(db_path: Path) -> None:
     conn = storage_db.init_db(db_path)
     try:
@@ -96,6 +142,36 @@ def _seed_commission(db_path: Path) -> None:
                 )
     finally:
         conn.close()
+
+
+def _set_user_metadata(db_path: Path, user_id: str, metadata: dict[str, Any]) -> None:
+    conn = storage_db.get_conn(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE users SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata), NOW, user_id),
+            )
+    finally:
+        conn.close()
+
+
+def _login(client: Any) -> dict[str, Any]:
+    request_response = client.post("/api/auth/request-otp", json={"phone": "13800138000"})
+    request_payload = _json_for_status(request_response, 200)
+    verify_response = client.post(
+        "/api/auth/verify-otp",
+        json={
+            "challengeId": request_payload["challengeId"],
+            "code": request_payload["mockCode"],
+        },
+    )
+    verify_payload = _json_for_status(verify_response, 200)
+    return {"user": verify_payload["user"], "token": verify_payload["session"]["token"]}
+
+
+def _auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _json_for_status(response: Any, expected_status: int) -> dict[str, Any]:

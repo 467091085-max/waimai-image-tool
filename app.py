@@ -716,7 +716,7 @@ def admin_write_authorized() -> bool:
     )
 
 
-def admin_withdrawal_status_authorized(status: str) -> bool:
+def admin_finance_action_authorized() -> bool:
     if configured_request_token(("ADMIN_API_TOKEN",), "X-Admin-Token"):
         return True
     if not session_token_from_request():
@@ -732,10 +732,33 @@ def admin_withdrawal_status_authorized(status: str) -> bool:
     finally:
         conn.close()
     user = session.get("user") if isinstance(session, dict) and isinstance(session.get("user"), dict) else None
-    roles = admin_user_role_values(user)
+    return bool(admin_user_role_values(user) & ADMIN_FINANCE_ROLE_VALUES)
+
+
+def admin_withdrawal_status_authorized(status: str) -> bool:
     if status == "paid":
-        return bool(roles & ADMIN_FINANCE_ROLE_VALUES)
+        return admin_finance_action_authorized()
+    if not session_token_from_request():
+        return (
+            env_truthy("ENABLE_LOCAL_DEMO_ADMIN", default=True)
+            and not os.environ.get("ADMIN_API_TOKEN", "").strip()
+            and is_local_request()
+        )
+
+    conn = product_db_conn()
+    try:
+        session = auth_service.get_session(conn, session_token_from_request())
+    finally:
+        conn.close()
+    user = session.get("user") if isinstance(session, dict) and isinstance(session.get("user"), dict) else None
+    roles = admin_user_role_values(user)
     return bool(roles & ADMIN_WITHDRAWAL_REVIEW_ROLE_VALUES)
+
+
+def admin_commission_settlement_status_authorized(status: str) -> bool:
+    if status == "paid":
+        return admin_finance_action_authorized()
+    return admin_write_authorized()
 
 
 def admin_actor_user_id() -> str:
@@ -4619,15 +4642,20 @@ def api_admin_create_commission_settlement():
 
 @app.post("/api/admin/actions/commission-settlements/<settlement_id>/status")
 def api_admin_update_commission_settlement_status(settlement_id: str):
-    if not admin_write_authorized():
-        return forbidden("管理写接口未授权", "admin_write_forbidden")
     payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in commission_settlement_service.SETTLEMENT_STATUSES:
+        if not admin_write_authorized():
+            return forbidden("管理写接口未授权", "admin_write_forbidden")
+        return jsonify({"error": "invalid commission settlement status", "code": "invalid_commission_settlement_input"}), 400
+    if not admin_commission_settlement_status_authorized(status):
+        return forbidden("佣金结算操作权限不足", "admin_permission_forbidden")
     conn = product_db_conn()
     try:
         settlement = commission_settlement_service.update_commission_settlement_status(
             conn,
             settlement_id,
-            str(payload.get("status") or ""),
+            status,
             failure_reason=str(payload.get("failureReason") or payload.get("failure_reason") or ""),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             paid_at=str(payload.get("paidAt") or payload.get("paid_at") or "") or None,
