@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -136,6 +138,48 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
     ]
 
     assert missing == [], "Missing product API endpoints: " + ", ".join(missing)
+
+
+def test_upload_menu_persists_original_file_to_object_storage_and_db(
+    product_api: ProductApiFixture,
+) -> None:
+    app_module = importlib.import_module("app")
+    menu_summary = {
+        "file": "menu.xlsx",
+        "store": "测试门店",
+        "count": 1,
+        "kindCounts": {"single": 1, "combo": 0, "snack": 0, "total": 1},
+        "items": [{"row": 1, "name": "辣椒炒肉盖码饭"}],
+    }
+
+    with mock.patch.object(app_module, "parse_menu", return_value=menu_summary):
+        response = product_api.client.post(
+            "/api/upload-menu",
+            data={"file": (io.BytesIO(b"fake-xlsx-bytes"), "menu.xlsx")},
+            content_type="multipart/form-data",
+        )
+
+    payload = _json_for_status(response, 200, "POST /api/upload-menu")
+    assert payload["ok"] is True
+    assert payload["menuUploadId"].startswith("menu_")
+    assert payload["menu"]["store"] == "测试门店"
+    assert "items" not in payload["menu"]
+    assert "objectKey" not in json.dumps(payload)
+
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        row = conn.execute("SELECT * FROM menu_uploads WHERE id = ?", (payload["menuUploadId"],)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["store_name"] == "测试门店"
+    assert row["original_filename"] == "menu.xlsx"
+    assert row["object_key"].startswith("menus/")
+    assert row["status"] == "parsed"
+    assert row["file_size"] == len(b"fake-xlsx-bytes")
+
+    storage = object_storage_service.ObjectStorageService(product_api.object_store_dir)
+    assert storage.read_bytes(row["object_key"]) == b"fake-xlsx-bytes"
 
 
 def test_ops_readiness_reports_storage_and_generation_queue(

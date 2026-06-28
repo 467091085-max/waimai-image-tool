@@ -2815,6 +2815,53 @@ def record_export_package(
     return package_id
 
 
+def persist_menu_upload(
+    local_path: Path,
+    *,
+    original_filename: str,
+    content_type: str,
+    menu: dict[str, Any],
+) -> str:
+    storage = object_storage_service.get_object_storage_service()
+    object_key = storage.put_file(
+        local_path,
+        prefix=object_storage_service.MENUS_PREFIX,
+        filename=local_path.name,
+    )
+    menu_upload_id = storage_db.new_id("menu")
+    now = storage_db.utc_now()
+    raw = local_path.read_bytes()
+    menu_summary = {key: value for key, value in menu.items() if key != "items"}
+    conn = product_db_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO menu_uploads (
+                    id, store_name, original_filename, object_key, content_type,
+                    file_size, sha256, status, parsed_summary_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    menu_upload_id,
+                    str(menu.get("store") or ""),
+                    str(original_filename or local_path.name),
+                    object_key,
+                    str(content_type or ""),
+                    local_path.stat().st_size,
+                    hashlib.sha256(raw).hexdigest(),
+                    "parsed",
+                    storage_db.json_dumps(menu_summary),
+                    now,
+                    now,
+                ),
+            )
+    finally:
+        conn.close()
+    return menu_upload_id
+
+
 def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str, Any]) -> None:
     candidate["aiProvider"] = str(metadata.get("provider") or candidate.get("aiProvider") or "")
     candidate["generationStatus"] = str(metadata.get("status") or "")
@@ -4942,7 +4989,30 @@ def upload_menu():
     except Exception as exc:
         target.unlink(missing_ok=True)
         return jsonify({"error": f"菜单读取失败：{exc}"}), 400
-    return jsonify({"ok": True, "file": target.name, "menu": {k: v for k, v in menu.items() if k != "items"}})
+    try:
+        menu_upload_id = persist_menu_upload(
+            target,
+            original_filename=str(file.filename or target.name),
+            content_type=str(file.mimetype or ""),
+            menu=menu,
+        )
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return jsonify(
+            {
+                "error": "菜单文件存储失败，请检查对象存储配置",
+                "code": "menu_object_storage_failed",
+                "detail": type(exc).__name__,
+            }
+        ), 503
+    return jsonify(
+        {
+            "ok": True,
+            "file": target.name,
+            "menuUploadId": menu_upload_id,
+            "menu": {k: v for k, v in menu.items() if k != "items"},
+        }
+    )
 
 
 @app.post("/api/upload-library")
