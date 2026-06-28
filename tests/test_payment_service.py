@@ -2,11 +2,54 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from urllib.parse import parse_qs, urlparse
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 import payment_service as payments
 
 
 SECRET = "local-secret"
+
+
+def _alipay_key_env() -> dict[str, str]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    return {
+        "APP_ENV": "production",
+        "PAYMENT_PROVIDER": "alipay",
+        "ENABLE_LOCAL_DEMO_BILLING": "false",
+        "ALIPAY_APP_ID": "2021000000000000",
+        "ALIPAY_PRIVATE_KEY": private_pem,
+        "ALIPAY_PUBLIC_KEY": public_pem,
+        "PAYMENT_NOTIFY_URL": "https://example.test/api/payments/alipay/notify",
+        "ALIPAY_GATEWAY_URL": "https://example.test/alipay",
+    }
+
+
+def _signed_alipay_payload(env: dict[str, str], provider_order_id: str, status: str = "TRADE_SUCCESS") -> dict[str, str]:
+    payload = {
+        "app_id": env["ALIPAY_APP_ID"],
+        "out_trade_no": provider_order_id,
+        "trade_no": "2026062922000000000001",
+        "trade_status": status,
+        "total_amount": "49.00",
+        "sign_type": "RSA2",
+    }
+    payload["sign"] = payments._alipay_rsa2_sign(  # type: ignore[attr-defined]
+        payments._alipay_signing_string(payload),  # type: ignore[attr-defined]
+        payments._load_alipay_private_key(env),  # type: ignore[attr-defined]
+    )
+    return payload
 
 
 class PaymentServiceTests(unittest.TestCase):
@@ -172,25 +215,83 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertIn("wechat_merchant_id", readiness["missingConfig"])
         self.assertTrue(any(item["key"] == "wechat_api_v3_key" for item in readiness["requiredConfig"]))
 
-    def test_alipay_readiness_with_credentials_still_requires_real_adapter(self) -> None:
-        readiness = payments.assess_payment_provider_readiness(
-            {
-                "APP_ENV": "production",
-                "PAYMENT_PROVIDER": "alipay",
-                "ENABLE_LOCAL_DEMO_BILLING": "false",
-                "ALIPAY_APP_ID": "app-id",
-                "ALIPAY_PRIVATE_KEY": "private-key",
-                "ALIPAY_PUBLIC_KEY": "public-key",
-                "PAYMENT_NOTIFY_URL": "https://example.test/payments/alipay/notify",
-            }
-        )
+    def test_alipay_readiness_accepts_complete_credentials_and_adapter(self) -> None:
+        readiness = payments.assess_payment_provider_readiness(_alipay_key_env())
 
-        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["ready"])
         self.assertEqual(readiness["provider"], "alipay")
         self.assertEqual(readiness["missingConfig"], [])
         self.assertNotIn("payment_provider_credentials_required", readiness["errors"])
-        self.assertIn("alipay_payment_adapter_not_implemented", readiness["errors"])
-        self.assertIn("real_payment_callback_signature_verification_not_implemented", readiness["errors"])
+        self.assertEqual(readiness["blockingIssues"], [])
+        self.assertIn("alipay_page_pay_adapter_enabled", readiness["warnings"])
+
+    def test_alipay_checkout_generates_signed_page_pay_url(self) -> None:
+        env = _alipay_key_env()
+        order = payments.create_payment_order(
+            self.conn,
+            user_id="u1",
+            amount_cents=4900,
+            points=490,
+            provider="alipay",
+            order_id="alipay-order-1",
+        )
+
+        checkout = payments.create_payment_checkout(order, env)
+        parsed = urlparse(checkout["payment_url"])
+        query = parse_qs(parsed.query)
+
+        self.assertEqual(parsed.scheme + "://" + parsed.netloc + parsed.path, env["ALIPAY_GATEWAY_URL"])
+        self.assertEqual(query["method"], ["alipay.trade.page.pay"])
+        self.assertEqual(query["sign_type"], ["RSA2"])
+        self.assertEqual(query["notify_url"], [env["PAYMENT_NOTIFY_URL"]])
+        self.assertEqual(checkout["provider_order_id"], "alipay-order-1")
+
+    def test_alipay_callback_signature_marks_order_paid(self) -> None:
+        env = _alipay_key_env()
+        order = payments.create_payment_order(
+            self.conn,
+            user_id="u1",
+            amount_cents=4900,
+            points=490,
+            provider="alipay",
+            order_id="alipay-order-1",
+        )
+        payload = _signed_alipay_payload(env, order["provider_order_id"])
+
+        result = payments.handle_payment_callback(
+            self.conn,
+            "alipay",
+            order["provider_order_id"],
+            payments.alipay_callback_event_type(payload),
+            payload,
+            secret=env["ALIPAY_PUBLIC_KEY"],
+        )
+
+        self.assertEqual(result["status"], "paid")
+        self.assertEqual(result["points_to_credit"], 490)
+
+    def test_alipay_callback_rejects_invalid_signature(self) -> None:
+        env = _alipay_key_env()
+        order = payments.create_payment_order(
+            self.conn,
+            user_id="u1",
+            amount_cents=4900,
+            points=490,
+            provider="alipay",
+            order_id="alipay-order-1",
+        )
+        payload = _signed_alipay_payload(env, order["provider_order_id"])
+        payload["total_amount"] = "1.00"
+
+        with self.assertRaises(payments.PaymentSignatureError):
+            payments.handle_payment_callback(
+                self.conn,
+                "alipay",
+                order["provider_order_id"],
+                payments.alipay_callback_event_type(payload),
+                payload,
+                secret=env["ALIPAY_PUBLIC_KEY"],
+            )
 
     def test_real_provider_checkout_guard_fails_closed_until_adapter_exists(self) -> None:
         with self.assertRaises(payments.PaymentAdapterNotImplemented) as context:

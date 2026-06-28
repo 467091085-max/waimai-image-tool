@@ -35,19 +35,24 @@
 截至当前 worktree，本地 MVP 已补齐以下产品化子能力，但都不等同于生产上线：
 
 - 后台 lists 明细：`/api/admin/lists/*` 已覆盖生成任务、资产访问、风控事件、佣金结算、订单等明细，后台前端已优先读取既有列表，再回退到 dashboard 汇总；`risk-events` 后端资源已可按 decision/riskLevel/eventType/userId/search/时间分页查询，前端接入另排。
-- AI 资产审核动作：`/api/admin/actions/ai-assets/<asset_id>/status` 支持 approve/reject/disable 和审核备注，写入后台操作审计；仍缺完整人工审核队列、角色权限和运营工作流。
+- AI 资产审核动作：`/api/admin/actions/ai-assets/<asset_id>/status` 支持 approve/reject/disable 和审核备注，写入后台操作审计；approve/reject 允许 reviewer/operator/admin，disable 限制为 admin/super_admin/owner；仍缺完整人工审核队列和运营工作流。
 - 生成队列错误语义：正式出图前端走 `/api/generation-jobs` 异步任务；队列满返回 429 `generation_queue_full`，队列关闭或不可用返回 503 `generation_queue_unavailable`。
 - 资产访问筛选：`asset-access` 明细支持 `status=denied/allowed` 等运营筛选口径，便于排查盗链、签名失败和拒绝访问。
 - 风控日志筛选：`risk-events` 明细支持 `decision/riskLevel/eventType/userId/search/createdFrom/createdTo/sort/order/limit/offset`，用于后台排查注册、邀请、下载和生成相关风险判定。
+- 风控处置权限：`/api/admin/actions/risk` 支持 allow/review/deny 写入审计；allow/review 允许 operator/risk/admin 等角色，deny 限制为 risk/security/admin/owner 等角色，避免普通运营直接做拦截性处置。
+- 生产部署配置清单：`/api/ops/deployment-config` 已上线，按 runtime、AI 生图、对象存储、支付、队列分组输出缺失 env、阻塞项、推荐值和敏感字段脱敏状态；Render 线上当前仍缺 `TENCENT_TOKENHUB_API_KEY`、COS/object signing env、支付 provider/webhook、`ADMIN_API_TOKEN` 和 `APP_ENV`。
+- 真实支付 fail-closed 与支付宝本地闭环：`/api/payments/orders` 在凭证不完整时返回 503，不创建 pending 脏订单；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账；微信支付仍在 adapter 未接入时 fail-closed。
+- 代理提现审批：代理可提交提现申请，后台可将提现状态更新为 approved/rejected/paid/canceled；每次后台状态变更会写入 `admin_audit_logs`，记录 actor、原因、金额、代理和状态迁移；paid 打款确认需要 finance/admin/owner 等财务权限，operator 只能做审批类状态。
+- 佣金结算权限：后台可释放 eligible 佣金并创建结算批次；结算 paid 打款确认需要 finance/admin/owner 等财务权限，operator 可创建/推进结算但不能确认 paid。
 - 契约测试保护：已有测试锁定前台不得回退到“真实图库/免费样图预览”等旧口径，正式出图必须走异步任务，后台必须保留 lists 明细接入。
 
 仍未完成或未接真实外部服务：
 
-- 手机短信、微信登录、微信/支付宝真实支付、退款补单和财务对账。
+- 手机短信、微信登录、微信支付、支付宝真实商户联调、退款补单和财务对账。
 - PostgreSQL 迁移、生产迁移脚本、备份和索引复核。
 - 私有 COS/OSS/R2 全链路、低清/水印预览、Redis/DB 原子一次性下载 token。
 - Redis/RQ/Celery 等跨进程队列、任务恢复、失败重试和队列监控。
-- 代理提现、实名/主体认证、税务信息、真实打款和完整后台权限。
+- 实名/主体认证、税务信息、真实打款、提现财务复核、完整风控工作流和完整后台权限矩阵。
 
 ### 详细计划
 
@@ -89,6 +94,8 @@
    - 微信/支付宝支付。
    - 支付回调校验。
    - 充值到账、退款、异常补单。
+
+当前本地 MVP 已识别 `wechat/alipay` provider；支付宝电脑网站支付已支持 RSA2 签名下单链接、异步通知验签、订单 paid 状态流转和积分入账。仍未完成支付宝真实商户联调、退款 API、补单、财务对账；微信支付 adapter 仍未接入，凭证完整时也会 fail-closed。
 
 8. 代理机制
    - 代理用官网价格对外销售。
@@ -434,7 +441,7 @@ C 端建议只返积分，不返现金。
 - W4 已完成本地 `/api/generation-jobs` 前端轮询、timeout/stale 状态展示和队列 429/503 错误语义；生产队列替换仍未完成。
 - W7 已完成后台 lists 明细接入和 AI 资产状态 API；完整 CRUD、权限和人工审核台仍未完成。
 - W8 已完成本地签名 token、下载守卫和资产访问审计；私有桶全链路、低清/水印预览和 Redis/DB 原子 token 仍未完成。
-- W10 已补契约测试保护前台文案、正式出图异步任务和后台 lists 接入；CI、监控、告警、备份仍未完成。
+- W10 已补契约测试保护前台文案、正式出图异步任务、后台 lists 接入和生产部署配置清单；CI、监控、告警、备份仍未完成。
 
 ### 文件责任边界
 

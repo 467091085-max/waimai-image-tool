@@ -28,8 +28,20 @@ services:
         value: ap-guangzhou
       - key: OBJECT_STORAGE_PREFIX
         value: app-objects
+      - key: PAYMENT_PROVIDER
+        value: alipay
       - key: PAYMENT_WEBHOOK_SECRET
         generateValue: true
+      - key: PAYMENT_NOTIFY_URL
+        value: https://waimai-image-tool-1.onrender.com/api/payments/alipay/notify
+      - key: PAYMENT_RETURN_URL
+        value: https://waimai-image-tool-1.onrender.com/
+      - key: ALIPAY_APP_ID
+        sync: false
+      - key: ALIPAY_PRIVATE_KEY
+        sync: false
+      - key: ALIPAY_PUBLIC_KEY
+        sync: false
       - key: ADMIN_API_TOKEN
         sync: false
       - key: TENCENT_HUNYUAN_ENABLED

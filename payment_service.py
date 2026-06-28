@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -12,6 +13,9 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 import payment_rules
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 
 STATUS_PENDING = payment_rules.STATUS_PENDING
@@ -118,6 +122,15 @@ PAYMENT_PROVIDER_REQUIRED_CONFIG = {
         },
     ),
 }
+ALIPAY_GATEWAY_URL = "https://openapi.alipay.com/gateway.do"
+ALIPAY_SANDBOX_GATEWAY_URL = "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+ALIPAY_PRIVATE_KEY_ENV_NAMES = ("ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_PATH")
+ALIPAY_PUBLIC_KEY_ENV_NAMES = ("ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_PATH")
+ALIPAY_NOTIFY_URL_ENV_NAMES = ("PAYMENT_NOTIFY_URL", "PAYMENT_CALLBACK_URL", "ALIPAY_NOTIFY_URL")
+ALIPAY_RETURN_URL_ENV_NAMES = ("PAYMENT_RETURN_URL", "ALIPAY_RETURN_URL")
+ALIPAY_SUCCESS_STATUSES = frozenset({"TRADE_SUCCESS", "TRADE_FINISHED"})
+ALIPAY_CLOSED_STATUSES = frozenset({"TRADE_CLOSED"})
+ALIPAY_PENDING_STATUSES = frozenset({"WAIT_BUYER_PAY"})
 
 
 class PaymentServiceError(Exception):
@@ -156,6 +169,10 @@ class PaymentProviderUnavailable(PaymentServiceError):
 
 class PaymentAdapterNotImplemented(PaymentProviderUnavailable):
     code = "payment_adapter_not_implemented"
+
+
+class PaymentProviderConfigError(PaymentProviderUnavailable):
+    code = "payment_provider_config_error"
 
 
 class FakePaymentProviderForbidden(PaymentServiceError):
@@ -211,7 +228,11 @@ def ensure_payment_checkout_available(provider: str, env: Mapping[str, str] | No
     }
     if missing_config:
         raise PaymentProviderUnavailable("真实支付 provider 配置不完整", **details)
-    raise PaymentAdapterNotImplemented("真实支付 provider adapter 尚未接入", **details)
+    if readiness.get("ready"):
+        return
+    if clean_provider == "wechat":
+        raise PaymentAdapterNotImplemented("真实支付 provider adapter 尚未接入", **details)
+    raise PaymentProviderUnavailable("真实支付 provider 不可用", **details)
 
 
 def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -257,9 +278,19 @@ def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> d
         missing_config = _missing_required_config(values, required_config)
         if missing_config:
             errors.append("payment_provider_credentials_required")
-        errors.append(f"{provider}_payment_adapter_not_implemented")
-        errors.append("real_payment_callback_signature_verification_not_implemented")
-        warnings.append("real_payment_credentials_do_not_make_current_adapter_production_ready")
+        if provider == "wechat":
+            errors.append("wechat_payment_adapter_not_implemented")
+            errors.append("real_payment_callback_signature_verification_not_implemented")
+            warnings.append("real_payment_credentials_do_not_make_current_adapter_production_ready")
+        elif not missing_config:
+            try:
+                _load_alipay_private_key(values)
+                _load_alipay_public_key(values)
+            except PaymentProviderConfigError as exc:
+                errors.append("alipay_payment_key_invalid")
+                warnings.append(str(exc.message))
+            else:
+                warnings.append("alipay_page_pay_adapter_enabled")
     else:
         mode = "unknown"
         required_config = _required_config_items(PAYMENT_PROVIDER_SELECTION_CONFIG)
@@ -344,6 +375,25 @@ def create_payment_order(
         return _order_payload(order, idempotent=False)
 
 
+def attach_payment_provider_payload(
+    conn: sqlite3.Connection,
+    order_id: str,
+    provider_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    init_payment_schema(conn)
+    order_id = _clean_text(order_id, "order_id")
+    payload_json = _json(dict(provider_payload))
+    with _transaction(conn):
+        conn.execute(
+            "UPDATE payment_orders SET provider_payload_json = ?, updated_at = ? WHERE order_id = ?",
+            (payload_json, _now(), order_id),
+        )
+        order = _fetch_order(conn, order_id)
+        if order is None:
+            raise PaymentOrderNotFound("Payment order not found", orderId=order_id)
+        return _order_payload(order, idempotent=False)
+
+
 def fake_payment_url(order: dict[str, Any] | sqlite3.Row) -> str:
     payload = _coerce_mapping(order)
     provider_order_id = _clean_text(
@@ -367,13 +417,43 @@ def payment_instructions(order: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:
     provider_order_id = str(
         payload.get("provider_order_id") or payload.get("providerOrderId") or payload.get("order_id") or ""
     )
-    return {
+    instructions = {
         "provider": provider,
         "provider_order_id": provider_order_id,
         "providerOrderId": provider_order_id,
         "payment_url": fake_payment_url(payload) if provider == "fake" else "",
         "paymentUrl": fake_payment_url(payload) if provider == "fake" else "",
     }
+    provider_payload = _provider_payload(payload)
+    if provider == "alipay" and provider_payload:
+        payment_url = str(provider_payload.get("payment_url") or provider_payload.get("paymentUrl") or "")
+        instructions.update(
+            {
+                "payment_url": payment_url,
+                "paymentUrl": payment_url,
+                "method": str(provider_payload.get("method") or "GET"),
+                "gateway": str(provider_payload.get("gateway") or ALIPAY_GATEWAY_URL),
+                "checkout": provider_payload,
+            }
+        )
+    return instructions
+
+
+def create_payment_checkout(
+    order: dict[str, Any] | sqlite3.Row,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    payload = _coerce_mapping(order)
+    provider = _clean_provider(str(payload.get("provider") or "fake"))
+    if provider == "fake":
+        return payment_instructions(payload)
+    if provider == "alipay":
+        return _create_alipay_page_pay_checkout(payload, os.environ if env is None else env)
+    raise PaymentAdapterNotImplemented(
+        "真实支付 provider adapter 尚未接入",
+        provider=provider,
+        blockingIssues=[f"{provider}_payment_adapter_not_implemented"],
+    )
 
 
 def fake_callback_signature(
@@ -511,6 +591,7 @@ def handle_payment_callback(
 
 
 def _order_payload(order: dict[str, Any], *, idempotent: bool) -> dict[str, Any]:
+    provider_payload = _json_loads(str(order.get("provider_payload_json") or "{}"))
     payload = {
         "ok": True,
         "idempotent": idempotent,
@@ -537,6 +618,8 @@ def _order_payload(order: dict[str, Any], *, idempotent: bool) -> dict[str, Any]
         "closedAt": order["closed_at"],
         "refunded_at": order["refunded_at"],
         "refundedAt": order["refunded_at"],
+        "provider_payload": provider_payload,
+        "providerPayload": provider_payload,
     }
     if order["provider"] == "fake":
         payload["payment_url"] = fake_payment_url(payload)
@@ -662,6 +745,7 @@ def _target_status(event_type: str, payload: dict[str, Any]) -> str:
         "pay_success": STATUS_PAID,
         "payment_success": STATUS_PAID,
         "paid": STATUS_PAID,
+        "pending": STATUS_PENDING,
         "success": STATUS_PAID,
         "succeeded": STATUS_PAID,
         "pay_failed": STATUS_FAILED,
@@ -714,6 +798,9 @@ def _verify_callback_signature(
     payload: dict[str, Any],
     secret: str,
 ) -> None:
+    if provider == "alipay":
+        _verify_alipay_callback_signature(payload, secret)
+        return
     if provider != "fake":
         raise InvalidPaymentInput("Unsupported payment provider", provider=provider)
     if not secret:
@@ -729,6 +816,213 @@ def _verify_callback_signature(
     }
     if not any(hmac.compare_digest(signature.lower(), item.lower()) for item in expected):
         raise PaymentSignatureError("Invalid payment callback signature", provider=provider)
+
+
+def _create_alipay_page_pay_checkout(order: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+    app_id = _first_env_value(env, ("ALIPAY_APP_ID",))
+    notify_url = _first_env_value(env, ALIPAY_NOTIFY_URL_ENV_NAMES)
+    return_url = _first_env_value(env, ALIPAY_RETURN_URL_ENV_NAMES)
+    gateway = _alipay_gateway_url(env)
+    private_key = _load_alipay_private_key(env)
+    provider_order_id = _clean_text(
+        str(order.get("provider_order_id") or order.get("providerOrderId") or order.get("order_id") or ""),
+        "provider_order_id",
+    )
+    amount_cents = _positive_int(int(order.get("amount_cents") or order.get("amountCents") or 0), "amount_cents")
+    points = _positive_int(int(order.get("points") or 0), "points")
+    biz_content = _json(
+        {
+            "body": f"{points} points",
+            "out_trade_no": provider_order_id,
+            "product_code": "FAST_INSTANT_TRADE_PAY",
+            "subject": f"外卖菜品图积分充值 {points} 积分",
+            "total_amount": _alipay_amount(amount_cents),
+        }
+    )
+    params: dict[str, str] = {
+        "app_id": app_id,
+        "method": "alipay.trade.page.pay",
+        "format": "JSON",
+        "charset": "utf-8",
+        "sign_type": "RSA2",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+        "notify_url": notify_url,
+        "biz_content": biz_content,
+    }
+    if return_url:
+        params["return_url"] = return_url
+    params["sign"] = _alipay_rsa2_sign(_alipay_signing_string(params), private_key)
+    payment_url = f"{gateway}?{urlencode(params)}"
+    return {
+        "provider": "alipay",
+        "provider_order_id": provider_order_id,
+        "providerOrderId": provider_order_id,
+        "payment_url": payment_url,
+        "paymentUrl": payment_url,
+        "gateway": gateway,
+        "method": "GET",
+        "apiMethod": "alipay.trade.page.pay",
+        "signType": "RSA2",
+        "amountCents": amount_cents,
+        "points": points,
+    }
+
+
+def alipay_callback_event_type(payload: Mapping[str, Any]) -> str:
+    status = str(payload.get("trade_status") or payload.get("tradeStatus") or "").strip().upper()
+    if status in ALIPAY_SUCCESS_STATUSES:
+        return "pay_success"
+    if status in ALIPAY_CLOSED_STATUSES:
+        return "closed"
+    if status in ALIPAY_PENDING_STATUSES:
+        return "pending"
+    raise InvalidPaymentInput("Unsupported Alipay trade status", tradeStatus=status)
+
+
+def alipay_provider_order_id(payload: Mapping[str, Any]) -> str:
+    return _clean_text(str(payload.get("out_trade_no") or payload.get("outTradeNo") or ""), "out_trade_no")
+
+
+def alipay_public_key(env: Mapping[str, str] | None = None) -> str:
+    values = os.environ if env is None else env
+    _load_alipay_public_key(values)
+    return _read_env_or_file(values, ALIPAY_PUBLIC_KEY_ENV_NAMES, "alipay_public_key")
+
+
+def _verify_alipay_callback_signature(payload: Mapping[str, Any], public_key_text: str) -> None:
+    if not public_key_text:
+        raise PaymentSignatureError("Missing Alipay public key", provider="alipay")
+    signature = str(payload.get("sign") or "").strip()
+    if not signature:
+        raise PaymentSignatureError("Missing payment callback signature", provider="alipay")
+    public_key = _deserialize_alipay_public_key(public_key_text)
+    candidates = {
+        _alipay_signing_string(payload, exclude_sign_type=False),
+        _alipay_signing_string(payload, exclude_sign_type=True),
+    }
+    signature_bytes = base64.b64decode(signature)
+    for message in candidates:
+        try:
+            public_key.verify(
+                signature_bytes,
+                message.encode("utf-8"),
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )
+            return
+        except InvalidSignature:
+            continue
+    raise PaymentSignatureError("Invalid payment callback signature", provider="alipay")
+
+
+def _alipay_rsa2_sign(message: str, private_key: rsa.RSAPrivateKey) -> str:
+    signature = private_key.sign(
+        message.encode("utf-8"),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+    return base64.b64encode(signature).decode("ascii")
+
+
+def _alipay_signing_string(params: Mapping[str, Any], *, exclude_sign_type: bool = False) -> str:
+    pairs: list[tuple[str, str]] = []
+    for key, value in params.items():
+        if key == "sign" or (exclude_sign_type and key == "sign_type"):
+            continue
+        if value is None:
+            continue
+        text = str(value)
+        if text == "":
+            continue
+        pairs.append((str(key), text))
+    return "&".join(f"{key}={value}" for key, value in sorted(pairs, key=lambda item: item[0]))
+
+
+def _load_alipay_private_key(env: Mapping[str, str]) -> rsa.RSAPrivateKey:
+    try:
+        return serialization.load_pem_private_key(
+            _normalize_private_pem(_read_env_or_file(env, ALIPAY_PRIVATE_KEY_ENV_NAMES, "alipay_private_key")).encode("utf-8"),
+            password=None,
+        )
+    except Exception as exc:
+        raise PaymentProviderConfigError("支付宝私钥无效", provider="alipay", key="alipay_private_key") from exc
+
+
+def _load_alipay_public_key(env: Mapping[str, str]):
+    return _deserialize_alipay_public_key(_read_env_or_file(env, ALIPAY_PUBLIC_KEY_ENV_NAMES, "alipay_public_key"))
+
+
+def _deserialize_alipay_public_key(value: str):
+    try:
+        return serialization.load_pem_public_key(_normalize_public_pem(value).encode("utf-8"))
+    except Exception as exc:
+        raise PaymentProviderConfigError("支付宝公钥无效", provider="alipay", key="alipay_public_key") from exc
+
+
+def _read_env_or_file(env: Mapping[str, str], names: tuple[str, ...], key: str) -> str:
+    direct = _env_value(env, names[0])
+    if direct:
+        return direct
+    if len(names) > 1:
+        path = _env_value(env, names[1])
+        if path:
+            try:
+                return open(path, "r", encoding="utf-8").read().strip()
+            except OSError as exc:
+                raise PaymentProviderConfigError(f"{key} 文件不可读", provider="alipay", key=key, path=path) from exc
+    raise PaymentProviderConfigError(f"{key} 未配置", provider="alipay", key=key)
+
+
+def _normalize_public_pem(value: str) -> str:
+    text = str(value or "").strip().replace("\\n", "\n")
+    if "-----BEGIN" in text:
+        return text
+    compact = "".join(text.split())
+    if not compact:
+        return text
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(
+        compact[index : index + 64] for index in range(0, len(compact), 64)
+    ) + "\n-----END PUBLIC KEY-----"
+
+
+def _normalize_private_pem(value: str) -> str:
+    text = str(value or "").strip().replace("\\n", "\n")
+    if "-----BEGIN" in text:
+        return text
+    compact = "".join(text.split())
+    if not compact:
+        return text
+    return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(
+        compact[index : index + 64] for index in range(0, len(compact), 64)
+    ) + "\n-----END PRIVATE KEY-----"
+
+
+def _alipay_gateway_url(env: Mapping[str, str]) -> str:
+    explicit = _env_value(env, "ALIPAY_GATEWAY_URL")
+    if explicit:
+        return explicit
+    if _env_truthy(env.get("ALIPAY_SANDBOX"), default=False):
+        return ALIPAY_SANDBOX_GATEWAY_URL
+    return ALIPAY_GATEWAY_URL
+
+
+def _alipay_amount(amount_cents: int) -> str:
+    cents = _positive_int(amount_cents, "amount_cents")
+    return f"{cents // 100}.{cents % 100:02d}"
+
+
+def _provider_payload(order: Mapping[str, Any]) -> dict[str, Any]:
+    value = order.get("provider_payload")
+    if isinstance(value, dict):
+        return dict(value)
+    value = order.get("providerPayload")
+    if isinstance(value, dict):
+        return dict(value)
+    value = order.get("provider_payload_json")
+    if value is not None:
+        return _json_loads(str(value))
+    return {}
 
 
 def _fake_signature_messages(
@@ -773,6 +1067,14 @@ def _payload_dict(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise InvalidPaymentInput("Payment callback payload must be a dict")
     return dict(payload)
+
+
+def _json_loads(value: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _coerce_mapping(order: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:

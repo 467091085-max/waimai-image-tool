@@ -38,7 +38,7 @@ import payment_service
 import sms_service
 import storage_db
 import withdrawal_service
-from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 from admin_panel import AdminDependencies, create_admin_blueprint
@@ -1271,10 +1271,14 @@ def deployment_config_report() -> dict[str, Any]:
             "payment_provider",
             ("PAYMENT_PROVIDER",),
             required=live_env,
-            recommended="wechat",
+            recommended="alipay",
             allowed_values=tuple(sorted(payment_service.REAL_PAYMENT_PROVIDERS)),
         ),
-        deployment_config_item("payment_webhook_secret", ("PAYMENT_WEBHOOK_SECRET",), required=live_env),
+        deployment_config_item(
+            "payment_webhook_secret",
+            ("PAYMENT_WEBHOOK_SECRET",),
+            required=live_env and payments.get("provider") not in {"alipay", "wechat"},
+        ),
     ]
     for required_config in payments.get("requiredConfig", []):
         env_names = tuple(str(name) for name in required_config.get("env", ()) if str(name))
@@ -4602,6 +4606,9 @@ def api_create_payment_order():
                 idempotency_key=str(payload.get("idempotencyKey") or payload.get("idempotency_key") or "").strip()
                 or None,
             )
+            if order["provider"] != "fake":
+                checkout = payment_service.create_payment_checkout(order, os.environ)
+                order = payment_service.attach_payment_provider_payload(conn, order["order_id"], checkout)
         finally:
             conn.close()
     except payment_service.PaymentServiceError as exc:
@@ -4620,38 +4627,13 @@ def api_create_payment_order():
     )
 
 
-@app.post("/api/payments/fake-callback")
-def api_fake_payment_callback():
-    body = request.get_json(silent=True) or {}
-    provider = str(body.get("provider") or "fake")
-    if provider.strip().lower() == "fake" and not payment_service.fake_payment_provider_enabled(os.environ):
-        return payment_error_response(fake_payment_provider_guard_error(callback=True))
-    provider_order_id = str(body.get("providerOrderId") or body.get("provider_order_id") or body.get("orderId") or "")
-    event_type = str(body.get("eventType") or body.get("event_type") or "payment_success")
-    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-    payload = dict(payload)
-    for key in ("signature", "sign", "hmac", "sig", "eventId", "event_id", "status"):
-        if body.get(key) is not None and payload.get(key) is None:
-            payload[key] = body[key]
-
-    secret = os.environ.get("FAKE_PAYMENT_WEBHOOK_SECRET") or os.environ.get("PAYMENT_WEBHOOK_SECRET") or ""
-    if not secret:
-        return jsonify({"error": "支付回调签名密钥未配置", "code": "payment_webhook_secret_missing"}), 503
-    conn = product_db_conn()
-    try:
-        result = payment_service.handle_payment_callback(
-            conn,
-            provider=provider,
-            provider_order_id=provider_order_id,
-            event_type=event_type,
-            payload=payload,
-            secret=secret,
-        )
-    except payment_service.PaymentServiceError as exc:
-        return payment_error_response(exc)
-    finally:
-        conn.close()
-
+def apply_payment_callback_effects(
+    result: dict[str, Any],
+    *,
+    provider: str,
+    provider_order_id: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
     billing_result = None
     billing_error = None
     billing_error_status = 409
@@ -4688,7 +4670,7 @@ def api_fake_payment_callback():
         elif str(result.get("status") or "") == payment_service.STATUS_REFUNDED:
             growth_result = apply_payment_growth_refund(order, payload, event_id)
 
-    body = {
+    body: dict[str, Any] = {
         "ok": billing_error is None,
         "callback": result,
         "billing": billing_result,
@@ -4697,8 +4679,86 @@ def api_fake_payment_callback():
     }
     if billing_error:
         body["billingError"] = billing_error
-        return jsonify(body), billing_error_status
+        return body, billing_error_status
+    return body, 200
+
+
+@app.post("/api/payments/fake-callback")
+def api_fake_payment_callback():
+    body = request.get_json(silent=True) or {}
+    provider = str(body.get("provider") or "fake")
+    if provider.strip().lower() == "fake" and not payment_service.fake_payment_provider_enabled(os.environ):
+        return payment_error_response(fake_payment_provider_guard_error(callback=True))
+    provider_order_id = str(body.get("providerOrderId") or body.get("provider_order_id") or body.get("orderId") or "")
+    event_type = str(body.get("eventType") or body.get("event_type") or "payment_success")
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    payload = dict(payload)
+    for key in ("signature", "sign", "hmac", "sig", "eventId", "event_id", "status"):
+        if body.get(key) is not None and payload.get(key) is None:
+            payload[key] = body[key]
+
+    secret = os.environ.get("FAKE_PAYMENT_WEBHOOK_SECRET") or os.environ.get("PAYMENT_WEBHOOK_SECRET") or ""
+    if not secret:
+        return jsonify({"error": "支付回调签名密钥未配置", "code": "payment_webhook_secret_missing"}), 503
+    conn = product_db_conn()
+    try:
+        result = payment_service.handle_payment_callback(
+            conn,
+            provider=provider,
+            provider_order_id=provider_order_id,
+            event_type=event_type,
+            payload=payload,
+            secret=secret,
+        )
+    except payment_service.PaymentServiceError as exc:
+        return payment_error_response(exc)
+    finally:
+        conn.close()
+
+    body, status = apply_payment_callback_effects(
+        result,
+        provider=provider,
+        provider_order_id=provider_order_id,
+        payload=payload,
+    )
+    if status != 200:
+        return jsonify(body), status
     return jsonify(body)
+
+
+@app.post("/api/payments/alipay/notify")
+def api_alipay_payment_notify():
+    body = dict(request.form.items())
+    if not body:
+        json_body = request.get_json(silent=True)
+        body = dict(json_body) if isinstance(json_body, dict) else {}
+    conn = product_db_conn()
+    try:
+        provider_order_id = payment_service.alipay_provider_order_id(body)
+        event_type = payment_service.alipay_callback_event_type(body)
+        result = payment_service.handle_payment_callback(
+            conn,
+            provider="alipay",
+            provider_order_id=provider_order_id,
+            event_type=event_type,
+            payload=body,
+            secret=payment_service.alipay_public_key(os.environ),
+        )
+    except payment_service.PaymentServiceError as exc:
+        status = 403 if isinstance(exc, payment_service.PaymentSignatureError) else int(getattr(exc, "status_code", 400) or 400)
+        return Response("failure", status=status, mimetype="text/plain")
+    finally:
+        conn.close()
+
+    effect_body, effect_status = apply_payment_callback_effects(
+        result,
+        provider="alipay",
+        provider_order_id=provider_order_id,
+        payload=body,
+    )
+    if effect_status != 200 or not effect_body.get("ok"):
+        return Response("failure", status=effect_status, mimetype="text/plain")
+    return Response("success", mimetype="text/plain")
 
 
 @app.post("/api/objects/sign")

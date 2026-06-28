@@ -13,7 +13,7 @@
 - 风格预览：展示背景风格，免费样图生成和风格选择分离，避免选择风格时自动触发耗时生成。
 - 出图质量：支持普通出图和精修出图两档，普通出图 10 积分/张，精修出图 20 积分/张。
 - 账号登录：支持手机号 OTP、session、门店接口；短信发送已抽象为 local/mock 与 webhook provider，关闭本地 demo 且未配置 provider 时会返回明确 503。
-- 积分计费：SQLite 本地账本，支持套餐充值、自定义充值、生成扣费、失败退款、幂等订单；fake 支付只在本地 demo 或显式配置时可用。
+- 积分计费：SQLite 本地账本，支持套餐充值、自定义充值、生成扣费、失败退款、幂等订单；fake 支付只在本地 demo 或显式配置时可用；支付宝电脑网站支付已有本地 MVP 下单和异步通知验签入账。
 - 代理/邀请 MVP：支持一级代理档案、直接客户绑定、邀请注册积分、首充积分返利，并在 fake 支付回调成功后生成代理待结算佣金；退款后可重算/取消未结算佣金并追回首充返利积分；后台可释放 T+7 佣金并创建/标记结算批次。
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
@@ -35,7 +35,7 @@
 - 代理/邀请：默认只做一级直推；代理统一按直接订单实付净额 20% 返佣；C 端注册邀请人 50 积分、被邀请人 50 积分，仅直接邀请首充返 10% 积分，不返现金、不提现。
 - 当前代理/邀请只完成本地 MVP 闭环；提现、实名/主体认证、真实打款、已打款后的财务追索、月度自动结算和完整后台操作仍未生产化。
 - 短信登录：本地 demo 可继续返回 `mockCode`；生产环境必须关闭本地 demo 并配置 `SMS_PROVIDER=webhook`、`SMS_WEBHOOK_URL`，否则不会静默生成验证码。
-- 支付：本地 demo 可继续使用 fake pay；生产关闭 `ENABLE_LOCAL_DEMO_BILLING` 后，必须配置真实支付，或显式设置 `PAYMENT_PROVIDER=fake` / `ALLOW_FAKE_PAYMENT_PROVIDER=true` 才能使用 fake provider，否则创建 fake 订单返回 503，fake callback 返回 403。
+- 支付：本地 demo 可继续使用 fake pay；生产关闭 `ENABLE_LOCAL_DEMO_BILLING` 后，必须配置真实支付。当前支付宝电脑网站支付支持 RSA2 签名下单和异步通知验签入账；微信支付仍未接入 adapter，会 fail-closed。
 - 对象存储：本地 demo 可继续使用 local/mock 存储；生产或设置 `ENABLE_LOCAL_DEMO_STORAGE=false` 时，local/mock 会被 readiness 标记为 not production-ready，必须配置私有远程 provider、bucket 和 `OBJECT_SIGNING_SECRET`。
 - 合规边界：多级分销暂不启用，必须法务确认后另开方案。
 - 产品模块：数据库、对象存储、积分/支付、账号/门店、生成队列、AI 图库沉淀、防盗图/签名 URL、防刷风控、代理/邀请、管理后台、审计、运营指标。
@@ -292,6 +292,12 @@ TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
 TENCENT_COS_AI_ASSET_PREFIX=ai-assets
 AI_ASSET_UPLOAD_TO_COS=true
+PAYMENT_PROVIDER=alipay
+PAYMENT_NOTIFY_URL=https://waimai-image-tool-1.onrender.com/api/payments/alipay/notify
+PAYMENT_RETURN_URL=https://waimai-image-tool-1.onrender.com/
+ALIPAY_APP_ID=你的支付宝应用 APP ID
+ALIPAY_PRIVATE_KEY=你的支付宝应用私钥
+ALIPAY_PUBLIC_KEY=支付宝公钥
 ```
 
 说明：
@@ -306,6 +312,7 @@ AI_ASSET_UPLOAD_TO_COS=true
 - `PUBLIC_BASE_URL` 用于把内部参考图或生成图地址拼成腾讯云可下载的公网 URL。
 - `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走文生图。
 - `TENCENT_HUNYUAN_SYNC_LIMIT` 是同步请求内最多真实调用腾讯云的图片数，默认 6。正式商用时不要在 Web 请求里一次同步生成 100 多张；正式图应继续走异步任务，并替换为跨进程 worker。
+- `PAYMENT_PROVIDER=alipay` 会启用支付宝电脑网站支付下单链接；`ALIPAY_PRIVATE_KEY` 用于服务端生成 RSA2 签名，`ALIPAY_PUBLIC_KEY` 用于验签支付宝异步通知。
 - 本地未配置腾讯云密钥时，系统会自动使用本地演示图兜底，保证上传、预览、导出流程不断。
 
 检查环境变量是否生效：
@@ -371,5 +378,5 @@ curl https://waimai-image-tool-1.onrender.com/api/library-status
 当前仍然保留的限制：
 
 - `TENCENT_HUNYUAN_SYNC_LIMIT=6` 表示一次网页请求最多同步真实生成 6 张，适合风格和样图的小批量验证。正式图已走本地异步任务入口，但正式卖给客户前仍要替换为 Redis/RQ/Celery 等跨进程队列。
-- 现在还没有真实短信/微信登录、微信/支付宝支付、生产对象存储全链路、跨进程队列和完整运营后台；这些是商业化版本下一阶段要补的。
+- 现在还没有真实短信/微信登录、微信支付、支付宝真实商户联调/退款补单、生产对象存储全链路、跨进程队列和完整运营后台；这些是商业化版本下一阶段要补的。
 - 如果腾讯云额度、权限或接口报错，前端会显示「模型生成失败」或「待正式生成」，不会再假装已经生成成功。

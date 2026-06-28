@@ -12,6 +12,8 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
 
 import ai_asset_repository
@@ -85,6 +87,14 @@ def _fresh_product_api(
         "PAYMENT_PROVIDER",
         "ALLOW_FAKE_PAYMENT_PROVIDER",
         "FAKE_PAYMENT_WEBHOOK_SECRET",
+        "ALIPAY_APP_ID",
+        "ALIPAY_PRIVATE_KEY",
+        "ALIPAY_PUBLIC_KEY",
+        "ALIPAY_GATEWAY_URL",
+        "ALIPAY_NOTIFY_URL",
+        "ALIPAY_RETURN_URL",
+        "PAYMENT_NOTIFY_URL",
+        "PAYMENT_RETURN_URL",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("STORAGE_DB_PATH", str(storage_db_path))
@@ -123,6 +133,7 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
         ("POST", "/api/growth/withdrawals"),
         ("POST", "/api/payments/orders"),
         ("POST", "/api/payments/fake-callback"),
+        ("POST", "/api/payments/alipay/notify"),
         ("POST", "/api/objects/sign"),
         ("GET", "/objects/<key>"),
         ("POST", "/api/generation-jobs"),
@@ -143,6 +154,45 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
     ]
 
     assert missing == [], "Missing product API endpoints: " + ", ".join(missing)
+
+
+def _alipay_env() -> dict[str, str]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    return {
+        "APP_ENV": "staging",
+        "ENABLE_LOCAL_DEMO_BILLING": "false",
+        "PAYMENT_PROVIDER": "alipay",
+        "ALIPAY_APP_ID": "2021000000000000",
+        "ALIPAY_PRIVATE_KEY": private_pem,
+        "ALIPAY_PUBLIC_KEY": public_pem,
+        "PAYMENT_NOTIFY_URL": "https://example.test/api/payments/alipay/notify",
+        "ALIPAY_GATEWAY_URL": "https://example.test/alipay",
+    }
+
+
+def _signed_alipay_notify(env: dict[str, str], provider_order_id: str) -> dict[str, str]:
+    payload = {
+        "app_id": env["ALIPAY_APP_ID"],
+        "out_trade_no": provider_order_id,
+        "trade_no": "2026062922000000000001",
+        "trade_status": "TRADE_SUCCESS",
+        "total_amount": "49.00",
+        "sign_type": "RSA2",
+    }
+    payload["sign"] = payment_service._alipay_rsa2_sign(  # type: ignore[attr-defined]
+        payment_service._alipay_signing_string(payload),  # type: ignore[attr-defined]
+        payment_service._load_alipay_private_key(env),  # type: ignore[attr-defined]
+    )
+    return payload
 
 
 def test_upload_menu_persists_original_file_to_object_storage_and_db(
@@ -1151,6 +1201,76 @@ def test_real_payment_order_fails_closed_until_adapter_exists(
         conn.close()
     assert row is not None
     assert row["count"] == 0
+
+
+def test_alipay_order_returns_signed_checkout_and_persists_pending_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _alipay_env()
+    api = _fresh_product_api(tmp_path, monkeypatch, **env)
+
+    response = api.client.post(
+        "/api/payments/orders",
+        json={"cash": 49, "idempotencyKey": "alipay-page-pay"},
+    )
+    payload = _json_for_status(response, (200, 201), "POST /api/payments/orders alipay")
+
+    assert payload["order"]["provider"] == "alipay"
+    assert payload["order"]["status"] == "pending"
+    assert payload["instructions"]["provider"] == "alipay"
+    assert payload["instructions"]["paymentUrl"].startswith(env["ALIPAY_GATEWAY_URL"] + "?")
+    assert "sign=" in payload["instructions"]["paymentUrl"]
+
+    conn = storage_db.get_conn(api.storage_db_path)
+    try:
+        row = conn.execute(
+            "SELECT provider, status, provider_payload_json FROM payment_orders WHERE order_id = ?",
+            (payload["order"]["orderId"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["provider"] == "alipay"
+    assert row["status"] == "pending"
+    assert "payment_url" in row["provider_payload_json"]
+
+
+def test_alipay_notify_marks_order_paid_and_credits_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _alipay_env()
+    api = _fresh_product_api(tmp_path, monkeypatch, **env)
+    create_response = api.client.post(
+        "/api/payments/orders",
+        json={"cash": 49, "idempotencyKey": "alipay-notify"},
+    )
+    create_payload = _json_for_status(create_response, (200, 201), "POST /api/payments/orders alipay")
+    provider_order_id = create_payload["order"]["providerOrderId"]
+
+    notify_response = api.client.post(
+        "/api/payments/alipay/notify",
+        data=_signed_alipay_notify(env, provider_order_id),
+    )
+
+    assert notify_response.status_code == 200
+    assert notify_response.get_data(as_text=True) == "success"
+
+    conn = storage_db.get_conn(api.storage_db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, paid_at FROM payment_orders WHERE provider_order_id = ?",
+            (provider_order_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["status"] == "paid"
+    assert row["paid_at"]
+
+    account = billing.get_account("default", db_path=api.billing_db_path)
+    assert account["balance"] >= 490
 
 
 def test_fake_payment_callback_forbidden_when_demo_billing_disabled_without_explicit_provider(
