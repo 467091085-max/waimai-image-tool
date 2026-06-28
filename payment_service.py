@@ -154,6 +154,10 @@ class PaymentProviderUnavailable(PaymentServiceError):
     status_code = 503
 
 
+class PaymentAdapterNotImplemented(PaymentProviderUnavailable):
+    code = "payment_adapter_not_implemented"
+
+
 class FakePaymentProviderForbidden(PaymentServiceError):
     code = "fake_payment_provider_forbidden"
     status_code = 403
@@ -176,6 +180,38 @@ def fake_payment_provider_enabled(environ: Mapping[str, str] | None = None) -> b
     if str(env.get("PAYMENT_PROVIDER") or "").strip().lower() == "fake":
         return True
     return _env_truthy(env.get("ALLOW_FAKE_PAYMENT_PROVIDER"), default=False)
+
+
+def provider_readiness_for(provider: str, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    values = dict(os.environ if env is None else env)
+    values["PAYMENT_PROVIDER"] = _clean_provider(provider)
+    return assess_payment_provider_readiness(values)
+
+
+def ensure_payment_checkout_available(provider: str, env: Mapping[str, str] | None = None) -> None:
+    clean_provider = _clean_provider(provider)
+    values = os.environ if env is None else env
+    if clean_provider == "fake":
+        if fake_payment_provider_enabled(values):
+            return
+        raise PaymentProviderUnavailable(
+            "fake 支付 provider 未启用，不能创建 fake 支付订单",
+            provider="fake",
+            required="PAYMENT_PROVIDER=fake or ALLOW_FAKE_PAYMENT_PROVIDER=true",
+        )
+
+    readiness = provider_readiness_for(clean_provider, values)
+    missing_config = list(readiness.get("missingConfig") or [])
+    details = {
+        "provider": clean_provider,
+        "mode": readiness.get("mode"),
+        "requiredConfig": readiness.get("requiredConfig") or [],
+        "missingConfig": missing_config,
+        "blockingIssues": readiness.get("blockingIssues") or [],
+    }
+    if missing_config:
+        raise PaymentProviderUnavailable("真实支付 provider 配置不完整", **details)
+    raise PaymentAdapterNotImplemented("真实支付 provider adapter 尚未接入", **details)
 
 
 def assess_payment_provider_readiness(env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -764,8 +800,8 @@ def _transaction(conn: sqlite3.Connection) -> Iterator[None]:
 
 
 def _clean_provider(provider: str) -> str:
-    cleaned = _clean_text(provider, "provider").lower()
-    if cleaned != "fake":
+    cleaned = _normalize_payment_provider(_clean_text(provider, "provider"))
+    if cleaned != "fake" and cleaned not in REAL_PAYMENT_PROVIDERS:
         raise InvalidPaymentInput("Unsupported payment provider", provider=provider)
     return cleaned
 

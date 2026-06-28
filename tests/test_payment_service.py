@@ -192,6 +192,47 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertIn("alipay_payment_adapter_not_implemented", readiness["errors"])
         self.assertIn("real_payment_callback_signature_verification_not_implemented", readiness["errors"])
 
+    def test_real_provider_checkout_guard_fails_closed_until_adapter_exists(self) -> None:
+        with self.assertRaises(payments.PaymentAdapterNotImplemented) as context:
+            payments.ensure_payment_checkout_available(
+                "wechatpay",
+                {
+                    "APP_ENV": "production",
+                    "PAYMENT_PROVIDER": "wechat",
+                    "ENABLE_LOCAL_DEMO_BILLING": "false",
+                    "WECHAT_PAY_APP_ID": "wx-app-id",
+                    "WECHAT_PAY_MCH_ID": "mch-id",
+                    "WECHAT_PAY_API_V3_KEY": "api-v3-key",
+                    "WECHAT_PAY_PRIVATE_KEY": "private-key",
+                    "WECHAT_PAY_CERT_SERIAL_NO": "serial",
+                    "WECHAT_PAY_PLATFORM_CERT": "platform-cert",
+                    "PAYMENT_NOTIFY_URL": "https://example.test/payments/wechat/notify",
+                },
+            )
+
+        self.assertEqual(context.exception.code, "payment_adapter_not_implemented")
+        details = context.exception.to_dict()
+        self.assertEqual(details["provider"], "wechat")
+        self.assertEqual(details["missingConfig"], [])
+        self.assertIn("wechat_payment_adapter_not_implemented", details["blockingIssues"])
+
+    def test_real_provider_checkout_guard_reports_missing_credentials(self) -> None:
+        with self.assertRaises(payments.PaymentProviderUnavailable) as context:
+            payments.ensure_payment_checkout_available(
+                "alipay",
+                {
+                    "APP_ENV": "production",
+                    "PAYMENT_PROVIDER": "alipay",
+                    "ENABLE_LOCAL_DEMO_BILLING": "false",
+                },
+            )
+
+        details = context.exception.to_dict()
+        self.assertEqual(details["code"], "payment_provider_unavailable")
+        self.assertEqual(details["provider"], "alipay")
+        self.assertIn("alipay_app_id", details["missingConfig"])
+        self.assertIn("payment_provider_credentials_required", details["blockingIssues"])
+
     def test_create_payment_order_is_idempotent_by_key(self) -> None:
         first = payments.create_payment_order(
             self.conn,

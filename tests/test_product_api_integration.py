@@ -1112,6 +1112,46 @@ def test_fake_payment_order_blocked_on_render_runtime_even_if_demo_billing_enabl
     assert payload["provider"] == "fake"
 
 
+def test_real_payment_order_fails_closed_until_adapter_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        ENABLE_LOCAL_DEMO_BILLING="false",
+        PAYMENT_PROVIDER="wechat",
+        WECHAT_PAY_APP_ID="wx-app-id",
+        WECHAT_PAY_MCH_ID="mch-id",
+        WECHAT_PAY_API_V3_KEY="api-v3-key",
+        WECHAT_PAY_PRIVATE_KEY="private-key",
+        WECHAT_PAY_CERT_SERIAL_NO="serial",
+        WECHAT_PAY_PLATFORM_CERT="platform-cert",
+        PAYMENT_NOTIFY_URL="https://example.test/payments/wechat/notify",
+    )
+
+    response = api.client.post(
+        "/api/payments/orders",
+        json={"cash": 49, "idempotencyKey": "wechat-adapter-missing"},
+    )
+    payload = _json_for_status(response, 503, "POST /api/payments/orders wechat adapter missing")
+
+    assert payload["code"] == "payment_adapter_not_implemented"
+    assert payload["provider"] == "wechat"
+    assert payload["missingConfig"] == []
+    assert "wechat_payment_adapter_not_implemented" in payload["blockingIssues"]
+
+    conn = storage_db.get_conn(api.storage_db_path)
+    try:
+        payment_service.init_payment_schema(conn)
+        row = conn.execute("SELECT COUNT(*) AS count FROM payment_orders").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["count"] == 0
+
+
 def test_fake_payment_callback_forbidden_when_demo_billing_disabled_without_explicit_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

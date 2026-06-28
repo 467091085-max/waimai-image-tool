@@ -4570,9 +4570,8 @@ def api_create_payment_order():
     payload = request.get_json(silent=True) or {}
     user_id = str(payload.get("userId") or current_authenticated_user_id())
     provider = requested_payment_provider(payload)
-    if provider.lower() == "fake" and not payment_service.fake_payment_provider_enabled(os.environ):
-        return payment_error_response(fake_payment_provider_guard_error())
     try:
+        payment_service.ensure_payment_checkout_available(provider, os.environ)
         if payload.get("cash") is not None:
             cash = int(payload.get("cash") or 0)
             points = billing.points_for_recharge(cash)
