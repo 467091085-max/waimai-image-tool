@@ -162,11 +162,30 @@ class ObjectStorageServiceTests(unittest.TestCase):
         self.assertFalse(readiness["ready"])
         self.assertEqual(readiness["provider"], "local")
         self.assertEqual(readiness["mode"], "local_demo")
+        self.assertEqual(readiness["appEnv"], "production")
         self.assertIn(
             "private_remote_object_storage_provider_required",
             readiness["blockingIssues"],
         )
         self.assertIn("object_signing_secret_required", readiness["blockingIssues"])
+
+    def test_render_runtime_local_object_storage_is_not_ready(self) -> None:
+        readiness = assess_object_storage_readiness(
+            {
+                "PUBLIC_BASE_URL": "https://waimai-image-tool-1.onrender.com",
+                "OBJECT_SIGNING_SECRET": "secret",
+            }
+        )
+
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["provider"], "local")
+        self.assertEqual(readiness["mode"], "local_demo")
+        self.assertEqual(readiness["appEnv"], "render")
+        self.assertIn(
+            "private_remote_object_storage_provider_required",
+            readiness["blockingIssues"],
+        )
+        self.assertNotIn("object_signing_secret_required", readiness["blockingIssues"])
 
     def test_disabled_local_demo_requires_remote_provider_and_signing_secret(self) -> None:
         readiness = assess_object_storage_readiness(

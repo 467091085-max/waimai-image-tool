@@ -466,14 +466,14 @@ def get_object_storage_service(root: str | os.PathLike[str] | None = None) -> Ob
 def assess_object_storage_readiness(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Evaluate object-storage configuration without initializing a remote SDK.
 
-    The current runtime only implements the local storage facade. This function
-    gives deployment code and docs a single, explicit production-readiness
-    answer for local/mock storage versus a future private remote provider.
+    This function gives deployment code and docs a single, explicit
+    production-readiness answer for local/mock storage versus private remote
+    object storage.
     """
     values = os.environ if env is None else env
     provider = _configured_provider(values)
-    app_env = _env_value(values, "APP_ENV").lower()
-    production_env = app_env in {"production", "prod"}
+    app_env = _runtime_environment_label(values)
+    production_env = app_env in {"production", "prod", "staging", "render"}
     local_demo_enabled = _env_truthy(values, "ENABLE_LOCAL_DEMO_STORAGE", default=True)
     signing_secret_configured = bool(_first_env_value(values, OBJECT_STORAGE_SIGNING_SECRET_ENV_NAMES))
     bucket_configured = bool(_first_env_value(values, OBJECT_STORAGE_BUCKET_ENV_NAMES))
@@ -530,6 +530,7 @@ def assess_object_storage_readiness(env: Mapping[str, str] | None = None) -> dic
         "ready": not blocking_issues,
         "provider": provider,
         "mode": mode,
+        "appEnv": app_env,
         "blockingIssues": blocking_issues,
         "warnings": warnings,
     }
@@ -555,6 +556,21 @@ def _normalize_prefix(prefix: str) -> str:
 def _configured_provider(env: Mapping[str, str]) -> str:
     provider = _first_env_value(env, OBJECT_STORAGE_PROVIDER_ENV_NAMES)
     return (provider or "local").strip().lower()
+
+
+def _runtime_environment_label(env: Mapping[str, str]) -> str:
+    app_env = _env_value(env, "APP_ENV").lower()
+    if app_env:
+        return app_env
+    if _render_runtime_detected(env):
+        return "render"
+    return "development"
+
+
+def _render_runtime_detected(env: Mapping[str, str]) -> bool:
+    if any(_env_value(env, name) for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_URL")):
+        return True
+    return ".onrender.com" in _env_value(env, "PUBLIC_BASE_URL").lower()
 
 
 def _provider_kind(provider: str) -> str:

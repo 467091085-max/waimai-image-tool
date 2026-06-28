@@ -18,6 +18,16 @@ services:
         generateValue: true
       - key: DOWNLOAD_SIGNING_SECRET
         generateValue: true
+      - key: OBJECT_STORAGE_PROVIDER
+        value: cos
+      - key: OBJECT_STORAGE_PRIVATE
+        value: "true"
+      - key: OBJECT_STORAGE_BUCKET
+        value: waimai-image-tool-inputs-1311836560
+      - key: OBJECT_STORAGE_REGION
+        value: ap-guangzhou
+      - key: OBJECT_STORAGE_PREFIX
+        value: app-objects
       - key: PAYMENT_WEBHOOK_SECRET
         generateValue: true
       - key: ADMIN_API_TOKEN

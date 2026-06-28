@@ -195,6 +195,12 @@ def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_sta
         TENCENT_SECRET_KEY=None,
         TENCENT_HUNYUAN_ENABLED=None,
         TENCENT_AIART_ENABLED=None,
+        OBJECT_STORAGE_PROVIDER="cos",
+        OBJECT_STORAGE_BUCKET="waimai-assets-prod",
+        OBJECT_STORAGE_REGION="ap-guangzhou",
+        OBJECT_STORAGE_SECRET_ID="object-storage-sid",
+        OBJECT_STORAGE_SECRET_KEY="object-storage-skey",
+        OBJECT_STORAGE_PRIVATE="true",
     )
 
     response = fixture.client.get("/api/ops/readiness")
@@ -257,6 +263,12 @@ def test_ops_readiness_accepts_tokenhub_generation_provider_in_staging(
         TENCENT_SECRET_KEY=None,
         TENCENT_HUNYUAN_ENABLED=None,
         TENCENT_AIART_ENABLED=None,
+        OBJECT_STORAGE_PROVIDER="cos",
+        OBJECT_STORAGE_BUCKET="waimai-assets-prod",
+        OBJECT_STORAGE_REGION="ap-guangzhou",
+        OBJECT_STORAGE_SECRET_ID="object-storage-sid",
+        OBJECT_STORAGE_SECRET_KEY="object-storage-skey",
+        OBJECT_STORAGE_PRIVATE="true",
     )
 
     response = fixture.client.get("/api/ops/readiness")
