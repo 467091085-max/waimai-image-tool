@@ -36,7 +36,7 @@
 
 - 后台 lists 明细：`/api/admin/lists/*` 已覆盖生成任务、资产访问、风控事件、佣金结算、订单等明细，后台前端已优先读取既有列表，再回退到 dashboard 汇总；`risk-events` 后端资源已可按 decision/riskLevel/eventType/userId/search/时间分页查询，前端接入另排。
 - AI 资产审核动作：`/api/admin/actions/ai-assets/<asset_id>/status` 支持 approve/reject/disable 和审核备注，写入后台操作审计；approve/reject 允许 reviewer/operator/admin，disable 限制为 admin/super_admin/owner；仍缺完整人工审核队列和运营工作流。
-- SaaS API/Worker/Redis 骨架：新增 `api-server/`、`worker/`、`shared/`，标准接口为 `POST /generate` 和 `GET /status/<task_id>`；API Server 只入 Redis 队列和查状态，Worker 独立消费任务、执行生成、默认 60s timeout、最多 retry 2 次，并会恢复 stale running 任务；Render start command 已切到 `api-server/app.py`。
+- SaaS API/Worker/Redis 骨架：新增 `api-server/`、`worker/`、`shared/`，标准接口固定为 `POST /generate` 只接受 `prompt` 并返回 `task_id`，`GET /status/<task_id>` 只返回 `status/image_url`；API Server 只入 Redis 队列和查状态，Worker 独立消费任务、执行生成、默认 60s timeout、最多 retry 2 次，并会恢复 stale running 任务；Render start command 已切到 `api-server/app.py`。
 - 旧生成队列错误语义：旧前端仍走 `/api/generation-jobs` 异步任务；队列满返回 429 `generation_queue_full`，队列关闭或不可用返回 503 `generation_queue_unavailable`，待迁移到 Redis Worker。
 - 资产访问筛选：`asset-access` 明细支持 `status=denied/allowed` 等运营筛选口径，便于排查盗链、签名失败和拒绝访问。
 - 风控日志筛选：`risk-events` 明细支持 `decision/riskLevel/eventType/userId/search/createdFrom/createdTo/sort/order/limit/offset`，用于后台排查注册、邀请、下载和生成相关风险判定。
@@ -81,7 +81,7 @@
    - 正式批量出图走 worker。
    - 前端轮询进度。
    - 支持失败重试、超时恢复、任务取消、部分完成导出。
-   - 当前已新增标准 SaaS 接口 `POST /generate` 与 `GET /status/<task_id>`，API Server 只写 Redis 队列和读状态。
+   - 当前已新增标准 SaaS 接口 `POST /generate` 与 `GET /status/<task_id>`，API Server 只写 Redis 队列和读状态，不执行 AI、生图、文件处理或后台任务。
    - Worker 独立运行 `python worker/worker.py`，消费 Redis 任务，执行 AI 生成处理，成功写 `image_url`，单次执行默认 60s timeout，失败最多 retry 2 次后标记 failed；启动前会扫描 stale running 任务并恢复或标记失败。
    - 旧本地前端仍接 `/api/generation-jobs` 轮询，状态 payload 包含 `stale/timedOut/elapsed`；下一步要迁移到 Redis Worker，不能继续依赖单进程内存队列承载商用批量任务。
 

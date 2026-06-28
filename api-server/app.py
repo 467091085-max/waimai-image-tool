@@ -31,13 +31,14 @@ def generate():
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         return jsonify({"error": "request body must be a JSON object", "code": "invalid_request"}), 400
-    if not str(payload.get("prompt") or payload.get("category") or payload.get("dish_name") or payload.get("dishName") or "").strip():
-        return jsonify({"error": "prompt, category, or dishName is required", "code": "invalid_generation_request"}), 400
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt is required", "code": "invalid_generation_request"}), 400
     try:
-        task = task_queue().enqueue(payload)
+        task = task_queue().enqueue({"prompt": prompt})
     except QueueError as exc:
         return jsonify({"error": str(exc), "code": "queue_unavailable"}), 503
-    return jsonify({"task_id": task["task_id"], "status": task["status"], "status_url": f"/status/{task['task_id']}"}), 202
+    return jsonify({"task_id": task["task_id"]}), 202
 
 
 @app.get("/status/<task_id>")
@@ -48,7 +49,8 @@ def status(task_id: str):
         return jsonify({"error": "task not found", "code": "task_not_found"}), 404
     except QueueError as exc:
         return jsonify({"error": str(exc), "code": "queue_unavailable"}), 503
-    return jsonify(public_task_payload(task))
+    public_task = public_task_payload(task)
+    return jsonify({"status": public_task["status"], "image_url": public_task["image_url"]})
 
 
 @app.errorhandler(404)

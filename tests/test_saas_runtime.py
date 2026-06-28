@@ -4,6 +4,7 @@ import importlib.util
 import time
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from shared.redis_queue import RedisQueueConfig, RedisTaskQueue
 from worker.worker import GenerationWorker
@@ -50,15 +51,35 @@ def test_api_server_generate_only_enqueues_and_status_reads_task(monkeypatch) ->
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["task_id"].startswith("task_")
-    assert payload["status"] == "pending"
-    assert payload["status_url"] == f"/status/{payload['task_id']}"
+    assert set(payload.keys()) == {"task_id"}
+    UUID(payload["task_id"])
 
-    status_response = api_module.app.test_client().get(payload["status_url"])
+    status_response = api_module.app.test_client().get(f"/status/{payload['task_id']}")
     status_payload = status_response.get_json()
     assert status_response.status_code == 200
+    assert set(status_payload.keys()) == {"status", "image_url"}
     assert status_payload["status"] == "pending"
     assert status_payload["image_url"] == ""
+
+
+def test_api_server_generate_requires_prompt_and_ignores_legacy_fields(monkeypatch) -> None:
+    queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
+    api_module = _load_api_server_module()
+    monkeypatch.setattr(api_module, "task_queue", lambda: queue)
+    api_module.app.config.update(TESTING=True)
+
+    response = api_module.app.test_client().post("/generate", json={"category": "盖饭", "dishName": "牛肉饭"})
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "invalid_generation_request"
+    assert queue.redis.lists == {}
+
+
+def test_api_server_has_no_generation_provider_imports() -> None:
+    source = (Path(__file__).resolve().parents[1] / "api-server" / "app.py").read_text(encoding="utf-8")
+
+    assert "shared.generator" not in source
+    assert "generate_image" not in source
 
 
 def test_worker_processes_task_and_writes_result() -> None:

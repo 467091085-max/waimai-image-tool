@@ -46,7 +46,7 @@ class RedisTaskQueue:
 
     def enqueue(self, payload: Mapping[str, Any], *, task_id: str | None = None) -> dict[str, Any]:
         clean_payload = _json_object(payload, "payload")
-        resolved_task_id = _clean_text(task_id or f"task_{uuid4().hex}", "task_id")
+        resolved_task_id = _clean_text(task_id or str(uuid4()), "task_id")
         now = _now_ms()
         task = {
             "task_id": resolved_task_id,

@@ -17,7 +17,7 @@
 - 代理/邀请 MVP：支持一级代理档案、直接客户绑定、邀请注册积分、首充积分返利，并在 fake 支付回调成功后生成代理待结算佣金；退款后可重算/取消未结算佣金并追回首充返利积分；后台可释放 T+7 佣金并创建/标记结算批次。
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
-- 正式出图异步任务：旧前端通过 `/api/generation-jobs` 创建和轮询任务；新的 SaaS 骨架已拆出 `api-server/`、`worker/`、`shared/`，标准接口为 `POST /generate` 和 `GET /status/<task_id>`，API Server 只写 Redis 队列和查询状态，AI 生成由独立 Worker 执行。
+- 正式出图异步任务：新的 SaaS 骨架已拆出 `api-server/`、`worker/`、`shared/`，标准接口固定为 `POST /generate`（只接受 `prompt` 并返回 `task_id`）和 `GET /status/<task_id>`（只返回 `status`、`image_url`），API Server 只写 Redis 队列和查询状态，AI 生成由独立 Worker 执行。
 - 重做额度：每单提供免费换版额度，用完后按 10 积分/张。
 - 导出：当前统一导出 JPG，支持勾选、全选、单品、套餐导出，并按平台上限压缩文件大小。
 - 平台尺寸：支持美团、淘宝外卖/饿了么、京东外卖/京东秒送导出，不裁掉主体，按目标尺寸留边适配。
@@ -237,7 +237,7 @@ curl https://waimai-image-tool-1.onrender.com/api/tencent-status
 - 数据库：当前是 SQLite，商用后菜单、订单、积分流水、导出记录需要迁到 PostgreSQL。
 - 图片资产清洗后台：当前已有 AI 资产状态 API 和质量字段，仍缺自动识别品牌水印、菜品名水印、可复用图、需抠图图的完整人工审核工作台。
 - AI 接口：普通出图已接腾讯云混元；精修出图还需要后续接 Gemini/OpenAI 或其他高质量编辑模型。
-- 异步任务队列：SaaS 骨架已接入 Redis queue/status 和独立 Worker；旧 `/api/generation-jobs` monolith 入口仍保留，后续需要把前端正式出图完全迁到 `POST /generate` 与 `GET /status/<task_id>`。
+- 异步任务队列：SaaS 骨架已接入 Redis queue/status 和独立 Worker；标准 API 合同已固定为 `POST /generate` 和 `GET /status/<task_id>`。旧 `/api/generation-jobs` monolith 入口仍保留在旧应用内，后续需要把前端正式出图完全迁到标准合同。
 - 平台尺寸复核：上线前用美团/淘宝/京东商家后台最新规则再确认一次。
 
 完整产品化路线图、代理规则、邀请返积分、防盗图机制和 worker/sub-agent 拆分保存在：
