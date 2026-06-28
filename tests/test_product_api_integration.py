@@ -210,6 +210,36 @@ def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_sta
     assert "TENCENT_TOKENHUB_API_KEY" in generation["missingConfig"]
 
 
+def test_ops_readiness_treats_render_runtime_as_live_generation_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV=None,
+        PUBLIC_BASE_URL="https://waimai-image-tool-1.onrender.com",
+        TENCENT_TOKENHUB_API_KEY=None,
+        TENCENT_TOKENHUB_ENABLED=None,
+        TOKENHUB_API_KEY=None,
+        HUNYUAN_TOKENHUB_API_KEY=None,
+        TENCENTCLOUD_SECRET_ID="legacy-id",
+        TENCENTCLOUD_SECRET_KEY="legacy-key",
+        TENCENT_HUNYUAN_ENABLED="true",
+    )
+
+    response = fixture.client.get("/api/ops/readiness")
+
+    payload = _json_for_status(response, 200, "GET /api/ops/readiness render runtime")
+    generation = payload["generationProvider"]
+    assert payload["ready"] is False
+    assert generation["appEnv"] == "render"
+    assert generation["mode"] == "legacy_cloud_api"
+    assert generation["cloudApiReady"] is True
+    assert generation["tokenhubRequired"] is True
+    assert "tokenhub_image_provider_required" in generation["blockingIssues"]
+
+
 def test_ops_readiness_accepts_tokenhub_generation_provider_in_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

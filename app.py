@@ -924,12 +924,27 @@ def tencent_status_payload() -> dict[str, Any]:
     }
 
 
+def render_runtime_detected() -> bool:
+    if any(os.environ.get(name, "").strip() for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_URL")):
+        return True
+    return ".onrender.com" in os.environ.get("PUBLIC_BASE_URL", "").strip().lower()
+
+
+def runtime_environment_label() -> str:
+    app_env = os.environ.get("APP_ENV", "").strip().lower()
+    if app_env:
+        return app_env
+    if render_runtime_detected():
+        return "render"
+    return "development"
+
+
 def generation_provider_readiness() -> dict[str, Any]:
     status = tencent_status_payload()
-    app_env = os.environ.get("APP_ENV", "").strip().lower()
+    app_env = runtime_environment_label()
     live_generation_required = env_truthy(
         "REQUIRE_LIVE_GENERATION_PROVIDER",
-        default=app_env in {"production", "prod", "staging"},
+        default=app_env in {"production", "prod", "staging", "render"},
     )
     tokenhub_required = env_truthy(
         "REQUIRE_TOKENHUB_IMAGE_PROVIDER",
@@ -975,7 +990,7 @@ def generation_provider_readiness() -> dict[str, Any]:
         "ready": not errors,
         "provider": status.get("provider"),
         "mode": mode,
-        "appEnv": app_env or "development",
+        "appEnv": app_env,
         "tokenhubReady": tokenhub_is_ready,
         "tokenhubModel": status.get("tokenhubModel"),
         "cloudApiReady": cloud_api_is_ready,
