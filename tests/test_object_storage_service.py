@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,10 +12,45 @@ from object_storage_service import (
     MENUS_PREFIX,
     ORIGINALS_PREFIX,
     ObjectStorageService,
+    TencentCOSObjectStorageService,
     assess_object_storage_readiness,
     create_signed_access,
     verify_signed_access,
 )
+
+
+class FakeCOSBody:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def get_raw_stream(self) -> io.BytesIO:
+        return io.BytesIO(self.payload)
+
+
+class FakeCOSClient:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.content_types: dict[str, str] = {}
+
+    def put_object(self, *, Bucket: str, Body: bytes, Key: str, ContentType: str) -> None:
+        self.objects[Key] = Body
+        self.content_types[Key] = ContentType
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        if Key not in self.objects:
+            raise FileNotFoundError(Key)
+        return {"Body": FakeCOSBody(self.objects[Key])}
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        if Key not in self.objects:
+            raise FileNotFoundError(Key)
+        return {"Content-Length": str(len(self.objects[Key])), "Last-Modified": "Mon, 29 Jun 2026 00:00:00 GMT"}
+
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
+        self.objects.pop(Key, None)
+
+    def list_objects(self, *, Bucket: str, Prefix: str) -> dict[str, object]:
+        return {"Contents": [{"Key": key} for key in sorted(self.objects) if key.startswith(Prefix)]}
 
 
 class ObjectStorageServiceTests(unittest.TestCase):
@@ -148,7 +184,27 @@ class ObjectStorageServiceTests(unittest.TestCase):
         )
         self.assertNotIn("object_signing_secret_required", readiness["blockingIssues"])
 
-    def test_remote_private_provider_is_ready_when_bucket_and_secret_are_configured(self) -> None:
+    def test_cos_provider_is_ready_when_runtime_credentials_are_configured(self) -> None:
+        readiness = assess_object_storage_readiness(
+            {
+                "APP_ENV": "production",
+                "OBJECT_STORAGE_PROVIDER": "cos",
+                "OBJECT_STORAGE_BUCKET": "waimai-assets-prod",
+                "OBJECT_STORAGE_REGION": "ap-guangzhou",
+                "OBJECT_STORAGE_SECRET_ID": "sid",
+                "OBJECT_STORAGE_SECRET_KEY": "skey",
+                "OBJECT_SIGNING_SECRET": "secret",
+                "ENABLE_LOCAL_DEMO_STORAGE": "false",
+            }
+        )
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(readiness["provider"], "cos")
+        self.assertEqual(readiness["mode"], "remote_private")
+        self.assertEqual(readiness["blockingIssues"], [])
+        self.assertIn("cos_runtime_adapter_enabled", readiness["warnings"])
+
+    def test_cos_provider_requires_runtime_credentials(self) -> None:
         readiness = assess_object_storage_readiness(
             {
                 "APP_ENV": "production",
@@ -159,11 +215,9 @@ class ObjectStorageServiceTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(readiness["ready"])
+        self.assertFalse(readiness["ready"])
         self.assertEqual(readiness["provider"], "cos")
-        self.assertEqual(readiness["mode"], "remote_private")
-        self.assertEqual(readiness["blockingIssues"], [])
-        self.assertIn("remote_provider_sdk_not_initialized_by_readiness_check", readiness["warnings"])
+        self.assertIn("cos_runtime_credentials_required", readiness["blockingIssues"])
 
     def test_remote_provider_requires_signing_secret(self) -> None:
         readiness = assess_object_storage_readiness(
@@ -178,6 +232,30 @@ class ObjectStorageServiceTests(unittest.TestCase):
         self.assertEqual(readiness["provider"], "oss")
         self.assertEqual(readiness["mode"], "remote_private")
         self.assertIn("object_signing_secret_required", readiness["blockingIssues"])
+        self.assertIn("remote_provider_runtime_adapter_not_implemented", readiness["blockingIssues"])
+
+    def test_cos_backend_uses_logical_keys_with_optional_remote_prefix(self) -> None:
+        client = FakeCOSClient()
+        service = TencentCOSObjectStorageService(
+            bucket="waimai-assets-prod",
+            region="ap-guangzhou",
+            secret_id="sid",
+            secret_key="skey",
+            prefix="tenant-a",
+            client=client,
+        )
+
+        key = service.put_bytes(b"image-bytes", object_key="generated/job-1/dish.jpg")
+
+        self.assertEqual(key, "generated/job-1/dish.jpg")
+        self.assertIn("tenant-a/generated/job-1/dish.jpg", client.objects)
+        self.assertEqual(client.content_types["tenant-a/generated/job-1/dish.jpg"], "image/jpeg")
+        self.assertTrue(service.exists(key))
+        self.assertEqual(service.read_bytes(key), b"image-bytes")
+        self.assertEqual(service.stat(key)["remote_key"], "tenant-a/generated/job-1/dish.jpg")
+        self.assertEqual(service.list_prefix("generated/job-1"), [key])
+        self.assertTrue(service.delete(key))
+        self.assertFalse(service.exists(key))
 
     def test_remote_provider_rejects_public_read_storage(self) -> None:
         readiness = assess_object_storage_readiness(

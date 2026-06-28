@@ -4975,19 +4975,10 @@ def object_access(object_key: str):
 
     storage = object_storage_service.get_object_storage_service()
     try:
-        path = storage.path_for_key(requested_key)
-    except (TypeError, ValueError):
-        record_asset_access_audit(
-            asset_id=requested_key,
-            action=asset_action_for_purpose(str(payload.get("purpose") or ""), "object_access"),
-            user_id=str(payload.get("user_id") or ""),
-            asset_type="object",
-            allowed=False,
-            deny_reason="object_not_found",
-            metadata={"route": "objects"},
-        )
-        return jsonify({"error": "对象不存在", "code": "object_not_found"}), 404
-    if not path.is_file():
+        if not storage.exists(requested_key):
+            raise FileNotFoundError(requested_key)
+        payload_bytes = storage.read_bytes(requested_key)
+    except (TypeError, ValueError, FileNotFoundError):
         record_asset_access_audit(
             asset_id=requested_key,
             action=asset_action_for_purpose(str(payload.get("purpose") or ""), "object_access"),
@@ -5006,7 +4997,11 @@ def object_access(object_key: str):
         allowed=True,
         metadata={"route": "objects", "purpose": payload.get("purpose"), "variant": payload.get("variant")},
     )
-    return send_file(path)
+    return send_file(
+        io.BytesIO(payload_bytes),
+        mimetype=object_storage_service.content_type_for_key(requested_key),
+        download_name=Path(requested_key).name,
+    )
 
 
 @app.get("/download/<path:name>")

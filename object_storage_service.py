@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import mimetypes
 import os
 import secrets
 import time
@@ -10,7 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 import asset_security
-from storage_db import DEFAULT_OBJECT_STORE_DIR, LocalObjectStorage
+from storage_db import DEFAULT_OBJECT_STORE_DIR, LocalObjectStorage, safe_object_filename
 
 
 MENUS_PREFIX = "menus/"
@@ -41,11 +43,32 @@ OBJECT_STORAGE_BUCKET_ENV_NAMES = (
     "R2_BUCKET",
     "S3_BUCKET",
 )
+OBJECT_STORAGE_REGION_ENV_NAMES = (
+    "OBJECT_STORAGE_REGION",
+    "TENCENT_COS_REGION",
+    "COS_REGION",
+    "OSS_REGION",
+    "R2_REGION",
+    "S3_REGION",
+)
+OBJECT_STORAGE_SECRET_ID_ENV_NAMES = (
+    "OBJECT_STORAGE_SECRET_ID",
+    "TENCENTCLOUD_SECRET_ID",
+    "TENCENT_SECRET_ID",
+    "COS_SECRET_ID",
+)
+OBJECT_STORAGE_SECRET_KEY_ENV_NAMES = (
+    "OBJECT_STORAGE_SECRET_KEY",
+    "TENCENTCLOUD_SECRET_KEY",
+    "TENCENT_SECRET_KEY",
+    "COS_SECRET_KEY",
+)
 OBJECT_STORAGE_SIGNING_SECRET_ENV_NAMES = (
     "OBJECT_SIGNING_SECRET",
     "ASSET_SIGNING_SECRET",
     "DOWNLOAD_SIGNING_SECRET",
 )
+COS_RUNTIME_ADAPTER_PROVIDER = "cos"
 
 
 class ObjectStorageService:
@@ -175,6 +198,148 @@ class ObjectStorageService:
         return target
 
 
+class TencentCOSObjectStorageService:
+    """Tencent COS object storage backend with the same logical-key surface."""
+
+    provider = "cos"
+
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        region: str,
+        secret_id: str,
+        secret_key: str,
+        prefix: str = "",
+        client: Any | None = None,
+    ) -> None:
+        self.bucket = _require_non_empty(bucket, "bucket")
+        self.region = _require_non_empty(region, "region")
+        self.secret_id = _require_non_empty(secret_id, "secret_id")
+        self.secret_key = _require_non_empty(secret_key, "secret_key")
+        self.prefix = validate_object_prefix(prefix.strip("/")) if prefix.strip("/") else ""
+        self.client = client or self._build_client()
+
+    def put_bytes(
+        self,
+        data_or_object_key: bytes | bytearray | memoryview | str,
+        data: bytes | bytearray | memoryview | None = None,
+        *,
+        object_key: str | None = None,
+        prefix: str = GENERATED_PREFIX,
+        filename: str | None = None,
+    ) -> str:
+        if data is not None:
+            if object_key is not None:
+                raise TypeError("object_key must not be passed when the first argument is an object key")
+            object_key = _require_string(data_or_object_key, "object_key")
+            payload = _coerce_bytes(data)
+        else:
+            payload = _coerce_bytes(data_or_object_key)
+
+        logical_key = validate_object_key(object_key) if object_key is not None else generated_object_key(payload, prefix=prefix, filename=filename)
+        self.client.put_object(
+            Bucket=self.bucket,
+            Body=payload,
+            Key=self.remote_key(logical_key),
+            ContentType=content_type_for_key(logical_key),
+        )
+        return logical_key
+
+    def put_file(
+        self,
+        source_or_object_key: str | os.PathLike[str],
+        source: str | os.PathLike[str] | None = None,
+        *,
+        object_key: str | None = None,
+        prefix: str = GENERATED_PREFIX,
+        filename: str | None = None,
+    ) -> str:
+        if source is not None:
+            if object_key is not None:
+                raise TypeError("object_key must not be passed when the first argument is an object key")
+            object_key = _require_string(source_or_object_key, "object_key")
+            source_path = Path(source).expanduser()
+        else:
+            source_path = Path(source_or_object_key).expanduser()
+        return self.put_bytes(source_path.read_bytes(), object_key=object_key, prefix=prefix, filename=filename or source_path.name)
+
+    def read_bytes(self, object_key: str) -> bytes:
+        response = self.client.get_object(Bucket=self.bucket, Key=self.remote_key(object_key))
+        body = response.get("Body")
+        if body is None or not hasattr(body, "get_raw_stream"):
+            raise FileNotFoundError(validate_object_key(object_key))
+        return body.get_raw_stream().read()
+
+    def exists(self, object_key: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=self.remote_key(object_key))
+            return True
+        except Exception:
+            return False
+
+    def delete(self, object_key: str) -> bool:
+        logical_key = validate_object_key(object_key)
+        if not self.exists(logical_key):
+            return False
+        self.client.delete_object(Bucket=self.bucket, Key=self.remote_key(logical_key))
+        return True
+
+    def stat(self, object_key: str) -> dict[str, Any]:
+        logical_key = validate_object_key(object_key)
+        response = self.client.head_object(Bucket=self.bucket, Key=self.remote_key(logical_key))
+        size = int(response.get("Content-Length") or response.get("content-length") or 0)
+        return {
+            "object_key": logical_key,
+            "bucket": bucket_for_key(logical_key),
+            "storage_provider": self.provider,
+            "remote_bucket": self.bucket,
+            "remote_key": self.remote_key(logical_key),
+            "size": size,
+            "file_size": size,
+            "modified_at": str(response.get("Last-Modified") or response.get("last-modified") or ""),
+        }
+
+    def list_prefix(self, prefix: str = "") -> list[str]:
+        logical_prefix = validate_object_prefix(prefix)
+        remote_prefix = self.remote_key(logical_prefix) if logical_prefix else (self.prefix + "/" if self.prefix else "")
+        response = self.client.list_objects(Bucket=self.bucket, Prefix=remote_prefix)
+        contents = response.get("Contents") or []
+        keys = []
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            remote_key = str(item.get("Key") or "")
+            logical_key = self.logical_key(remote_key)
+            if logical_key:
+                keys.append(logical_key)
+        return sorted(keys)
+
+    def path_for_key(self, object_key: str) -> Path:
+        raise NotImplementedError("COS objects do not have local filesystem paths")
+
+    def remote_key(self, object_key: str) -> str:
+        logical_key = validate_object_key(object_key)
+        return f"{self.prefix}/{logical_key}" if self.prefix else logical_key
+
+    def logical_key(self, remote_key: str) -> str:
+        key = str(remote_key or "").strip("/")
+        if self.prefix:
+            prefix = self.prefix.rstrip("/") + "/"
+            if not key.startswith(prefix):
+                return ""
+            key = key[len(prefix):]
+        return validate_object_key(key)
+
+    def _build_client(self) -> Any:
+        try:
+            from qcloud_cos import CosConfig, CosS3Client
+        except ImportError as exc:
+            raise RuntimeError("已配置 OBJECT_STORAGE_PROVIDER=cos，但缺少 cos-python-sdk-v5 依赖") from exc
+        config = CosConfig(Region=self.region, SecretId=self.secret_id, SecretKey=self.secret_key, Scheme="https")
+        return CosS3Client(config)
+
+
 def create_signed_access(
     object_key: str,
     user_id: str,
@@ -284,7 +449,16 @@ def bucket_for_key(object_key: str) -> str | None:
     return None
 
 
-def get_object_storage_service(root: str | os.PathLike[str] | None = None) -> ObjectStorageService:
+def get_object_storage_service(root: str | os.PathLike[str] | None = None) -> ObjectStorageService | TencentCOSObjectStorageService:
+    provider = _configured_provider(os.environ)
+    if provider == COS_RUNTIME_ADAPTER_PROVIDER:
+        return TencentCOSObjectStorageService(
+            bucket=_first_env_value(os.environ, OBJECT_STORAGE_BUCKET_ENV_NAMES),
+            region=_first_env_value(os.environ, OBJECT_STORAGE_REGION_ENV_NAMES) or "ap-guangzhou",
+            secret_id=_first_env_value(os.environ, OBJECT_STORAGE_SECRET_ID_ENV_NAMES),
+            secret_key=_first_env_value(os.environ, OBJECT_STORAGE_SECRET_KEY_ENV_NAMES),
+            prefix=os.environ.get("OBJECT_STORAGE_PREFIX", "").strip(),
+        )
     configured = os.environ.get("OBJECT_STORE_DIR")
     return ObjectStorageService(root or configured or DEFAULT_OBJECT_STORE_DIR)
 
@@ -330,8 +504,20 @@ def assess_object_storage_readiness(env: Mapping[str, str] | None = None) -> dic
             blocking_issues.append("private_object_storage_required")
         if provider == "remote":
             warnings.append("generic_remote_provider_requires_runtime_adapter")
+        elif provider == COS_RUNTIME_ADAPTER_PROVIDER:
+            missing_runtime = _missing_required_config(
+                values,
+                (
+                    ("object_storage_region", OBJECT_STORAGE_REGION_ENV_NAMES),
+                    ("object_storage_secret_id", OBJECT_STORAGE_SECRET_ID_ENV_NAMES),
+                    ("object_storage_secret_key", OBJECT_STORAGE_SECRET_KEY_ENV_NAMES),
+                ),
+            )
+            if missing_runtime:
+                blocking_issues.append("cos_runtime_credentials_required")
+            warnings.append("cos_runtime_adapter_enabled")
         else:
-            warnings.append("remote_provider_sdk_not_initialized_by_readiness_check")
+            blocking_issues.append("remote_provider_runtime_adapter_not_implemented")
     else:
         mode = "unknown"
         blocking_issues.append("unsupported_object_storage_provider")
@@ -347,6 +533,19 @@ def assess_object_storage_readiness(env: Mapping[str, str] | None = None) -> dic
         "blockingIssues": blocking_issues,
         "warnings": warnings,
     }
+
+
+def generated_object_key(data: bytes, *, prefix: str = GENERATED_PREFIX, filename: str | None = None) -> str:
+    payload = _coerce_bytes(data)
+    digest = hashlib.sha256(payload).hexdigest()
+    day = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    stored_name = f"{digest[:16]}_{safe_object_filename(filename)}"
+    return validate_object_key(f"{_normalize_prefix(prefix)}/{day}/{stored_name}")
+
+
+def content_type_for_key(object_key: str) -> str:
+    guessed, _encoding = mimetypes.guess_type(validate_object_key(object_key))
+    return guessed or "application/octet-stream"
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -372,6 +571,14 @@ def _first_env_value(env: Mapping[str, str], names: tuple[str, ...]) -> str:
         if value:
             return value
     return ""
+
+
+def _missing_required_config(env: Mapping[str, str], items: tuple[tuple[str, tuple[str, ...]], ...]) -> list[str]:
+    missing = []
+    for key, names in items:
+        if not _first_env_value(env, names):
+            missing.append(key)
+    return missing
 
 
 def _env_value(env: Mapping[str, str], name: str) -> str:
@@ -404,6 +611,13 @@ def _require_string(value: str | os.PathLike[str] | bytes | bytearray | memoryvi
     return value
 
 
+def _require_non_empty(value: str, name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{name} must not be empty")
+    return text
+
+
 def _timestamp(value: int | float | datetime | None) -> float:
     if value is None:
         return time.time()
@@ -431,9 +645,12 @@ __all__ = [
     "MENUS_PREFIX",
     "ORIGINALS_PREFIX",
     "ObjectStorageService",
+    "TencentCOSObjectStorageService",
     "assess_object_storage_readiness",
     "bucket_for_key",
+    "content_type_for_key",
     "create_signed_access",
+    "generated_object_key",
     "get_object_storage_service",
     "validate_object_key",
     "validate_object_prefix",
