@@ -2862,6 +2862,49 @@ def persist_menu_upload(
     return menu_upload_id
 
 
+def persist_uploaded_library_image(
+    local_path: Path,
+    *,
+    upload_batch: str,
+    original_member: str,
+    style_id: str = "style-upload",
+) -> str:
+    object_key = object_storage_service.validate_object_key(
+        f"{object_storage_service.ORIGINALS_PREFIX}{upload_batch}/{style_id}/{local_path.name}"
+    )
+    storage = object_storage_service.get_object_storage_service()
+    stored_key = storage.put_file(local_path, object_key=object_key)
+    raw = local_path.read_bytes()
+    width = 0
+    height = 0
+    try:
+        with Image.open(local_path) as img:
+            width, height = img.size
+    except Exception:
+        pass
+    conn = product_db_conn()
+    try:
+        record = storage_db.create_library_image(
+            conn,
+            object_key=stored_key,
+            dish_name=local_path.stem,
+            store_name=upload_batch,
+            style_id=style_id,
+            source="uploaded",
+            sha256=hashlib.sha256(raw).hexdigest(),
+            category_path=style_id,
+            width=width,
+            height=height,
+            file_size=local_path.stat().st_size,
+            reusable=True,
+            tags=[style_id, "uploaded"],
+            metadata={"originalMember": original_member, "uploadBatch": upload_batch},
+        )
+    finally:
+        conn.close()
+    return str(record["id"])
+
+
 def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str, Any]) -> None:
     candidate["aiProvider"] = str(metadata.get("provider") or candidate.get("aiProvider") or "")
     candidate["generationStatus"] = str(metadata.get("status") or "")
@@ -5022,23 +5065,52 @@ def upload_library():
         return jsonify({"error": "没有收到图库 zip"}), 400
     if not file.filename.lower().endswith(".zip"):
         return jsonify({"error": "请上传 zip 文件"}), 400
-    batch = LIBRARY_DIR / f"uploaded_{int(time.time())}"
+    batch = LIBRARY_DIR / f"uploaded_{int(time.time())}_{time.time_ns() % 1_000_000_000:09d}"
     batch.mkdir(parents=True, exist_ok=True)
+    persisted_image_ids: list[str] = []
     raw = io.BytesIO(file.read())
-    with zipfile.ZipFile(raw) as zf:
-        for member in zf.infolist():
-            if member.is_dir():
-                continue
-            suffix = Path(member.filename).suffix.lower()
-            if suffix not in IMAGE_EXTS:
-                continue
-            name = safe_filename(Path(member.filename).name)
-            target = batch / "style-upload" / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+    try:
+        with zipfile.ZipFile(raw) as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                suffix = Path(member.filename).suffix.lower()
+                if suffix not in IMAGE_EXTS:
+                    continue
+                name = safe_filename(Path(member.filename).name)
+                target = batch / "style-upload" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                persisted_image_ids.append(
+                    persist_uploaded_library_image(
+                        target,
+                        upload_batch=batch.name,
+                        original_member=member.filename,
+                        style_id="style-upload",
+                    )
+                )
+    except zipfile.BadZipFile:
+        shutil.rmtree(batch, ignore_errors=True)
+        return jsonify({"error": "图库 zip 文件无法读取", "code": "invalid_library_zip"}), 400
+    except Exception as exc:
+        shutil.rmtree(batch, ignore_errors=True)
+        return jsonify(
+            {
+                "error": "图库图片存储失败，请检查对象存储配置",
+                "code": "library_object_storage_failed",
+                "detail": type(exc).__name__,
+            }
+        ), 503
     library_images.cache_clear()
-    return jsonify({"ok": True, "plan": public_plan_payload(build_plan())})
+    return jsonify(
+        {
+            "ok": True,
+            "uploadedImageCount": len(persisted_image_ids),
+            "libraryImageIds": persisted_image_ids,
+            "plan": public_plan_payload(build_plan()),
+        }
+    )
 
 
 @app.post("/api/export")

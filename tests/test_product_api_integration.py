@@ -5,12 +5,14 @@ import io
 import json
 import sqlite3
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
+from PIL import Image
 
 import auth_service
 import billing
@@ -180,6 +182,54 @@ def test_upload_menu_persists_original_file_to_object_storage_and_db(
 
     storage = object_storage_service.ObjectStorageService(product_api.object_store_dir)
     assert storage.read_bytes(row["object_key"]) == b"fake-xlsx-bytes"
+
+
+def test_upload_library_persists_images_to_object_storage_and_db(
+    product_api: ProductApiFixture,
+) -> None:
+    app_module = importlib.import_module("app")
+    image_bytes = _test_image_bytes()
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("湘菜/宫保鸡丁.jpg", image_bytes)
+        zf.writestr("notes.txt", b"ignore")
+    zip_buffer.seek(0)
+
+    with mock.patch.object(app_module, "build_plan", return_value={"results": [], "styles": []}):
+        response = product_api.client.post(
+            "/api/upload-library",
+            data={"file": (zip_buffer, "library.zip")},
+            content_type="multipart/form-data",
+        )
+
+    payload = _json_for_status(response, 200, "POST /api/upload-library")
+    assert payload["ok"] is True
+    assert payload["uploadedImageCount"] == 1
+    assert len(payload["libraryImageIds"]) == 1
+    assert "objectKey" not in json.dumps(payload)
+
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        row = conn.execute("SELECT * FROM library_images WHERE id = ?", (payload["libraryImageIds"][0],)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["dish_name"] == "宫保鸡丁"
+    assert row["source"] == "uploaded"
+    assert row["style_id"] == "style-upload"
+    assert row["object_key"].startswith("originals/uploaded_")
+    assert row["file_size"] == len(image_bytes)
+    assert row["width"] == 2
+    assert row["height"] == 3
+
+    storage = object_storage_service.ObjectStorageService(product_api.object_store_dir)
+    assert storage.read_bytes(row["object_key"]) == image_bytes
+
+
+def _test_image_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 3), color=(240, 60, 40)).save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 
 def test_ops_readiness_reports_storage_and_generation_queue(
