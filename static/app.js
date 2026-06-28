@@ -179,10 +179,24 @@ function styleSampleBlocked(sample, styleId = "") {
   return Boolean(!sample?.url && (state.backgroundLoading.has(styleId) || sample?.generationAction || sample?.generationStatus));
 }
 
+function styleGenerationFailureText(sample) {
+  const error = String(sample?.generationError || "");
+  if (/ResourceInsufficient|资源不足/.test(error)) return "混元资源不足";
+  if (/AuthFailure|Unauthorized|Secret|鉴权|密钥/.test(error)) return "混元鉴权失败";
+  return "混元生成失败";
+}
+
+function styleGenerationFailureDetail(sample) {
+  const label = styleGenerationFailureText(sample);
+  if (label === "混元资源不足") return "混元资源不足，请开通资源包或后付费后重试。";
+  if (label === "混元鉴权失败") return "混元鉴权失败，请检查腾讯云密钥配置。";
+  return "混元生成失败，请稍后重试或检查混元接口错误。";
+}
+
 function styleSampleBlockText(sample, styleId = "") {
   if (state.backgroundLoading.has(styleId)) return "正在生成背景";
   if (!sample) return "等待真实背景";
-  if (sample.generationAction === "ProviderError" || sample.generationStatus === "failed") return "混元生成失败";
+  if (sample.generationAction === "ProviderError" || sample.generationStatus === "failed") return styleGenerationFailureText(sample);
   if (sample.generationAction === "WaitingForProvider") return "混元未配置";
   if (sample.generationAction === "PendingGeneration") return "等待生成背景";
   return "等待真实背景";
@@ -1273,10 +1287,11 @@ function renderStylePreview() {
         return;
       }
       if (stats.failed === stats.total) {
+        const failedStyle = styleChoices().find(style => style.sample?.generationAction === "ProviderError" || style.sample?.generationStatus === "failed");
         if (title) title.textContent = "背景图生成失败";
-        setStylePreviewStatus("error", "6 张背景图都生成失败。请稍后重试，或检查混元接口错误。");
+        setStylePreviewStatus("error", `6 张背景图都生成失败。${styleGenerationFailureDetail(failedStyle?.sample)}`);
         box.className = "style-preview-box empty";
-        box.innerHTML = "背景图生成失败";
+        box.innerHTML = styleSampleBlockText(failedStyle?.sample);
         return;
       }
       if (title) title.textContent = `正在生成背景图 · ${stats.ready}/${stats.total}`;

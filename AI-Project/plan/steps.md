@@ -6,8 +6,11 @@
 - [x] Run available broader test suite.
 - [x] Sync current patch to deploy repo.
 - [x] Run deploy repository tests.
-- [ ] Push to GitHub and wait for Render deployment.
-- [ ] Verify Render `/api/plan` and `/api/style-background`.
+- [x] Push to GitHub.
+- [x] Wait for Render deployment.
+- [x] Verify Render `/api/plan`.
+- [ ] Enable Tencent Cloud Hunyuan resources / postpaid billing.
+- [ ] Verify Render `/api/style-background` returns a real image URL after Tencent resource is available.
 
 ## Completed
 - [x] Reproduced Render background generation timeout.

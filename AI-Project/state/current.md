@@ -15,8 +15,11 @@ Step 2: 验证 Render 背景图异步生成补丁。
 - Local tests after async patch: done
 - Sync to deploy repository: done
 - Deploy repository tests: done
-- GitHub push for Render deploy: in progress
-- Render verification: pending
+- GitHub push for Render deploy: done
+- Render deployment: done
+- Render `/api/plan` verification: done
+- Render Hunyuan background generation verification: blocked by Tencent Cloud ResourceInsufficient
+- ResourceInsufficient UI copy: done
 
 ## Constraints
 - Codex 每次继续任务前必须先读 `AI-Project/state/current.md`。
@@ -40,7 +43,13 @@ Step 2: 验证 Render 背景图异步生成补丁。
 - Render `/api/plan?quality=standard` 会长时间挂起并返回 500，之后普通接口也会超时。
 - 根因是 `/api/plan` 通过 `style_options -> style_sample_candidate -> tencent_style_background` 在单个请求内同步生成 6 张混元背景图，Render 单 worker 被阻塞或崩溃。
 - 本地已开始最小补丁：`/api/plan` 只返回 pending 背景卡片，新增 `/api/style-background?style=...&generate=1` 按单张风格背景异步生成，前端并发 2 个请求逐张加载。
+- Render 新代码已上线，`/api/style-background` 不再 404。
+- Render `/api/plan?quality=standard` 已验证 200，约 1.76 秒返回，6 张背景均为 `PendingGeneration`，不再同步生成导致阻塞。
+- Render `/api/style-background?style=style-1&generate=1` 已验证 200，约 2.45 秒返回失败状态；腾讯云返回 `ResourceInsufficient`，需要开通资源包或后付费后才能真实出图。
+- 前端已补充 ResourceInsufficient 显示：腾讯云额度不足时显示 `混元资源不足`，不再只显示笼统失败或继续转圈。
 
 ## Next Action
-1. 在 deploy repo 提交并 push 到 GitHub 触发 Render 部署。
-2. 在线验证 Render `/api/plan` 快速返回，`/api/style-background` 能生成真实背景图。
+1. 同步并推送 ResourceInsufficient UI 文案补丁。
+2. 在腾讯云控制台为混元/AIArt 开通可用资源包或后付费。
+3. 资源开通后重新请求 `https://waimai-image-tool-1.onrender.com/api/style-background?style=style-1&generate=1`，确认返回真实图片 URL。
+4. 若返回 URL，再验证前端 6 张背景逐张加载和选择背景后的样图生成。
