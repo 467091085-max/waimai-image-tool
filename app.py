@@ -2713,6 +2713,108 @@ def public_export_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def object_storage_export_payload(
+    payload: dict[str, Any],
+    *,
+    scope: str,
+    platforms: list[str] | str | None,
+) -> dict[str, Any]:
+    secret = object_access_signing_secret()
+    if not secret:
+        return payload
+
+    local_export = export_file_from_download_url(str(payload.get("download") or ""))
+    if local_export is None:
+        return payload
+
+    local_path, relative_name = local_export
+    object_key = object_storage_service.validate_object_key(
+        f"{object_storage_service.EXPORTS_PREFIX}{relative_name}"
+    )
+    storage = object_storage_service.get_object_storage_service()
+    stored_key = storage.put_file(local_path, object_key=object_key)
+    access = object_storage_service.create_signed_access(
+        stored_key,
+        current_user_id(),
+        asset_security.EXPORT,
+        asset_security.EXPORT,
+        secret,
+        base_url="/objects",
+    )
+    package_id = record_export_package(
+        object_key=stored_key,
+        scope=scope,
+        platforms=platforms,
+        image_count=int(payload.get("images") or 0),
+        file_size=local_path.stat().st_size,
+        metadata={
+            "rows": payload.get("rows"),
+            "watermark": payload.get("watermark"),
+            "legacyDownload": payload.get("download"),
+        },
+    )
+    return {
+        **payload,
+        "download": access["url"],
+        "downloadProvider": "object_storage",
+        "exportPackageId": package_id,
+        "expiresAt": access["expires_at"],
+    }
+
+
+def export_file_from_download_url(download_url: str) -> tuple[Path, str] | None:
+    parsed = urllib.parse.urlsplit(str(download_url or ""))
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/download/"):
+        return None
+    relative_name = urllib.parse.unquote(parsed.path[len("/download/") :])
+    safe_name = safe_export_download_name(relative_name)
+    if safe_name is None:
+        return None
+    return (EXPORT_DIR / safe_name).resolve(), safe_name
+
+
+def record_export_package(
+    *,
+    object_key: str,
+    scope: str,
+    platforms: list[str] | str | None,
+    image_count: int,
+    file_size: int,
+    metadata: dict[str, Any],
+) -> str:
+    package_id = storage_db.new_id("export_pkg")
+    now = storage_db.utc_now()
+    platform_text = ",".join(platforms) if isinstance(platforms, list) else str(platforms or "")
+    conn = product_db_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO export_packages (
+                    id, job_id, object_key, platform, scope, image_count, file_size,
+                    status, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    package_id,
+                    None,
+                    object_key,
+                    platform_text,
+                    str(scope or ""),
+                    max(0, int(image_count)),
+                    max(0, int(file_size)),
+                    "ready",
+                    storage_db.json_dumps(metadata),
+                    now,
+                    now,
+                ),
+            )
+    finally:
+        conn.close()
+    return package_id
+
+
 def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str, Any]) -> None:
     candidate["aiProvider"] = str(metadata.get("provider") or candidate.get("aiProvider") or "")
     candidate["generationStatus"] = str(metadata.get("status") or "")
@@ -4885,19 +4987,31 @@ def api_export():
         return jsonify({"error": str(exc)}), 400
     plan = build_plan(style, quality)
     export_results = prepare_results_for_export(plan["results"], style)
-    return jsonify(
-        public_export_payload(
-            export_delivery_zip(
-                export_results,
-                EXPORT_DIR,
-                scope=str(payload.get("scope", "all")),
-                selected_rows=selected_rows,
-                image_format=str(payload.get("format", "jpg")),
-                watermark=watermark,
-                platforms=platforms,
-            )
-        )
+    scope = str(payload.get("scope", "all"))
+    export_payload = export_delivery_zip(
+        export_results,
+        EXPORT_DIR,
+        scope=scope,
+        selected_rows=selected_rows,
+        image_format=str(payload.get("format", "jpg")),
+        watermark=watermark,
+        platforms=platforms,
     )
+    try:
+        export_payload = object_storage_export_payload(
+            export_payload,
+            scope=scope,
+            platforms=platforms,
+        )
+    except Exception as exc:
+        return jsonify(
+            {
+                "error": "导出包存储失败，请检查对象存储配置",
+                "code": "export_object_storage_failed",
+                "detail": type(exc).__name__,
+            }
+        ), 503
+    return jsonify(public_export_payload(export_payload))
 
 
 @app.get("/media/<path:name>")

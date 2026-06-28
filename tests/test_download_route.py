@@ -160,11 +160,22 @@ class DownloadRouteTests(unittest.TestCase):
     def test_export_api_returns_signed_download_url_when_secret_configured(self) -> None:
         secret = "download-secret"
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             export_dir = self._export_dir(tmp)
             self._write_export(export_dir, "ok.zip", b"zip-bytes")
+            object_store_dir = root / "object-store"
+            db_path = root / "storage.sqlite3"
 
             with (
                 self._download_env(secret, ""),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "OBJECT_STORE_DIR": str(object_store_dir),
+                        "STORAGE_DB_PATH": str(db_path),
+                    },
+                    clear=False,
+                ),
                 mock.patch.object(app_module, "EXPORT_DIR", export_dir),
                 mock.patch.object(app_module, "build_plan", return_value={"results": []}),
                 mock.patch.object(app_module, "prepare_results_for_export", return_value=[]),
@@ -179,11 +190,25 @@ class DownloadRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 payload = response.get_json()
                 self.assertIn("token=", payload["download"])
+                self.assertTrue(payload["download"].startswith("/objects/exports/ok.zip?token="))
+                self.assertEqual(payload["downloadProvider"], "object_storage")
 
                 download = client.get(payload["download"], headers={"X-User-Id": "user-1"})
                 self.assertEqual(download.status_code, 200)
                 self.assertEqual(download.data, b"zip-bytes")
                 download.close()
+
+            conn = storage_db.get_conn(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT object_key, image_count, status FROM export_packages"
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["object_key"], "exports/ok.zip")
+            self.assertEqual(rows[0]["image_count"], 0)
+            self.assertEqual(rows[0]["status"], "ready")
 
     def _download_env(self, download_secret: str, asset_secret: str):
         return mock.patch.dict(
