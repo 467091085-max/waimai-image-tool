@@ -358,7 +358,7 @@ def local_final_fallback_enabled() -> bool:
 
 
 def local_background_fallback_enabled() -> bool:
-    return env_truthy("ALLOW_LOCAL_BACKGROUND_FALLBACK", default=True)
+    return env_truthy("ALLOW_LOCAL_BACKGROUND_FALLBACK", default=False)
 
 
 def is_safe_style_id(style_id: str) -> bool:
@@ -2030,7 +2030,22 @@ def style_background_target(style_id: str) -> Path:
     return LIBRARY_DIR / "_style_backgrounds" / current_menu_cache_key() / safe_style_path_segment(style_id) / "背景风格样图.jpg"
 
 
-def style_sample_candidate(style_id: str) -> dict[str, Any]:
+def pending_style_background_candidate(style_id: str, action: str = "PendingGeneration") -> dict[str, Any]:
+    target = style_background_target(style_id)
+    candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 0.0)
+    candidate["url"] = ""
+    metadata = {
+        "status": "pending",
+        "provider": "tencent-hunyuan",
+        "action": action,
+        "styleId": style_id,
+        "category": active_category_name(),
+    }
+    candidate_generation_metadata(candidate, metadata)
+    return candidate
+
+
+def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, Any]:
     target = style_background_target(style_id)
     metadata = load_ai_output_metadata(target) if target.exists() else None
     provider = str(metadata.get("provider") or "") if metadata else ""
@@ -2042,6 +2057,9 @@ def style_sample_candidate(style_id: str) -> dict[str, Any]:
         if metadata:
             candidate_generation_metadata(candidate, metadata)
         return candidate
+    if not generate:
+        return pending_style_background_candidate(style_id, "PendingGeneration" if tencent_ready() else "WaitingForProvider")
+    provider_error = ""
     if tencent_ready() and env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=True):
         try:
             detail = tencent_style_background(style_id, target)
@@ -2061,12 +2079,20 @@ def style_sample_candidate(style_id: str) -> dict[str, Any]:
             if asset_record:
                 candidate["assetRecordId"] = asset_record["assetId"]
             return candidate
-        except Exception:
-            pass
+        except Exception as exc:
+            provider_error = str(exc)
     if not local_background_fallback_enabled():
         candidate = candidate_from_path(target, "背景风格样图", style_id, "generated-style-sample", 0.0)
         candidate["url"] = ""
-        metadata = {"status": "pending", "provider": "tencent-hunyuan", "action": "WaitingForProvider", "styleId": style_id, "category": active_category_name()}
+        metadata = {
+            "status": "failed" if provider_error else "pending",
+            "provider": "tencent-hunyuan",
+            "action": "ProviderError" if provider_error else "WaitingForProvider",
+            "styleId": style_id,
+            "category": active_category_name(),
+        }
+        if provider_error:
+            metadata["error"] = provider_error
         candidate_generation_metadata(candidate, metadata)
         return candidate
     metadata = render_local_style_background(target, style_id)
@@ -2451,6 +2477,8 @@ def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str,
     candidate["generationStatus"] = str(metadata.get("status") or "")
     candidate["generationAction"] = str(metadata.get("action") or "")
     candidate["generationProvider"] = str(metadata.get("provider") or "")
+    if metadata.get("error"):
+        candidate["generationError"] = str(metadata.get("error"))
     if isinstance(metadata.get("tencent"), dict):
         candidate["tencent"] = metadata["tencent"]
 
@@ -2760,9 +2788,9 @@ def style_options(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 bg_replace += 1
         if style_id in STYLE_COLORS:
-            sample = style_sample_candidate(style_id)
+            sample = style_sample_candidate(style_id, generate=False)
         else:
-            sample = sample or style_sample_candidate(style_id)
+            sample = sample or style_sample_candidate(style_id, generate=False)
         style_name = style_name_for(style_id)
         display_name = BACKGROUND_LABELS[idx - 1] if idx <= len(BACKGROUND_LABELS) else f"{idx}号背景"
         color = style_color_for(style_id)
@@ -3363,6 +3391,22 @@ def api_plan():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(public_plan_payload(build_plan(style, request.args.get("quality", "standard"))))
+
+
+@app.get("/api/style-background")
+def api_style_background():
+    try:
+        style = validate_requested_style(request.args.get("style", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    generate = str(request.args.get("generate") or "").strip().lower() in {"1", "true", "yes", "on"}
+    sample = style_sample_candidate(style, generate=generate)
+    return jsonify(public_style_payload({
+        "id": style,
+        "styleId": style,
+        "name": style_name_for(style),
+        "sample": sample,
+    }))
 
 
 @app.get("/api/style-preview")

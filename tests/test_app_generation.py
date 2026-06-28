@@ -50,6 +50,7 @@ def menu_row(row: int, name: str, kind: str, candidates: list[dict[str, object]]
         "row": row,
         "category": "测试",
         "name": name,
+        "norm": app_module.normalize(name),
         "kind": kind,
         "components": components or [],
         "candidates": candidates,
@@ -305,6 +306,7 @@ class AppGenerationTests(unittest.TestCase):
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "library_images", return_value=[image]),
                 mock.patch.object(app_module, "tencent_ready", return_value=False),
+                mock.patch.object(app_module, "local_background_fallback_enabled", return_value=True),
                 mock.patch.object(app_module, "tencent_style_background") as style_background,
                 mock.patch.object(app_module, "draw_demo_image") as draw_demo,
             ):
@@ -314,6 +316,74 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(style_candidate["aiProvider"], "local-category")
             self.assertEqual(style_candidate["generationAction"], "LocalCategoryBackground")
             draw_demo.assert_not_called()
+
+    def test_style_background_sample_waits_for_provider_without_tencent_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=False),
+                mock.patch.object(app_module, "local_background_fallback_enabled", return_value=False),
+                mock.patch.object(app_module, "tencent_style_background") as style_background,
+            ):
+                style_candidate = app_module.style_sample_candidate("style-3")
+
+            style_background.assert_not_called()
+            self.assertEqual(style_candidate["url"], "")
+            self.assertEqual(style_candidate["aiProvider"], "tencent-hunyuan")
+            self.assertEqual(style_candidate["generationStatus"], "pending")
+            self.assertEqual(style_candidate["generationAction"], "WaitingForProvider")
+
+    def test_build_plan_does_not_generate_style_backgrounds_synchronously(self) -> None:
+        generate_flags: list[bool] = []
+
+        def fake_style_sample(style_id: str, generate: bool = True) -> dict[str, object]:
+            generate_flags.append(generate)
+            return {
+                "imageId": f"{style_id}-pending",
+                "url": "",
+                "styleId": style_id,
+                "dishName": "背景风格样图",
+                "generationProvider": "tencent-hunyuan",
+                "generationStatus": "pending",
+                "generationAction": "PendingGeneration",
+            }
+
+        with (
+            mock.patch.object(app_module, "parse_menu", return_value={"items": [menu_row(1, "牛油果鸡胸沙拉", "单品", [])], "store": "测试店"}),
+            mock.patch.object(app_module, "library_images", return_value=[]),
+            mock.patch.object(app_module, "public_library_images", return_value=[]),
+            mock.patch.object(app_module, "style_sample_candidate", side_effect=fake_style_sample),
+        ):
+            plan = app_module.build_plan("", "standard")
+
+        self.assertEqual(len(plan["styles"]), app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertEqual(generate_flags, [False] * app_module.PREVIEW_SAMPLE_COUNT)
+
+    def test_style_background_api_generates_one_requested_style(self) -> None:
+        calls: list[tuple[str, bool]] = []
+
+        def fake_style_sample(style_id: str, generate: bool = True) -> dict[str, object]:
+            calls.append((style_id, generate))
+            return {
+                "imageId": f"{style_id}-done",
+                "url": f"/media/{style_id}.jpg",
+                "styleId": style_id,
+                "dishName": "背景风格样图",
+                "generationProvider": "tencent-hunyuan",
+                "generationStatus": "succeeded",
+                "generationAction": "TextToImageLite",
+            }
+
+        with mock.patch.object(app_module, "style_sample_candidate", side_effect=fake_style_sample):
+            response = app_module.app.test_client().get("/api/style-background?style=style-1&generate=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(calls, [("style-1", True)])
+        self.assertEqual(payload["sample"]["url"], "/media/style-1.jpg")
+        self.assertEqual(payload["sample"]["generationAction"], "TextToImageLite")
 
     def test_persist_hunyuan_product_asset_writes_matchable_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

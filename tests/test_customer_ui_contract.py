@@ -57,15 +57,19 @@ class CustomerUiContractTests(unittest.TestCase):
         sample_button_start = self.script.index('$("#generateSamplesBtn").onclick')
         sample_button_end = self.script.index('$("#formalShortcutBtn").onclick', sample_button_start)
         sample_button_handler = self.script[sample_button_start:sample_button_end]
+        load_preview_start = self.script.index("async function loadStylePreview")
+        load_preview_end = self.script.index("async function uploadMenu", load_preview_start)
+        load_preview_body = self.script[load_preview_start:load_preview_end]
 
         self.assertNotIn("loadStylePreview", style_handler)
         self.assertNotIn("/api/style-preview", style_handler)
         self.assertNotIn("generate=1", style_handler)
         self.assertIn('$("#generateSamplesBtn").onclick', self.script)
         self.assertIn("loadStylePreview(state.pendingStyle)", sample_button_handler)
-        self.assertIn("generate=1", self.script)
-        self.assertEqual(self.script.count("generate=1"), 1)
+        self.assertIn("generate=1", load_preview_body)
+        self.assertEqual(load_preview_body.count("generate=1"), 1)
         self.assertEqual(self.script.count("/api/style-preview?"), 1)
+        self.assertEqual(self.script.count("/api/style-background?"), 1)
         self.assertNotIn("/api/style-preview-sample", self.script)
 
     def test_formal_generation_uses_async_jobs_with_timeout_status(self) -> None:

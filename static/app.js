@@ -25,6 +25,8 @@ const state = {
   generationJob: null,
   previewLoadingStyle: "",
   previewRequestedStyle: "",
+  backgroundLoading: new Set(),
+  backgroundRequested: new Set(),
   auth: {
     token: readStoredAuthToken(),
     user: null,
@@ -171,6 +173,37 @@ function watermarkDemoImage() {
 
 function imageFallbackAttr(index = 0) {
   return `onerror="this.onerror=null;this.src='${styleFallbackImage(index)}'"`;
+}
+
+function styleSampleBlocked(sample, styleId = "") {
+  return Boolean(!sample?.url && (state.backgroundLoading.has(styleId) || sample?.generationAction || sample?.generationStatus));
+}
+
+function styleSampleBlockText(sample, styleId = "") {
+  if (state.backgroundLoading.has(styleId)) return "正在生成背景";
+  if (!sample) return "等待真实背景";
+  if (sample.generationAction === "ProviderError" || sample.generationStatus === "failed") return "混元生成失败";
+  if (sample.generationAction === "WaitingForProvider") return "混元未配置";
+  if (sample.generationAction === "PendingGeneration") return "等待生成背景";
+  return "等待真实背景";
+}
+
+function allStyleBackgroundsBlocked(plan = state.plan) {
+  const choices = styleChoices(plan);
+  return choices.length > 0 && choices.every(style => styleSampleBlocked(style.sample, style.id));
+}
+
+function styleBackgroundStats(plan = state.plan) {
+  const choices = styleChoices(plan);
+  return choices.reduce((stats, style) => {
+    stats.total += 1;
+    if (style.sample?.url) stats.ready += 1;
+    if (state.backgroundLoading.has(style.id)) stats.loading += 1;
+    if (style.sample?.generationAction === "WaitingForProvider") stats.waitingProvider += 1;
+    if (style.sample?.generationAction === "ProviderError" || style.sample?.generationStatus === "failed") stats.failed += 1;
+    if (!style.sample?.url && style.sample?.generationAction === "PendingGeneration") stats.pending += 1;
+    return stats;
+  }, { total: 0, ready: 0, loading: 0, waitingProvider: 0, failed: 0, pending: 0 });
 }
 
 function baseImageCharge() {
@@ -1194,14 +1227,17 @@ function renderStyles() {
   $("#styleBox").innerHTML = styleChoices(p).map(s => {
     const selected = s.id === state.pendingStyle;
     const ready = (s.direct || 0) + (s.review || 0) + (s.bgReplace || 0);
-    const loading = state.previewLoadingStyle === s.id;
-    const sampleUrl = s.sample?.url || styleFallbackImage(s.uiIndex);
-    return `<button class="style ${selected ? "active" : ""} ${loading ? "is-loading" : ""}" data-style="${s.id}" type="button">
-      <img src="${sampleUrl}" alt="${esc(s.uiName)}" ${imageFallbackAttr(s.uiIndex)}>
+    const loading = state.previewLoadingStyle === s.id || state.backgroundLoading.has(s.id);
+    const sampleUrl = s.sample?.url || "";
+    const blocked = styleSampleBlocked(s.sample, s.id);
+    return `<button class="style ${selected ? "active" : ""} ${loading ? "is-loading" : ""} ${blocked ? "blocked" : ""}" data-style="${s.id}" type="button" ${blocked ? "disabled" : ""}>
+      ${sampleUrl
+        ? `<img src="${sampleUrl}" alt="${esc(s.uiName)}" ${imageFallbackAttr(s.uiIndex)}>`
+        : `<div class="style-image-placeholder" role="img" aria-label="${esc(styleSampleBlockText(s.sample, s.id))}"><span>${esc(styleSampleBlockText(s.sample, s.id))}</span></div>`}
       <span class="style-body">
         <b>${esc(s.uiName)}</b>
         <span>背景预览 ${s.uiIndex + 1}/6 · 适配约 ${Math.round((ready / Math.max(1, p.summary.total)) * 100)}%</span>
-        <em>${loading ? "样图生成中" : selected ? "已选中" : "点击选择"}</em>
+        <em>${blocked ? styleSampleBlockText(s.sample, s.id) : loading ? "样图生成中" : selected ? "已选中" : "点击选择"}</em>
       </span>
     </button>`;
   }).join("");
@@ -1227,6 +1263,28 @@ function renderStylePreview() {
   const title = $("#stylePreviewTitle");
   if (!box) return;
   if (!state.pendingStyle) {
+    if (allStyleBackgroundsBlocked()) {
+      const stats = styleBackgroundStats();
+      if (stats.waitingProvider === stats.total) {
+        if (title) title.textContent = "混元未配置，无法生成真实背景图";
+        setStylePreviewStatus("warning", "当前服务缺少混元密钥，已停止本地假背景和色块兜底。配置混元后会自动生成 6 张真实背景图。");
+        box.className = "style-preview-box empty";
+        box.innerHTML = "等待混元配置后生成真实背景";
+        return;
+      }
+      if (stats.failed === stats.total) {
+        if (title) title.textContent = "背景图生成失败";
+        setStylePreviewStatus("error", "6 张背景图都生成失败。请稍后重试，或检查混元接口错误。");
+        box.className = "style-preview-box empty";
+        box.innerHTML = "背景图生成失败";
+        return;
+      }
+      if (title) title.textContent = `正在生成背景图 · ${stats.ready}/${stats.total}`;
+      setStylePreviewStatus("loading", `正在逐张生成 6 张真实背景图，已完成 ${stats.ready}/${stats.total}${stats.failed ? `，失败 ${stats.failed} 张` : ""}。`);
+      box.className = "style-preview-box empty";
+      box.innerHTML = "真实背景图生成中";
+      return;
+    }
     if (title) title.textContent = "先选择背景，这里会展示 6 张免费单品样图";
     setStylePreviewStatus("", "先选择上方任意背景。选择后会生成 6 张免费单品样图，不扣积分。");
     box.className = "style-preview-box";
@@ -1284,6 +1342,57 @@ function renderStylePreview() {
     );
   }
   box.innerHTML = Array.from({ length: 6 }, (_, index) => previewSampleCard(samples[index], index)).join("");
+}
+
+function updatePlanStyleSample(styleId, updatedStyle) {
+  const style = state.plan?.styles?.find(item => item.id === styleId || item.styleId === styleId);
+  if (!style || !updatedStyle) return;
+  style.sample = updatedStyle.sample || style.sample;
+}
+
+async function loadStyleBackground(styleId, planRef) {
+  state.backgroundRequested.add(styleId);
+  state.backgroundLoading.add(styleId);
+  renderStyles();
+  renderStylePreview();
+  try {
+    const updated = await api(`/api/style-background?style=${encodeURIComponent(styleId)}&generate=1`);
+    if (state.plan === planRef) updatePlanStyleSample(styleId, updated);
+  } catch (error) {
+    if (state.plan === planRef) {
+      updatePlanStyleSample(styleId, {
+        sample: {
+          url: "",
+          generationAction: "ProviderError",
+          generationStatus: "failed",
+          generationProvider: "tencent-hunyuan",
+          generationError: error.message || "背景图生成失败"
+        }
+      });
+    }
+  } finally {
+    state.backgroundLoading.delete(styleId);
+    renderStyles();
+    renderStylePreview();
+    setControls();
+  }
+}
+
+async function loadStyleBackgrounds(planRef = state.plan) {
+  const pending = styleChoices(planRef)
+    .filter(style => !style.sample?.url)
+    .filter(style => style.sample?.generationAction !== "WaitingForProvider")
+    .filter(style => !state.backgroundRequested.has(style.id))
+    .map(style => style.id);
+  let index = 0;
+  const workerCount = Math.min(2, pending.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (index < pending.length && state.plan === planRef) {
+      const styleId = pending[index];
+      index += 1;
+      await loadStyleBackground(styleId, planRef);
+    }
+  }));
 }
 
 async function loadStylePreview(styleId) {
@@ -1414,6 +1523,8 @@ async function uploadMenu() {
     state.freeReworkRemaining = 0;
     state.stylePreview = null;
     state.stylePreviewError = null;
+    state.backgroundLoading = new Set();
+    state.backgroundRequested = new Set();
     state.watermark = defaultWatermark();
     state.deliveryPlatforms = [];
     state.selectedRows.clear();
@@ -1440,6 +1551,8 @@ async function startJob(options = {}) {
   state.freeReworkRemaining = 0;
   state.stylePreview = null;
   state.stylePreviewError = null;
+  state.backgroundLoading = new Set();
+  state.backgroundRequested = new Set();
   state.selectedRows.clear();
   setControls();
   setProgress(38, "正在识别菜品和品类", 2);
@@ -1453,6 +1566,7 @@ async function startJob(options = {}) {
     setProgress(66, "请选择一套图片风格，并生成免费样图", 2);
     renderPlan(false);
     if (doScroll) scrollToPanel("#stylesPanel");
+    loadStyleBackgrounds(state.plan).catch(e => toast(e.message || "背景图生成失败"));
     if (options.auto) toast("风格方案已生成，请选择一套风格");
   } finally {
     state.running = false;
