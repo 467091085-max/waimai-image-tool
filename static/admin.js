@@ -536,14 +536,41 @@ function renderPaymentReadiness(payments, hasPaymentsField) {
   });
 }
 
+function renderGenerationProviderReadiness(generationProvider, hasGenerationProviderField) {
+  const missing = !hasGenerationProviderField || !generationProvider || typeof generationProvider !== "object";
+  const warnings = readinessWarnings(generationProvider);
+  const errors = readinessIssues(generationProvider);
+  const status = missing
+    ? "未接入"
+    : [
+        generationProvider.provider,
+        generationProvider.mode,
+        generationProvider.tokenhubModel
+      ].filter(Boolean).join(" / ") || "未知";
+  const detail = missing
+    ? "readiness 未返回 generationProvider 字段"
+    : `TokenHub ${generationProvider.tokenhubReady ? "ready" : "not ready"} · Cloud API ${generationProvider.cloudApiReady ? "ready" : "not ready"} · tokenhubRequired ${generationProvider.tokenhubRequired ? "yes" : "no"}`;
+  return readinessCard({
+    title: "AI 生图 provider",
+    ready: generationProvider?.ready,
+    status,
+    warnings,
+    errors,
+    detail,
+    missing
+  });
+}
+
 function renderOpsReadiness(readiness = {}, queueSnapshot = null) {
   const container = $("#opsReadinessCards");
   if (!container) return;
 
   const hasPaymentsField = Object.prototype.hasOwnProperty.call(readiness || {}, "payments");
+  const hasGenerationProviderField = Object.prototype.hasOwnProperty.call(readiness || {}, "generationProvider");
   const queue = readiness?.generationQueue || queueSnapshot;
   const cards = [
     renderObjectStorageReadiness(readiness?.objectStorage),
+    renderGenerationProviderReadiness(readiness?.generationProvider, hasGenerationProviderField),
     renderGenerationQueueReadiness(queue),
     renderPaymentReadiness(readiness?.payments, hasPaymentsField)
   ];

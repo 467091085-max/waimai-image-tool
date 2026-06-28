@@ -231,8 +231,10 @@ class CustomerUiContractTests(unittest.TestCase):
             'api("/api/ops/readiness")',
             'api("/api/admin/queue-snapshot")',
             "objectStorage",
+            "generationProvider",
             "generationQueue",
             "payments",
+            "AI 生图 provider",
             "未接入",
         ]:
             self.assertIn(required, self.admin_script)

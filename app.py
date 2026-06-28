@@ -924,6 +924,71 @@ def tencent_status_payload() -> dict[str, Any]:
     }
 
 
+def generation_provider_readiness() -> dict[str, Any]:
+    status = tencent_status_payload()
+    app_env = os.environ.get("APP_ENV", "").strip().lower()
+    live_generation_required = env_truthy(
+        "REQUIRE_LIVE_GENERATION_PROVIDER",
+        default=app_env in {"production", "prod", "staging"},
+    )
+    tokenhub_required = env_truthy(
+        "REQUIRE_TOKENHUB_IMAGE_PROVIDER",
+        default=live_generation_required and ai_first_generation_enabled(),
+    )
+    tokenhub_is_ready = bool(status.get("tokenhubReady"))
+    cloud_api_is_ready = bool(status.get("cloudApiReady"))
+    provider_configured = bool(status.get("configured"))
+    errors: list[str] = []
+    warnings: list[str] = []
+    required_config: list[dict[str, Any]] = []
+    missing_config: list[str] = []
+
+    if tokenhub_is_ready:
+        mode = "tokenhub"
+    elif cloud_api_is_ready:
+        mode = "legacy_cloud_api"
+    else:
+        mode = "unconfigured"
+
+    if not provider_configured:
+        if live_generation_required:
+            errors.append("live_generation_provider_required")
+        else:
+            warnings.append("live_generation_provider_not_configured_local_demo_only")
+
+    if tokenhub_required and not tokenhub_is_ready:
+        errors.append("tokenhub_image_provider_required")
+        required_config.append(
+            {
+                "key": "tencent_tokenhub_api_key",
+                "env": ["TENCENT_TOKENHUB_API_KEY", "TOKENHUB_API_KEY", "HUNYUAN_TOKENHUB_API_KEY"],
+            }
+        )
+        missing_config.append("TENCENT_TOKENHUB_API_KEY")
+    elif cloud_api_is_ready and not tokenhub_is_ready:
+        warnings.append("tokenhub_image_provider_not_configured_using_legacy_cloud_api")
+
+    if cloud_api_is_ready and not tokenhub_is_ready:
+        warnings.append("legacy_cloud_api_does_not_consume_tokenhub_hy_image_credits")
+
+    return {
+        "ready": not errors,
+        "provider": status.get("provider"),
+        "mode": mode,
+        "appEnv": app_env or "development",
+        "tokenhubReady": tokenhub_is_ready,
+        "tokenhubModel": status.get("tokenhubModel"),
+        "cloudApiReady": cloud_api_is_ready,
+        "liveGenerationRequired": live_generation_required,
+        "tokenhubRequired": tokenhub_required,
+        "warnings": warnings,
+        "errors": errors,
+        "blockingIssues": list(errors),
+        "requiredConfig": required_config,
+        "missingConfig": missing_config,
+    }
+
+
 def tencent_cos_config() -> dict[str, Any]:
     cfg = tencent_config()
     bucket = os.environ.get("TENCENT_COS_BUCKET", DEFAULT_TENCENT_COS_BUCKET).strip()
@@ -4491,14 +4556,21 @@ def api_tencent_status():
 def api_ops_readiness():
     object_storage = object_storage_service.assess_object_storage_readiness()
     payments = payment_service.assess_payment_provider_readiness()
+    generation_provider = generation_provider_readiness()
     queue = generation_queue.snapshot()
-    ready = bool(object_storage.get("ready")) and bool(payments.get("ready")) and not bool(queue.get("closed"))
+    ready = (
+        bool(object_storage.get("ready"))
+        and bool(payments.get("ready"))
+        and bool(generation_provider.get("ready"))
+        and not bool(queue.get("closed"))
+    )
     return jsonify(
         {
             "ok": True,
             "ready": ready,
             "objectStorage": object_storage,
             "payments": payments,
+            "generationProvider": generation_provider,
             "generationQueue": queue,
         }
     )

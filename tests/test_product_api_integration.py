@@ -168,11 +168,77 @@ def test_ops_readiness_reports_storage_and_generation_queue(
     assert payload["ready"] is True
     assert payload["objectStorage"]["provider"] == "local"
     assert payload["objectStorage"]["blockingIssues"] == []
+    assert payload["generationProvider"]["ready"] is True
+    assert payload["generationProvider"]["mode"] in {"tokenhub", "legacy_cloud_api", "unconfigured"}
     assert payload["payments"]["provider"] == "fake"
     assert payload["payments"]["ready"] is True
     assert payload["generationQueue"]["countsByStatus"]["queued"] == 1
     assert payload["generationQueue"]["limits"]["maxPendingJobs"] == 3
     assert payload["generationQueue"]["closed"] is False
+
+
+def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        TENCENT_TOKENHUB_API_KEY=None,
+        TENCENT_TOKENHUB_ENABLED=None,
+        TOKENHUB_API_KEY=None,
+        HUNYUAN_TOKENHUB_API_KEY=None,
+        TENCENTCLOUD_SECRET_ID=None,
+        TENCENTCLOUD_SECRET_KEY=None,
+        TENCENT_SECRET_ID=None,
+        TENCENT_SECRET_KEY=None,
+        TENCENT_HUNYUAN_ENABLED=None,
+        TENCENT_AIART_ENABLED=None,
+    )
+
+    response = fixture.client.get("/api/ops/readiness")
+
+    payload = _json_for_status(response, 200, "GET /api/ops/readiness missing TokenHub")
+    generation = payload["generationProvider"]
+    assert payload["ready"] is False
+    assert generation["ready"] is False
+    assert generation["mode"] == "unconfigured"
+    assert generation["tokenhubRequired"] is True
+    assert "live_generation_provider_required" in generation["blockingIssues"]
+    assert "tokenhub_image_provider_required" in generation["blockingIssues"]
+    assert "TENCENT_TOKENHUB_API_KEY" in generation["missingConfig"]
+
+
+def test_ops_readiness_accepts_tokenhub_generation_provider_in_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        TENCENT_TOKENHUB_API_KEY="tokenhub-test-key",
+        TENCENT_TOKENHUB_ENABLED="true",
+        TENCENT_TOKENHUB_IMAGE_MODEL="hy-image-v3.0",
+        TENCENTCLOUD_SECRET_ID=None,
+        TENCENTCLOUD_SECRET_KEY=None,
+        TENCENT_SECRET_ID=None,
+        TENCENT_SECRET_KEY=None,
+        TENCENT_HUNYUAN_ENABLED=None,
+        TENCENT_AIART_ENABLED=None,
+    )
+
+    response = fixture.client.get("/api/ops/readiness")
+
+    payload = _json_for_status(response, 200, "GET /api/ops/readiness TokenHub ready")
+    generation = payload["generationProvider"]
+    assert payload["ready"] is True
+    assert generation["ready"] is True
+    assert generation["mode"] == "tokenhub"
+    assert generation["tokenhubReady"] is True
+    assert generation["tokenhubRequired"] is True
+    assert generation["tokenhubModel"] == "hy-image-v3.0"
 
 
 def test_ops_readiness_is_false_when_storage_or_queue_is_not_ready(
