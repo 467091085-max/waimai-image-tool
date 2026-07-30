@@ -4,7 +4,8 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 2: 验证 Render 背景图异步生成补丁。
+Step 85 in progress: sync final evidence into the isolated remote-main worktree,
+run the commit-scope gates, and create the local integration commit.
 
 ## Status
 - Obsidian memory structure: done
@@ -20,6 +21,373 @@ Step 2: 验证 Render 背景图异步生成补丁。
 - Render `/api/plan` verification: done
 - Render Hunyuan background generation verification: blocked by Tencent Cloud ResourceInsufficient
 - ResourceInsufficient UI copy: done
+- ResourceInsufficient UI copy deployment: done
+- Tencent Cloud console inspection: done
+- TokenHub image API support patch: done
+- Deploy repository TokenHub patch tests: done
+- TokenHub patch pushed to GitHub and deployed on Render: done
+- Render TokenHub readiness verification: blocked by missing `TENCENT_TOKENHUB_API_KEY`
+- Ops readiness generation provider gate: done locally
+- Admin ops readiness generation provider card: done locally
+- Local productization readiness tests: done
+- Deploy repository readiness patch tests: done
+- Ops readiness generation provider gate deployed to Render: done
+- Render `/api/ops/readiness` generation provider verification: done
+- Tencent COS object storage backend: done locally
+- Object route reads through storage facade instead of local path only: done locally
+- Deploy repository COS backend tests: done
+- COS backend pushed to GitHub main: done
+- Render object storage readiness gate: done locally
+- Render COS blueprint env vars: done locally
+- Render object storage gate deploy repo tests: done
+- Render object storage gate pushed to GitHub main: done
+- Render object storage gate online verification: done
+- Export ZIP object storage handoff: done locally
+- Export package DB tracking: done locally
+- Export object storage targeted tests: done locally
+- Export object storage full tests: done
+- Export object storage deploy repo sync: done
+- Export object storage pushed to GitHub main: done
+- Render export smoke test: done, blocked from object storage path by missing Render env
+- Menu upload object storage handoff: done locally
+- Menu upload DB tracking: done locally
+- Menu upload targeted tests: done locally
+- Menu upload full tests: done
+- Menu upload deploy repo sync: done
+- Menu upload pushed to GitHub main: done
+- Render readiness smoke after menu upload patch: done
+- Library upload object storage handoff: done locally
+- Library upload DB tracking: done locally
+- Library upload targeted tests: done locally
+- Library upload full tests: done
+- Library upload deploy repo sync: done
+- Library upload pushed to GitHub main: done
+- Render readiness smoke after library upload patch: done
+- Payment provider live-runtime gate: done locally
+- Payment readiness render/staging detection: done locally
+- Payment provider targeted tests: done locally
+- Payment provider full regression: done locally
+- Payment provider deploy repo sync/tests: done
+- Payment provider pushed to GitHub main: done
+- Render payment provider live-runtime verification: done
+- Tencent Cloud console reinspection after user login: blocked by Computer Use URL policy
+- Tencent Cloud console reinspection after fresh login: blocked again by Computer Use URL policy
+- Withdrawal admin status audit: done locally
+- Withdrawal admin status audit tests: done locally
+- Withdrawal admin status audit deploy repo sync/tests: done
+- Withdrawal admin status audit pushed to GitHub main: done
+- Render readiness smoke after withdrawal audit patch: done
+- Withdrawal admin paid finance-role gate: done locally
+- Withdrawal admin paid finance-role tests: done locally
+- Withdrawal admin paid finance-role deploy repo sync/tests: done
+- Withdrawal admin paid finance-role pushed to GitHub main: done
+- Render readiness smoke after withdrawal role patch: done
+- Commission settlement paid finance-role gate: done locally
+- Commission settlement paid finance-role tests: done locally
+- Commission settlement paid finance-role deploy repo sync/tests: done
+- Commission settlement paid finance-role pushed to GitHub main: done
+- Render readiness smoke after commission settlement role patch: done
+- AI asset status role gate: done locally
+- AI asset status role tests: done locally
+- AI asset status role deploy repo sync/tests: done
+- AI asset status role pushed to GitHub main: done
+- Render readiness smoke after AI asset role patch: done
+- Risk deny role gate: done locally
+- Risk deny role tests: done locally
+- Risk deny role deploy repo sync/tests: done
+- Risk deny role pushed to GitHub main: done
+- Render readiness smoke after risk role patch: done
+- Deployment config report endpoint: done locally
+- Deployment config report tests: done locally
+- Deployment config report deploy repo sync/tests: done
+- Deployment config report pushed to GitHub main: done
+- Render deployment config endpoint verification: done
+- Real payment checkout fail-closed guard: done locally
+- Real payment checkout fail-closed tests: done locally
+- Real payment checkout fail-closed deploy repo sync/tests: done
+- Real payment checkout fail-closed pushed to GitHub main: done
+- Render real payment fail-closed smoke: done
+- Alipay page payment adapter: done locally
+- Alipay notify signature verification and points credit: done locally
+- Payment docs and Render blueprint env vars for Alipay: done locally
+- Alipay adapter deploy repo sync/tests: done
+- Alipay adapter pushed to GitHub main: done
+- Render Alipay code deployment verification: done
+- Render Alipay missing-config fail-closed smoke: done
+- Payment manual reconciliation service: done locally
+- Payment manual reconciliation finance-role admin API: done locally
+- Payment manual reconciliation audit and idempotency tests: done locally
+- Payment manual reconciliation deploy repo sync/tests: done
+- Payment manual reconciliation pushed to GitHub main: done
+- Render payment reconciliation route verification: done
+- SaaS API Server directory: done locally
+- SaaS Worker directory: done locally
+- Shared Redis queue/status module: done locally
+- SaaS runtime tests: done locally
+- Render start command updated to `api-server`: done locally
+- Deploy repo SaaS skeleton tests: done
+- SaaS skeleton pushed to GitHub main: done
+- Render SaaS `/healthz` verification: pending; current Render service still serves old monolith start command
+- Worker task timeout support: done locally
+- Worker stale running recovery: done locally
+- Worker timeout/recovery deploy repo tests: done
+- Worker timeout/recovery pushed to GitHub main: done
+- Final SaaS API contract enforcement: done locally
+- Final SaaS API contract deploy repo tests: done
+- Final SaaS API contract pushed to GitHub main: done
+- Final SaaS health check report: done locally
+- Product output-generation specification export: done locally
+- Dual-agent baseline audit: done
+- Sanitized ChatGPT Pro source package: done
+- ChatGPT Pro source handoff and corrected review: done
+- Render six free sample generation: TokenHub configured and real-menu six-sample smoke passed
+- Free-sample truthful error/progressive loading patch: done locally
+- Free-sample focused and full regression tests: done locally
+- Local real-menu browser flow: done with deterministic fallback; progressive `2/6` then `6/6` observed
+- Task 2 sanitized current-source package and secret scan: done
+- Task 2 ChatGPT Pro conversation: in progress
+- Selected-background and Redis-boundary subagent audits: done
+- Deterministic foreground-mask compositor: done locally
+- Full-frame platform cover-crop conversion: done locally
+- Deterministic compositor targeted tests: done, 6 passed
+- Existing image-pipeline tests after cover-crop change: done, 7 passed
+- Selected background asset identity generation and validation: done locally
+- Frontend sample/formal/export background asset propagation: done locally
+- Background digest cache invalidation paths: done locally
+- Generation/UI/product API focused regression after identity patch: done, 82 passed
+- Real foreground-mask provider composition: done locally
+- Selected-background exact pipeline focused regression: done, 94 passed
+- Pure-background prompt cache versioning: done locally
+- Customer SVG/color-block generation fallback removal: done locally
+- Immutable selected-background byte snapshot: done locally
+- Foreground and Mask cache digest/version validation: done locally
+- Selected-background HTTP and frontend propagation contracts: done, 107 focused tests passed
+- Lossless exact-background PNG persistence and post-write identity verification: done locally
+- Selected-background quality gate and tamper-resistant output cache validation: done locally
+- Immutable server-owned generation batch contract and billing snapshot: done locally
+- Redis, taxonomy/combo, and refinement gap audits: done and saved under `AI-Project/handoffs/2026-07-29/`
+- Latest focused regression after exact-output and batch-contract hardening: done, 138 passed
+- Latest full regression after exact-output and batch-contract hardening: done, 393 passed
+- Redis atomic idempotent enqueue: done locally
+- Redis claim/lease/heartbeat/ack lifecycle: done locally
+- Redis Lua execution against a Lua-capable Redis test implementation: done locally
+- Independent Redis reliability P0 review: done
+- Public enqueue single-Lua atomicity and claim move-plus-lease atomicity: done locally
+- Continuous provider heartbeat, FIFO receipts, dead-letter path, Redis-time leases, and Worker-loop backoff: done locally
+- Redis terminal retention/TTL and restart/failover acceptance: done locally with production Lua executed through Lua-capable fakeredis
+- Generation job server-session principal and owner checks: done locally
+- Client job ID user namespace and spoofed `X-User-Id` rejection: done locally
+- Frontend `menuUploadId` propagation through debit/generation/export: done locally
+- Authenticated menu upload ownership and object-SHA resolution: done locally
+- Cross-user menu-upload concealment and object-byte integrity gate: done locally
+- Frozen batch contract binding to authenticated generation entry: done locally
+- Server-owned formal-generation debit and bounded compensation: done locally
+- Browser-side formal debit/refund removal: done locally
+- Frozen menu/background object resolution in monolith compatibility worker: done locally
+- Product Redis queue isolation from fixed prompt queue: done locally
+- Product generation handoff from Web to Redis Worker: done locally
+- Redis Worker provider execution separated from billing/product DB settlement: done locally
+- Request-bound first-writer result manifest and authenticated manifest route: done locally
+- Pending cancel and running cancel-request lease semantics: done locally
+- Cumulative bounded refund target under concurrent finalizers: done locally
+- Missing Redis task recovery from persisted frozen contract: done locally
+- PostgreSQL product job/outbox/fence/settlement foundation: done locally, not integrated or migrated
+- PostgreSQL result-slot and settlement completion APIs: done locally; focused fake-DB verification passed, real PostgreSQL execution pending
+- Product-generation production readiness gate: done locally; staging/Render now blocks on durable PostgreSQL store, transactional outbox, independent product Worker, and Worker liveness integration
+- Worker-generated delivery images persisted to shared object storage: done locally; private manifest references and owner-checked opaque asset reads verified
+- Export ZIP from frozen generation manifest: done locally; owner, digest, purchased-platform, and frozen-watermark boundaries verified
+- Gemini image-edit provider boundary: done locally against deterministic HTTP fakes; queue/billing/refinement integration pending
+- Deterministic background-locked refinement compositor: done locally; outside-mask identity and fail-closed mask/size gates verified
+- Immutable revision contract and server-owned pricing snapshot: done locally; focused contract/provider/compositor verification passed
+- Authenticated refinement task creation: done locally; source/menu-row/background SHA binding, server-counted free quota, pre-debit provider/Redis gates, and enqueue compensation are implemented
+- Refinement Redis Worker dispatch, settlement, opaque result asset route, cancellation, repeat-edit source binding, export override, and customer UI polling: done locally
+- Image-refinement production readiness gate: done locally; live runtime blocks before launch when Gemini is missing
+- Latest full regression after real refinement workflow integration: done, 579 passed
+- Redis product Worker service heartbeat: done locally; Worker publishes an expiring heartbeat and readiness reads the real Redis TTL
+- Worker liveness focused verification: done, 79 related tests passed
+- Lazy PostgreSQL runtime connection/probe boundary: done locally; credentials are redacted, autocommit is forbidden, and all eight product tables are schema-probed
+- PostgreSQL runtime focused verification: done, 6 tests passed
+- PostgreSQL migration 008 finance readiness gate: done locally; all seven finance business tables are probed, with real PostgreSQL positive and fail-closed negative verification
+- Transactional PostgreSQL job, wallet, settlement, and outbox store: done locally; real PostgreSQL execution pending
+- Independent PostgreSQL outbox dispatcher: done locally; Redis timeout-after-publish ambiguity is resolved by exact task verification
+- Shared PostgreSQL menu-upload metadata: done locally; production upload resolution is owner-scoped and object-SHA verified
+- Formal-generation PostgreSQL submission: done locally; job, debit, settlement, and outbox are created atomically
+- Formal-generation PostgreSQL status, manifest, asset, and cancel routes: done locally; production paths do not fall back to SQLite
+- PostgreSQL product runtime focused verification: done, 63 related tests passed
+- Independent PostgreSQL terminal reconciliation: done locally; completion/refund no longer depends on customer polling
+- Missing Redis task recovery from published PostgreSQL outbox: done locally; exact running fence is required before republish
+- Settlement claim crash recovery: done locally; stale claimed settlements can be fenced and reclaimed
+- PostgreSQL migration runner: done locally; advisory lock, ordered checksums, idempotency, rollback, and history drift fail-closed are fake-DB verified
+- Product generation readiness: done locally; PostgreSQL/outbox integration is reported truthfully and Worker/dispatcher/reconciler require independent TTL heartbeats
+- Render customer-site-preserving multi-service blueprint: done locally; customer Web, API, dispatcher, product Worker, reconciler, Redis, and PostgreSQL are separate declarations
+- Multi-Web PostgreSQL/outbox runtime integration: done in code for formal generation; real PostgreSQL/Redis execution remains pending
+- Real TokenHub plus Mask provider smoke for exact composition: pending
+- Render SaaS runtime activation: deferred until a separate web/API/worker service layout can preserve the customer website
+- Real 24-menu parsing verification: done, 24 files / 3,036 rows / 0 failures
+- Versioned 40-category taxonomy and conservative combo matching: done locally; focused parser/matcher verification passed
+- Real 24-menu paid image generation verification: pending
+- Idempotent payment callback wallet-repair retry: done locally
+- PostgreSQL payment order/event/wallet atomic store and migration: done locally
+- PostgreSQL finance order/settlement/withdrawal list contracts: done locally with disposable real PostgreSQL
+- Owner/menu-upload scoped background, preview, foreground, and formal-generation caches: done locally
+- Quantity/specification-aware combo asset fingerprints: done locally
+- Generation batch provenance v2 and pre-provider Worker validation: done locally
+- Paid provider timeout retains Redis lease until the active call exits: done locally
+- Live real-provider payment order and callback routes use PostgreSQL: done locally
+- Real Flask -> Alipay adapter -> PostgreSQL callback/replay smoke: done against disposable local PostgreSQL
+- Payment growth events in the same PostgreSQL transaction/outbox: done locally
+- Payment/refund growth outbox payload freezes `growth-direct-v2-2026-07-30`: done locally and real-PostgreSQL verified
+- Live PostgreSQL payment order creation requires `Idempotency-Key`: done locally and real-PostgreSQL verified
+- Caller-owned growth outbox success transition for atomic business processing: done locally and real-PostgreSQL verified
+- Complete regression after PostgreSQL growth/finance integration: done, 1164 passed and 14 skipped
+- Live legacy recharge/debit bypass closure: done locally
+- Legacy wallet/payment/security focused regression: done, 109 passed
+- Live admin point adjustment idempotency and atomic PostgreSQL audit: done locally
+- Real PostgreSQL point-adjustment replay and audit-failure rollback: done
+- Production SQLite fallback audit: done, 8 concrete findings recorded
+- Live fake-payment callback bypass closure: done locally
+- Live legacy library ZIP import authorization/fail-closed gate: done locally
+- Live local-disk download removal: done locally
+- Legacy/live endpoint regression: done, 98 passed
+- PostgreSQL commission release, settlement, refund clawback/liability, and withdrawal lifecycle: independently accepted locally; default 56 passed/2 skipped and disposable real PostgreSQL 58 passed
+- Concrete growth event handler plus independent worker process: done locally at unit/contract level; 41 combined tests passed, real PostgreSQL business-flow verification pending
+- Growth worker fail-closed readiness and Render declaration: done locally; missing service declaration or real Redis TTL heartbeat blocks live readiness
+- Growth event processor transaction/fence/retry/dead-letter executor: done locally; concrete growth handler integration remains in progress
+- PostgreSQL growth event processor and durable growth business tables: in progress
+- Production PostgreSQL auth/session plus Redis OTP persistence foundation: done locally and independently verified against disposable PostgreSQL 16 and Redis 7
+- Production HTTP auth/session/store route integration: done locally
+- Production auth Render secret declarations and live mock-OTP prohibition: done locally
+- Production auth readiness schema/Redis/SMS/secret probes: done locally
+- Production registration anti-abuse context persistence and fail-closed reward gate: done locally
+- PostgreSQL export package, nonce, and access-audit foundation: done locally
+- Production export manifest SQLite fallback: removed locally
+- Production export package persistence and PostgreSQL one-time download audit: done locally
+- Real PostgreSQL export HTTP protocol: done locally
+- ChatGPT Pro Task 4 report and exact patch artifact: archived and SHA-256 verified locally
+- ChatGPT Pro Task 5 sanitized source package: done and SHA-256 verified locally
+- ChatGPT Pro Task 5 production growth/finance review: in progress
+- Final broad object/image resource-boundary audit: done; four residual write/download/input allocation classes reproduced
+- Bounded streaming object downloads and pre-serialization JSON/prompt budgets: implemented locally
+- Final resource-boundary focused regression: done, 110 passed and 2 PostgreSQL-gated skips
+- Complete default regression after final resource-boundary patch: done, 1250 passed and 20 dependency-gated skips
+- Complete disposable PostgreSQL 16 plus Redis 7 regression: done, 1270 passed with zero skips
+- Fresh post-patch read-only security audit: done; two P1 and three P2 ordering/resource findings reproduced
+- Prompt ingress, export replay preflight, bounded asset upload, legacy metadata read, and revision orphan patch: done locally
+- Second security patch focused regression: done, 156 passed and 3 dependency-gated skips
+- ChatGPT Pro Task 5 v2 sanitized source package: uploaded and review requested
+- Second security patch real PostgreSQL/Redis focused regression: done, 159 passed with zero skips
+- Complete default regression after second security patch: done, 1257 passed and 20 dependency-gated skips
+- Complete disposable PostgreSQL 16 plus Redis 7 regression after second security patch: done, 1277 passed with zero skips
+- Independent second-pass security review: done; it reopened concurrent export nonce download amplification as P1 and AI source-file TOCTOU as P2
+- Atomic export nonce reservation/release/consume migration and route integration: done locally
+- AI asset bounded private-snapshot fingerprint/upload binding: done locally
+- Reservation/snapshot focused default verification: done, 85 passed and 3 PostgreSQL-gated skips
+- Reservation/snapshot focused disposable PostgreSQL verification: done, 88 passed
+- Complete default regression after reservation/snapshot fixes: done, 1263 passed and 20 dependency-gated skips
+- Complete disposable PostgreSQL 16 plus Redis 7 regression after reservation/snapshot fixes: done, 1283 passed with zero skips
+- Final static checks: done; 165 Python files parsed, Render YAML has 8 services, both JavaScript files and `git diff --check` passed
+- Final credential-pattern scan: done; only the payment PEM wrapper and explicit test dummy values matched
+- Final reviewer P2 follow-up: done; hard-crash reservation recovery, repeated denied-request reads, and migration-column readiness gaps reproduced
+- PostgreSQL session advisory lock plus stale-reservation takeover: done locally
+- Prior access-denial precheck before export object download: done locally
+- PostgreSQL readiness checks for migration 014 reservation columns: done locally
+- Final P2 focused default verification: done, 120 passed and 4 dependency-gated skips
+- Final P2 focused disposable PostgreSQL verification: done, 124 passed
+- Complete default regression after final P2 closure: done, 1266 passed and 20 dependency-gated skips
+- Complete disposable PostgreSQL 16 plus Redis 7 regression after final P2 closure: done, 1286 passed with zero skips
+- Final post-P2 static and credential scans: done and clean apart from the known PEM wrapper/test dummy matches
+- Atomic reservation-release plus denial-audit finalization under the advisory lock: done locally
+- Unlock-to-audit concurrent regression: done against disposable PostgreSQL
+- Final independent incremental security disposition: CLOSED, P0 0 / P1 0 / P2 0
+- Final complete default regression: done, 1266 passed and 20 dependency-gated skips
+- Final complete disposable PostgreSQL 16 plus Redis 7 regression: done, 1286 passed with zero skips
+- Final sanitized source archive: done, 1131030 bytes, 223 files, ZIP integrity passed
+- Final sanitized source archive SHA-256: 4ee2d3366dc83be47a8f034b9704767c67c0323c13ed943966c85ce2d661b431
+- Isolated remote-main integration default regression: done, 1266 passed and 20 dependency-gated skips
+- Isolated remote-main integration PostgreSQL 16 plus Redis 7 regression: done, 1286 passed with zero skips
+- Isolated remote-main integration static gates: done; 165 Python files, 8 Render services, both JavaScript syntax checks, credential scan, and diff check passed
+- Render test-service auto-deploy inspection: done; `waimai-image-tool` is currently `On Commit`
+- Remote-main push boundary: blocked by authorization; pushing `main` would automatically deploy the Render test service
+- Final sanitized source archive refresh after the final documentation-only newline cleanup: done
+- Final sanitized source archive v5: done, 1132010 bytes, 223 files, ZIP integrity passed
+- Final sanitized source archive v5 SHA-256: 9544c4eacecf465337baa164469af816f61213ff8797419152baaadee3a08111
+- Historical report whitespace normalization: done; content and business code unchanged
+- Final isolated staged scope: done, 171 source/migration/test/report files
+- Final isolated staged diff check: done; no whitespace errors and no unstaged tracked changes
+- Final isolated forbidden-path gate: done; no env, data, report-output, cache, database, or archive path is staged
+- Final isolated staged credential scan: done; only the runtime PEM wrapper and its negative test assertion matched
+- Independent PostgreSQL export production review: done, six P1 findings reproduced
+- Export object preflight SHA/size verification before nonce consumption: done locally
+- Export transient storage failure retry without nonce loss: done locally
+- Export semantic idempotency replay and orphan-object cleanup: done locally
+- Export ZIP streaming upload/download and configurable size ceiling: done locally
+- Export migration 010 production-readiness schema gate: done locally
+- Real PostgreSQL export tamper/outage/replay protocol: done locally
+- PostgreSQL asset-library foundation: independent review done; P1 hardening in progress
+- Product-asset exact selected-background binding: done locally and real-PostgreSQL verified
+- Asset reuse pipeline-version gate: done locally and real-PostgreSQL verified
+- PostgreSQL asset-library generation/review/reuse runtime: done locally and real-PostgreSQL verified
+- Paid-provider call prevention on asset-library outage: done locally
+- Cross-thread asset owner/menu context propagation: done locally
+- PostgreSQL AI-asset admin list/review/disable workflow: done locally and real-PostgreSQL verified
+- Partial, repeated, out-of-order, and cumulative growth refund semantics: done locally
+- PostgreSQL agent commission, settlement, withdrawal, finance ledger, and audit foundation: done locally and real-PostgreSQL verified
+- Production finance/growth HTTP and processor integration: in progress
+- Production PostgreSQL agent creation and customer binding HTTP adapters: done locally
+- Production invite-code issuance and anti-abuse invite acceptance: done locally
+- Invite registration reward enqueue in the same PostgreSQL transaction: done locally
+- Production PostgreSQL commission release/settlement and withdrawal HTTP adapters: done locally
+- Real PostgreSQL growth/finance HTTP protocol without SQLite fallback: done locally
+- Growth-only future-reward debt recovery with immutable evidence: independently accepted locally
+- Complete migration 007/008 PostgreSQL readiness table gate: done locally
+- Live invite-code secret fail-closed readiness and Render declaration: done locally
+- Legacy direct `/api/refund` live SQLite fallback: blocked locally; live runtime now requires durable settlement
+- PostgreSQL customer status/manifest read purity: done locally
+- PostgreSQL generation/refinement cancellation intent boundary: done locally
+- Real-menu E2E acceptance route/test contract review: done
+- Deterministic versus paid-provider E2E acceptance entry: done locally
+- Real 56-row menu deterministic E2E smoke: done, all nine stages passed
+- Real-provider E2E gate without explicit authorization: done, blocked before app import with zero provider calls
+- E2E acceptance entry tests and README: done locally
+- E2E acceptance focused tests: done, 2 passed
+- E2E acceptance static/adjacent regression and report scan: done
+- Final real-menu deterministic acceptance report: done, 56/56 formal images and 56/56 Meituan exports verified
+- Final real-provider blocked report: done, zero provider calls
+- Six customer background/free-preview object persistence: done locally
+- Owner/menu-scoped preview object recovery after local cache loss: done locally
+- Live preview object-storage fail-closed behavior: done locally
+- Product approval requires its exact associated background to be approved with matching tenant, owner, and SHA-256: done locally and real-PostgreSQL verified
+- Approved product reuse stops when its associated background is later disabled or otherwise ceases to be approved: done locally and real-PostgreSQL verified
+- Growth rule `growth-direct-v2-2026-07-30`: done locally; one direct level only, agent first order 20%, repeat order 10%, inviter registration 100 points, invitee 20 points
+- Growth rule display, SQLite compatibility behavior, tests, roadmap, and legal-review boundary alignment: done locally
+- Production admin audit actor ignores client-supplied `X-Admin-User-Id`: done locally; verified session and trusted-service identities while preserving explicit local-demo compatibility
+- Admin AI-asset mutations authenticate before input validation: done locally
+- Archived original security-remediation scope recovery: done; the deleted CSV's exact IDs/titles remain unavailable, but the original session establishes eight risk groups covering download/style traversal, paid-call abuse, write authorization, path/media disclosure, and unbounded image/logo decoding
+- Current eight-group security acceptance audit: first pass found three later regressions; five groups remain closed
+- Queue-only prompt API token authentication: done locally; `/generate` and `/status/<task_id>` fail closed before Redis when the server token is missing or invalid
+- Remote default local-demo wallet bypass closure: done locally
+- Provider, remote, fingerprint, and formal-delivery image byte/pixel bounds: done locally
+- Repaired security regression focused verification: done, 100 passed and 1 dependency-gated skip
+- Independent repaired-security re-review: first re-review closed prompt API and demo billing, but found unbounded formal-delivery/object-storage and refinement image paths
+- Shared bounded object-storage reads for local and COS backends: done locally
+- Formal delivery and selected-background bounded object reads: done locally
+- Gemini response/base64/pixel bounds: done locally
+- Product revision source/background/manifest/asset byte and pixel bounds: done locally
+- Second image-boundary focused verification: done, 110 passed and 1 dependency-gated skip
+- Final independent image-boundary re-review: done; it reopened one selected-background consumer plus Web/export/settlement revision consumers
+- Selected-background refinement snapshot bounded object and pixel validation: done locally
+- Formal and revision manifest settlement bounded object reads: done locally
+- Web revision manifest, asset, export, delivery, and compatibility consumers bounded: done locally
+- Watermark object digest, byte, and pixel validation: done locally
+- TokenHub Web and prompt-Worker response-body limits: done locally
+- Private preview, menu, library import, product Worker, and generic object-route bounded reads: done locally
+- Latest bounded-read focused verification: done, 164 passed
+- Complete default regression after final security repair: done, 1239 passed and 20 dependency-gated skips
+- Complete disposable PostgreSQL 16 plus real Redis 7 regression after final security repair: done, 1259 passed with zero skips
+- Final broad read-only object/image boundary audit: in progress
+- Real COS plus Render-restart preview recovery smoke: pending
+- Formal generation selected-background recovery after local cache loss: done locally
+- Final commit and push to remote main: pending; authorized only after all acceptance gates pass
 
 ## Constraints
 - Codex 每次继续任务前必须先读 `AI-Project/state/current.md`。
@@ -33,8 +401,8 @@ Step 2: 验证 Render 背景图异步生成补丁。
 
 ## Current Context
 - 当前 worktree: `/Users/guiguixiaxia/.codex/worktrees/de51/waimai-image-tool`
-- Render 测试站: `https://waimai-image-tool-1.onrender.com`
-- Local 测试站: `http://127.0.0.1:8791`
+- Render 测试站: `https://waimai-image-tool.onrender.com`
+- Local Task 1 测试站: stopped after verification; last used `http://127.0.0.1:8792`
 - Deploy repo: `/Users/guiguixiaxia/Documents/Codex/2026-06-15/33-excel-excel-300-5-4/outputs/waimai-image-tool-deploy`
 - GitHub remote: `git@github.com:467091085-max/waimai-image-tool.git`
 
@@ -47,9 +415,308 @@ Step 2: 验证 Render 背景图异步生成补丁。
 - Render `/api/plan?quality=standard` 已验证 200，约 1.76 秒返回，6 张背景均为 `PendingGeneration`，不再同步生成导致阻塞。
 - Render `/api/style-background?style=style-1&generate=1` 已验证 200，约 2.45 秒返回失败状态；腾讯云返回 `ResourceInsufficient`，需要开通资源包或后付费后才能真实出图。
 - 前端已补充 ResourceInsufficient 显示：腾讯云额度不足时显示 `混元资源不足`，不再只显示笼统失败或继续转圈。
+- 第二次线上复测：`/api/plan?quality=standard` HTTP 200，约 4.43 秒，6 个 style action 均为 `PendingGeneration`。
+- 第二次线上复测：`/api/style-background?style=style-1&generate=1` HTTP 200，约 4.02 秒，返回 `ProviderError / ResourceInsufficient`，无图片 URL。
+- 腾讯云控制台检查结果：当前登录主账号可见 TokenHub `HY-Image-3.0`、`HY-Image-Lite`，但 TokenHub API Key 管理页显示还没有创建任何 API Key。
+- TokenHub 用量统计中 `HY-Image-3.0` 今天请求数和积分消耗为空，说明当前 Render 服务此前没有打到 TokenHub `HY-Image-3.0`。
+- 旧版混元 API Key 管理页显示暂无数据，旧版资源包页只看到免费包，未看到用户提到的 `混元生图3.0 200` 和 `商品背景 100` 资源包。
+- 根因更新：用户购买/充值的额度在新 TokenHub/视觉模型体系，当前 Render 原先只用旧 TC3 `TextToImageLite`/`ReplaceBackground` 接口和 `TENCENTCLOUD_SECRET_ID/KEY`，无法消耗 TokenHub 额度。
+- 已向 deploy repo 添加 TokenHub 支持：有 `TENCENT_TOKENHUB_API_KEY` 时优先调用 `https://tokenhub.tencentmaas.com/v1/api/image/submit` + `/query` 或 `HY-Image-Lite` `/lite`，失败时 fallback 到旧接口。
+- Deploy repo commit `cadd38f Add TokenHub image generation support` 已推送 GitHub main，并已在 Render 上线。
+- Render `/api/tencent-status` 新代码已验证：返回 `tokenhubModel=hy-image-v3.0`、`tokenhubReady=false`、`cloudApiReady=true`。代码已上线，但 Render 仍未配置 TokenHub API Key。
+- Render `/api/style-background?style=style-1&generate=1` 仍返回旧接口 `ResourceInsufficient`，因为缺少 `TENCENT_TOKENHUB_API_KEY` 时只能 fallback 到旧接口。
+- 本地已新增 `generation_provider_readiness()`：`APP_ENV=staging/production` 或检测到 Render 运行环境时默认要求 TokenHub 图像 provider；缺 `TENCENT_TOKENHUB_API_KEY` 时 `/api/ops/readiness` 会返回 `ready=false`，并在 `generationProvider.blockingIssues` 标出 `tokenhub_image_provider_required`。
+- 本地后台运维状态面板已新增 `AI 生图 provider` readiness 卡片，展示 TokenHub、旧 Cloud API、模型、warnings/errors。
+- 本地验证：readiness 定向测试、后台契约测试、`node --check static/admin.js`、`python3 -m py_compile app.py` 均通过；全量 pytest `322 passed in 3.25s`。
+- Deploy repo 已推送 readiness 补丁：`297a3ec Add generation provider readiness checks` 和 `4c596ca Detect Render runtime in generation readiness`。
+- Render `/api/ops/readiness` 已验证：`ready=false`、`generationProvider.appEnv=render`、`generationProvider.mode=legacy_cloud_api`、`generationProvider.tokenhubRequired=true`、`generationProvider.blockingIssues=["tokenhub_image_provider_required"]`、`generationProvider.missingConfig=["TENCENT_TOKENHUB_API_KEY"]`。
+- 本地已新增 `TencentCOSObjectStorageService`，支持逻辑 object key 到 COS remote key 的可选 prefix 映射，支持 `put_bytes`、`put_file`、`read_bytes`、`exists`、`delete`、`stat`、`list_prefix`。
+- `/objects/<object_key>` 已改为通过 object storage facade 的 `exists/read_bytes` 服务对象，不再硬依赖本地 `path_for_key()`；本地和 COS backend 共享同一套签名校验与审计路径。
+- `assess_object_storage_readiness()` 已升级：`OBJECT_STORAGE_PROVIDER=cos` 配齐 bucket、region、SecretId、SecretKey、签名 secret 时可 ready；OSS/R2/S3 等尚无 runtime adapter 的 provider 不再误报可生产 ready。
+- 本地验证：对象存储定向测试、对象下载签名测试、安全回归测试、`python3 -m py_compile object_storage_service.py app.py` 均通过；全量 pytest `324 passed in 3.16s`。
+- Deploy repo 已推送 COS backend：`143eece Add COS object storage backend`；deploy repo 全量 pytest `324 passed in 2.78s`。
+- Render 线上冒烟：`/api/ops/readiness` 仍返回服务可响应；当前 objectStorage 仍为 `local_demo`，因为 Render 尚未设置 `OBJECT_STORAGE_PROVIDER=cos`。
+- 本地已补 Render 对象存储 gate：缺 `APP_ENV` 但 `PUBLIC_BASE_URL` 包含 `.onrender.com` 或存在 Render 环境变量时，object storage `appEnv=render`，本地存储会返回 `private_remote_object_storage_provider_required`。
+- 本地 `render.yaml` 已声明 `OBJECT_STORAGE_PROVIDER=cos`、`OBJECT_STORAGE_PRIVATE=true`、`OBJECT_STORAGE_BUCKET=waimai-image-tool-inputs-1311836560`、`OBJECT_STORAGE_REGION=ap-guangzhou`、`OBJECT_STORAGE_PREFIX=app-objects`。
+- 本地验证：`python3 -m pytest tests/test_object_storage_service.py -q` 通过，15 passed；`python3 -m py_compile object_storage_service.py app.py` 通过。
+- Current worktree 全量验证通过：`python3 -m pytest -q` -> 325 passed。
+- Deploy repo 全量验证通过：`python3 -m pytest -q` -> 325 passed。
+- Deploy repo 已提交并推送 `9de3812 Require remote object storage on Render` 到 GitHub main。
+- Render 线上已部署新代码：`/api/ops/readiness` 返回 `objectStorage.ready=false`、`provider=local`、`mode=local_demo`、`appEnv=render`、`blockingIssues=["private_remote_object_storage_provider_required","object_signing_secret_required"]`，说明 Render 上 local_demo 不再误报 ready。
+- Render 当前仍未实际启用 COS object storage provider；`render.yaml` 已写入 COS env，但现有 Render 服务没有自动应用这些 blueprint env vars，且本地未发现可用 Render CLI/API token 可直接修改平台环境变量。
+- 本地已补 `/api/export` 交付包 object storage handoff：`export_delivery_zip()` 仍负责打包，API 层将生成的 ZIP 写入 `exports/` object key，返回 `/objects/exports/...?...token=` 签名链接，并写入 `export_packages` 表。
+- 本地保留旧 `/download` 路由和无签名密钥时的 demo 行为，避免破坏本地兼容；产品环境有 `OBJECT_SIGNING_SECRET` 后默认使用对象存储签名下载。
+- 本地验证：`python3 -m pytest tests/test_download_route.py tests/test_object_storage_service.py tests/test_security_regressions.py -q` 通过，44 passed；`python3 -m py_compile app.py object_storage_service.py` 通过。
+- Current worktree 全量验证通过：`python3 -m pytest -q` -> 325 passed。
+- Deploy repo Step 7 定向验证通过：`python3 -m pytest tests/test_download_route.py tests/test_object_storage_service.py tests/test_security_regressions.py -q` -> 44 passed；`python3 -m py_compile app.py object_storage_service.py` 通过。
+- Deploy repo Step 7 全量验证通过：`python3 -m pytest -q` -> 325 passed。
+- Deploy repo 已提交并推送 `fa47b11 Store export packages in object storage` 到 GitHub main。
+- Render 线上轻量导出冒烟：`POST /api/export` with `selectedRows=[999]` 返回 HTTP 200，但 download 仍是 `/download/export_.../result.zip`，因为线上 readiness 仍显示 `objectStorage.provider=local`、`objectStorage.blockingIssues=["private_remote_object_storage_provider_required","object_signing_secret_required"]`。
+- Step 7 代码路径已在测试中验证：配置对象签名密钥和 object store 后 `/api/export` 返回 `/objects/exports/...?...token=`，`/objects` 下载成功，并写入 `export_packages`。
+- 本地已补 `/api/upload-menu` 上传原始 Excel 的 object storage handoff：接口仍保存本地副本用于当前解析，但同时将原始文件写入 `menus/` object key，并插入 `menu_uploads` 表，状态为 `parsed`。
+- 上传菜单响应新增 `menuUploadId`，不返回 raw object key；原始文件 object key 只进入数据库。
+- 如果菜单解析成功但 object storage 或 DB 写入失败，接口返回 `503 menu_object_storage_failed`，避免出现“上传成功但资产只在本地”的假成功。
+- 本地验证：`python3 -m pytest tests/test_product_api_integration.py::test_upload_menu_persists_original_file_to_object_storage_and_db tests/test_product_api_integration.py::test_product_api_routes_are_registered tests/test_object_storage_service.py -q` 通过，17 passed；`python3 -m py_compile app.py object_storage_service.py storage_db.py` 通过。
+- Current worktree 全量验证通过：`python3 -m pytest -q` -> 326 passed。
+- Deploy repo Step 8 定向验证通过：17 passed；`python3 -m py_compile app.py object_storage_service.py storage_db.py` 通过。
+- Deploy repo Step 8 全量验证通过：`python3 -m pytest -q` -> 326 passed。
+- Deploy repo 已提交并推送 `c68bbc3 Persist uploaded menus in object storage` 到 GitHub main。
+- Render 线上 readiness 冒烟仍正常响应；当前仍因 `objectStorage.provider=local`、`object_signing_secret_required`、`private_remote_object_storage_provider_required` 和 `TENCENT_TOKENHUB_API_KEY` 缺失而非产品 ready。未在线上上传假 Excel，避免制造业务测试数据。
+- 本地已补 `/api/upload-library` 图库 zip 持久化：每张图片仍保存本地副本供当前匹配/预览读取，同时写入 `originals/<upload-batch>/style-upload/<filename>` object key，并插入 `library_images` 表。
+- `/api/upload-library` 响应新增 `uploadedImageCount` 和 `libraryImageIds`，不返回 raw object key；非图片文件继续跳过。
+- 如果 zip 无效返回 `400 invalid_library_zip`；如果图片对象存储或 DB 写入失败，返回 `503 library_object_storage_failed`。
+- 本地验证：`python3 -m pytest tests/test_product_api_integration.py::test_upload_library_persists_images_to_object_storage_and_db tests/test_product_api_integration.py::test_upload_menu_persists_original_file_to_object_storage_and_db tests/test_object_storage_service.py -q` 通过，17 passed；`python3 -m py_compile app.py object_storage_service.py storage_db.py` 通过。
+- Current worktree 全量验证通过：`python3 -m pytest -q` -> 327 passed。
+- Deploy repo Step 9 定向验证通过：17 passed；`python3 -m py_compile app.py object_storage_service.py storage_db.py` 通过。
+- Deploy repo Step 9 全量验证通过：`python3 -m pytest -q` -> 327 passed。
+- Deploy repo 已提交并推送 `6314019 Persist uploaded library images in object storage` 到 GitHub main。
+- Render 线上 readiness 冒烟仍正常响应；当前仍因 `objectStorage.provider=local`、`object_signing_secret_required`、`private_remote_object_storage_provider_required` 和 `TENCENT_TOKENHUB_API_KEY` 缺失而非产品 ready。未在线上上传假图库 zip，避免制造业务测试数据。
+- 本地已补支付 live runtime gate：`payment_service.fake_payment_provider_enabled()` 在 `APP_ENV=staging/production/prod` 或检测到 Render runtime 时直接禁用 fake provider，即使 `ENABLE_LOCAL_DEMO_BILLING=true`、`PAYMENT_PROVIDER=fake` 或 `ALLOW_FAKE_PAYMENT_PROVIDER=true`。
+- 本地已补支付 readiness：`assess_payment_provider_readiness()` 返回 `appEnv`，识别 Render/staging 为 live environment；fake provider 会返回 blocking issues `real_payment_provider_required` 和 `fake_payment_provider_forbidden_in_live_environment`。
+- 本地 `render.yaml` 已将 `ENABLE_LOCAL_DEMO_BILLING` 改为 `"false"`，避免新 Render 环境默认开启 fake 支付。
+- 本地验证：`python3 -m pytest tests/test_payment_service.py tests/test_product_api_integration.py::test_fake_payment_order_blocked_on_render_runtime_even_if_demo_billing_enabled tests/test_product_api_integration.py::test_ops_readiness_accepts_tokenhub_generation_provider_in_staging tests/test_product_api_integration.py::test_ops_readiness_treats_render_runtime_as_live_generation_environment -q` 通过，20 passed；`python3 -m py_compile payment_service.py app.py` 通过。
+- Step 10 已同步到 deploy repo 并推送 GitHub main：commit `0d57fa9 Block fake payments in live runtimes`。
+- Step 10 deploy repo 和 current worktree 全量验证均通过：`python3 -m pytest -q` -> 330 passed。
+- Render `/api/ops/readiness` 已验证 Step 10 生效：`payments.ready=false`、`payments.provider=fake`、`payments.appEnv=render`，blocking issues 包含 `real_payment_provider_required` 和 `fake_payment_provider_forbidden_in_live_environment`。
+- Render 仍未 product-ready：`generationProvider` 仍缺 `TENCENT_TOKENHUB_API_KEY`；`objectStorage` 仍是 local provider 且缺 `OBJECT_SIGNING_SECRET`/COS env。
+- 用户表示已登录腾讯云后，尝试用 Computer Use 复查控制台；工具返回 `Computer Use is not allowed on the current browser URL`，无法继续读取或点击腾讯云页面。
+- 用户再次确认已登录后，重新调用 Computer Use 读取 Chrome；工具仍直接终止并返回 `Computer Use is not allowed on the current browser URL`。这说明当前阻塞不是登录态问题，而是该腾讯云控制台 URL 不允许由 Computer Use 操作。
+- 本地已补代理提现后台审批审计：`POST /api/admin/actions/withdrawals/<withdrawal_id>/status` 在状态更新成功后写入 `admin_audit_logs`，action 为 `withdrawal_status_updated`，记录 actor、原因、提现 ID、代理 ID、金额、from/to 状态和状态原因。
+- 本地验证：提现 API 定向测试和 `tests/test_admin_actions.py` 通过，`python3 -m py_compile app.py withdrawal_service.py admin_actions.py` 通过，全量 pytest `330 passed in 2.74s`。
+- Deploy repo 已同步提现审批审计补丁并验证：定向测试 8 passed，py_compile 通过，全量 pytest `330 passed in 2.93s`。
+- Deploy repo 已提交并推送 `b7377ba Audit withdrawal admin status changes` 到 GitHub main。
+- Render readiness 冒烟仍可响应；当前仍非 product-ready，blocking issues 仍为真实支付 provider、COS/object signing secret、TokenHub API Key。
+- `MODULE_STATUS.md` 和 `PRODUCTIZATION_PLAN.md` 已更新，避免后续窗口把提现后台审批审计误判为完全未做。
+- 本地已补提现状态权限分级：`admin_withdrawal_status_authorized()` 允许 `operator/ops/admin/finance/owner` 做 approved/rejected/canceled，但 `paid` 只允许 `finance/admin/owner/super_admin` 等财务权限；`ADMIN_API_TOKEN` 和本地 demo admin 兼容保留。
+- 未授权后台写请求带空 payload 时仍优先返回 403，满足安全回归要求；授权用户传无效 status 仍返回 `invalid_withdrawal_input`。
+- 本地验证：提现 RBAC 定向测试、安全回归定向测试、py_compile 通过，全量 pytest `331 passed in 2.85s`。
+- Deploy repo 已同步提现 paid 权限分级补丁并验证：定向测试 3 passed，py_compile 通过，全量 pytest `331 passed in 2.81s`。
+- Deploy repo 已提交并推送 `86979f4 Restrict withdrawal payout admin role` 到 GitHub main。
+- Render readiness 冒烟仍可响应；当前生产 blockers 未变化：真实支付 provider、COS/object signing secret、TokenHub API Key。
+- 本地已抽出 `admin_finance_action_authorized()`，提现 paid 与佣金结算 paid 共用同一套财务角色判断。
+- 本地已补佣金结算状态权限分级：`admin_commission_settlement_status_authorized()` 允许 operator/ops/admin 继续 release/create/非 paid 状态操作，但 `POST /api/admin/actions/commission-settlements/<id>/status` 的 `paid` 只允许 finance/admin/owner/super_admin 等财务角色；`ADMIN_API_TOKEN` 和本地 demo admin 兼容保留。
+- 本地验证：佣金结算 API RBAC 定向测试、提现 RBAC、安全回归定向测试、py_compile 通过，全量 pytest `332 passed in 2.93s`。
+- Deploy repo 已同步佣金结算 paid 权限分级补丁并验证：定向测试 4 passed，py_compile 通过，全量 pytest `332 passed in 3.03s`。
+- Deploy repo 已提交并推送 `f6a5933 Restrict commission settlement payout role` 到 GitHub main。
+- Render readiness 冒烟仍可响应；当前生产 blockers 未变化：真实支付 provider、COS/object signing secret、TokenHub API Key。
+- 本地已补 AI 资产审核状态权限分级：`admin_ai_asset_status_authorized()` 允许 reviewer/operator/admin 等角色执行 approved/rejected/pending，`disabled` 只允许 admin/super_admin/owner；`ADMIN_API_TOKEN` 和本地 demo admin 兼容保留。
+- 本地 `POST /api/admin/actions/ai-assets/<asset_id>/status` 已先做泛后台写权限，再做状态级角色权限；兼容 `approve/reject/disable` action alias。
+- 本地验证：AI 资产 RBAC 定向测试、后台 blueprint 审计测试、安全回归定向测试、py_compile 通过，全量 pytest `333 passed in 3.03s`。
+- Deploy repo 已同步 AI 资产 disable 角色限制并验证：定向测试 3 passed，py_compile 通过，全量 pytest `333 passed in 3.03s`。
+- Deploy repo 已提交并推送 `2c01b3c Restrict AI asset disable role` 到 GitHub main。
+- Render readiness 冒烟仍可响应；当前生产 blockers 未变化：真实支付 provider、COS/object signing secret、TokenHub API Key。
+- 本地已补风控处置权限分级：`admin_risk_decision_authorized()` 允许 operator/risk/admin 等角色执行 allow/review，但 `deny` 只允许 risk/security/admin/owner 等角色；`ADMIN_API_TOKEN` 和本地 demo admin 兼容保留。
+- 本地 `POST /api/admin/actions/risk` 已先规范化 decision，再做动作级 RBAC；无后台身份仍返回 `admin_write_forbidden`，有基础后台权限但越权 deny 返回 `admin_permission_forbidden`。
+- 本地验证：风控 RBAC 定向测试、后台写安全回归定向测试、py_compile 通过，全量 pytest `334 passed in 3.03s`。
+- Deploy repo 已同步风控 deny 角色限制并验证：定向测试 3 passed，py_compile 通过，全量 pytest `334 passed in 3.07s`。
+- Deploy repo 已提交并推送 `df9937c Restrict risk deny admin role` 到 GitHub main。
+- Render readiness 冒烟仍可响应；当前生产 blockers 未变化：真实支付 provider、COS/object signing secret、TokenHub API Key。
+- 本地已新增 `/api/ops/deployment-config`：按 runtime、AI 生图、对象存储、支付、队列分组输出生产 env 清单、推荐值、缺失项、blocking issues 和 `secretsRedacted=true`，不会返回 secret 原文。
+- 本地验证：部署配置清单接口、路由注册、TokenHub 缺失 readiness 定向测试和 py_compile 通过，全量 pytest `335 passed in 3.19s`。
+- Deploy repo 已同步部署配置清单并验证：定向测试 3 passed，py_compile 通过，全量 pytest `335 passed in 3.26s`。
+- Deploy repo 已提交并推送 `463c633 Add deployment config readiness report` 到 GitHub main。
+- Render `/api/ops/deployment-config` 已上线：轮询第 7 次返回 200，`ready=false`，`appEnv=render`，sections 包含 runtime、generationProvider、objectStorage、payments、generationQueue；当前缺失 `ADMIN_API_TOKEN`、`APP_ENV`、`OBJECT_SIGNING_SECRET`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_PRIVATE`、`OBJECT_STORAGE_PROVIDER`、`PAYMENT_PROVIDER`、`PAYMENT_WEBHOOK_SECRET`、`TENCENT_TOKENHUB_API_KEY`。
+- Render `/api/ops/readiness` 仍可响应；当前生产 blockers 未变化：真实支付 provider、COS/object signing secret、TokenHub API Key。
+- 本地已新增真实支付 checkout fail-closed guard：`payment_service.ensure_payment_checkout_available()` 允许 fake local demo，但 `wechat/alipay` 在凭证缺失时返回 `payment_provider_unavailable`，在凭证齐全但 adapter 未接入时返回 `payment_adapter_not_implemented`。
+- 本地 `_clean_provider()` 已识别 `wechat/alipay` 和别名，但 `/api/payments/orders` 会在写入 `payment_orders` 前调用 checkout guard；真实 provider 未可用时不会创建 pending 脏订单。
+- 本地验证：真实支付 guard、API fail-closed、fake payment 兼容定向测试和 py_compile 通过，全量 pytest `338 passed in 2.89s`。
+- Deploy repo 已同步真实支付 fail-closed 补丁并验证：定向测试 6 passed，py_compile 通过，全量 pytest `338 passed in 2.95s`。
+- Deploy repo 已提交并推送 `fdec3e8 Fail closed for real payment adapters` 到 GitHub main。
+- Render 线上支付 smoke 已验证：`POST /api/payments/orders` with `provider=wechat` 前 3 次仍返回旧版 `400 invalid_recharge_package`，第 4 次部署后返回 `503 payment_provider_unavailable`，并列出缺失微信支付 env，不会进入 fake 成功或空收银台状态。
+- 本地已接入支付宝电脑网站支付 MVP：`PAYMENT_PROVIDER=alipay` 且配置 `ALIPAY_APP_ID`、`ALIPAY_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY`、`PAYMENT_NOTIFY_URL` 后，`/api/payments/orders` 会生成 `alipay.trade.page.pay` RSA2 签名支付链接并把 checkout payload 写入 `payment_orders.provider_payload_json`。
+- 本地新增 `/api/payments/alipay/notify`：读取 form/json 通知，使用支付宝公钥验签，按 `TRADE_SUCCESS/TRADE_FINISHED` 转 paid，复用现有 billing/growth 回调效果，成功返回纯文本 `success`。
+- 微信支付仍未接入 adapter，凭证完整时仍会 fail-closed，避免创建无可用收银台的 pending 订单。
+- Current worktree 验证通过：`python3 -m pytest tests/test_payment_service.py -q` -> 22 passed；支付宝 API/部署配置定向测试 -> 4 passed；`python3 -m pytest -q` -> 345 passed。
+- Deploy repo 已同步并验证：支付/部署配置定向测试 -> 26 passed；`python3 -m pytest -q` -> 345 passed；提交并推送 `8a8f3ac Add Alipay page payment adapter` 到 GitHub main。
+- Render 轮询已确认新代码上线：`/api/ops/deployment-config` 的 `payment_provider.recommended` 从 `wechat` 变为 `alipay`。
+- Render 线上支付宝 smoke：未配置支付宝密钥时 `POST /api/payments/orders` with `provider=alipay` 返回 HTTP 503 `payment_provider_unavailable`，缺失 `alipay_app_id`、`alipay_private_key`、`alipay_public_key`、`payment_notify_url`，不会进入 fake 支付或成功下单状态。
+- 本地已新增财务人工支付对账：`payment_service.reconcile_payment_event()` 可在人工核验后跳过外部 provider 签名校验，但仍走支付状态机、事件幂等、订单状态更新时间和积分入账/退款计算。
+- 本地已新增 `POST /api/admin/actions/payments/reconcile`，只有 finance/admin/owner/super_admin 或 `ADMIN_API_TOKEN` 可用；普通 operator 会返回 `admin_permission_forbidden`。
+- 人工支付对账接口要求填写 reason，成功后复用 `apply_payment_callback_effects()` 给用户积分入账/退款，并写 `admin_audit_logs` action=`payment_reconciled`。
+- Current worktree 验证通过：`python3 -m py_compile payment_service.py app.py`；支付 service 测试 `23 passed`；支付对账 API 定向测试 `2 passed`；全量 pytest `347 passed in 3.71s`。
+- 财务人工支付对账已同步 deploy repo、全量验证通过并推送 GitHub main：commit `a204e74 Add finance payment reconciliation`。
+- Render 已确认支付对账新路由上线：`POST /api/admin/actions/payments/reconcile` 未授权请求从旧版 404 变为 403 `admin_write_forbidden`，没有产生业务写入。
+- 已按附件 `REFACTOR_TO_SAAS.md` 新增目标结构：`api-server/`、`worker/`、`shared/`、`Dockerfile`。
+- 新 `api-server/app.py` 提供 `POST /generate` 和 `GET /status/<task_id>`；只写 Redis 队列和读取状态，不包含 AI 生成逻辑。
+- 新 `worker/worker.py` 独立消费 Redis 任务，调用 Worker-only generator handler，成功写 `image_url`，失败最多 retry 2 次后标记 failed。
+- 新 `shared/redis_queue.py` 负责 Redis task queue、task status hash、任务入队/出队/运行/成功/失败状态。
+- 默认 `shared/generator.py` 在未配置真实 provider 时 fail-closed；只有显式 `AI_IMAGE_PROVIDER=mock` 且 `ALLOW_MOCK_GENERATION=true` 时允许本地 mock。
+- `render.yaml` 和 `Procfile` 已把 web start command 改为 `gunicorn --chdir api-server app:app ...`，health check 改为 `/healthz`，并加入 `REDIS_URL` 配置项。
+- Current worktree SaaS 验证通过：py_compile 新模块通过，`tests/test_saas_runtime.py` -> 3 passed，全量 pytest -> 350 passed。
+- Deploy repo SaaS 验证通过：py_compile 新模块通过，`tests/test_saas_runtime.py` -> 3 passed，全量 pytest -> 350 passed；commit `6ca9d8f Add SaaS API worker Redis skeleton` 已推送 GitHub main。
+- Render 线上轮询 `/healthz` 和 `/generate` 仍返回 404，说明现有 Render 服务没有自动应用 `render.yaml` 的新 start command，仍在运行旧 monolith。需要在 Render Dashboard 手动改 Start Command 并配置 `REDIS_URL`，或重新按 blueprint 创建服务。
+- 本机 `python3 -m gunicorn` 对旧 monolith 和新 API Server 都返回 502，但 Flask test client 对新 API Server 验证正常；该 502 是本机 gunicorn 环境问题，不能作为新代码失败证据。
+- 已按 `CODEX_REWRITE_PROMPT.md` 继续补 Worker 必须项：`worker/worker.py` 单次 handler 执行默认 `WORKER_TASK_TIMEOUT=60` 秒，超时按失败处理并进入 retry；`WORKER_MAX_RETRIES` 默认 2。
+- `shared/redis_queue.py` 已支持 `recover_stale_running()`：Worker 每轮消费前扫描 stale `running` 任务，未超过最大尝试次数则恢复为 `pending` 并重新入队，超过则标记 `failed`。
+- Worker 会从 Redis 已记录的 `attempts` 继续计数，避免进程崩溃后从 0 重新开始导致无限重试。
+- Current worktree 验证通过：SaaS 定向测试 `5 passed`，全量 pytest `352 passed in 3.95s`。
+- Deploy repo 验证通过：SaaS 定向测试 `5 passed`，全量 pytest `352 passed in 3.81s`。
+- Deploy repo 已推送 `37622d7 Add worker timeout and recovery` 和 `5b754c5 Document worker timeout recovery` 到 GitHub main。
+- 已按附件 `CODEX_FINAL_CONSTITUTION.md` 执行下一步结构收敛：API 合同固定为 `POST /generate` 和 `GET /status/<task_id>`，不新增兼容 API。
+- `api-server/app.py` 已收紧：`POST /generate` 只接受非空 `prompt`，只返回 `task_id`；`GET /status/<task_id>` 只返回 `status` 和 `image_url`。
+- `shared/redis_queue.py` 默认任务 ID 已从 `task_<hex>` 改为标准 UUID 字符串，保留显式 `task_id` 兼容测试/内部调用。
+- `tests/test_saas_runtime.py` 已补覆盖：响应字段严格匹配固定合同，旧 `category/dishName` 字段不能绕过 `prompt` 要求，API Server 不导入 `shared.generator` 或 `generate_image`。
+- Current worktree 验证通过：`python3 -m pytest tests/test_saas_runtime.py -q` -> 7 passed；`python3 -m pytest -q` -> 354 passed；SaaS py_compile 和 `git diff --check` 通过。
+- Deploy repo 验证通过：`python3 -m pytest -q` -> 354 passed；SaaS py_compile 和 `git diff --check` 通过。
+- Deploy repo 已提交并推送 `1dbcbb4 Enforce SaaS generation API contract` 到 GitHub main。
+- Final SaaS health check 结果：项目结构包含 `api-server/`、`worker/`、`shared/`；SaaS py_compile 通过；`tests/test_saas_runtime.py` -> 7 passed；API Server import 成功且路由为 `/healthz`、`/generate`、`/status/<task_id>`；静态 grep 未发现 `api-server/app.py` 导入 `shared.generator` 或 `generate_image`。
+- Worker 独立类实例化和空队列处理成功；FakeRedis 生成流 `enqueue -> worker.process_one -> done/image_url` 成功。
+- 当前本地环境 `REDIS_URL` 缺失，真实 Redis ping 未通过。
+- Render 公开站点 `https://waimai-image-tool-1.onrender.com/healthz` 和 `POST /generate` 均返回 HTTP 404，说明现有 Render 服务仍未运行新的 `api-server` start command。
+- Product specification extraction covered `menu_parser.py`, `matching_engine.py`, `image_pipeline.py`, `app.py`, `static/app.js`, `billing.py`, `platform_rules.py`, and related tests.
+- Current implementation has only 5 category detection rules and 3 category-specific prompt templates; no code-defined 40-category taxonomy exists in this worktree.
+- Gemini refinement is not implemented; README marks Gemini/OpenAI refinement as future work. Current "自定义修改" only charges points and records metadata in UI flow, with no image-editing backend route.
+- Chrome login is now verified for both Tencent Cloud and Render.
+- Tencent TokenHub `API Key 管理` currently shows `你还没有创建任何 API Key`; a new long-lived TokenHub credential is required before `TENCENT_TOKENHUB_API_KEY` can be configured.
+- The authorized Render test service is `https://waimai-image-tool.onrender.com` (`srv-d8qmtgsvikkc73a4d5g0`), Free instance, GitHub `467091085-max/waimai-image-tool` branch `main`.
+- Render currently uses Build Command `pip install -r requirements.txt`, Start Command `gunicorn app:app`, and has no Health Check Path.
+- Replacing the only Render Web Service with the API-only `api-server` now would remove the customer website at `/`; the immediate `混元未配置` recovery therefore keeps `gunicorn app:app`, configures TokenHub only on this authorized test service, restarts it, and verifies the existing website flow.
+- User confirmed creation of a long-lived TokenHub test credential. Created `waimai-render-test` with access limited to `hy-image-v3.0` and `hy-image-lite`; no IP allowlist because the Render Free service does not provide a stable egress IP.
+- The credential was copied directly from Tencent Cloud into Render secret env `TENCENT_TOKENHUB_API_KEY`; its plaintext was not written to source, project state, logs, or conversation, and the clipboard/temporary variable were cleared.
+- Render deploy after the secret change became live. `/api/tencent-status` now returns `configured=true`, `tokenhubReady=true`, `provider=tencent-hunyuan`; `/api/ops/readiness.generationProvider` returns `ready=true`, `mode=tokenhub`, no generation blockers.
+- First real TokenHub style call returned transient HTTP 504; retry succeeded. Six demo style images then all succeeded through `TokenHubImageV3`, were valid 1024x768 JPEG files, had six unique SHA-256 values, and were visually non-placeholder images.
+- Uploaded `/Users/guiguixiaxia/Documents/menus/运营数据_蔬适圈·中式轻食健康餐（万达店）.xlsx` to the Render test service. It parsed 56 rows and detected category `轻食健康餐` with 96 confidence.
+- Real-menu six category style images all succeeded through `TokenHubImageV3`; visual QA showed actual light-food compositions across six distinct styles, not color blocks.
+- Initial six-free-sample request used `FINAL_GENERATION_WORKERS=3`: only one sample succeeded while five transient provider failures were swallowed and mislabeled as `混元未配置`. Sequential retry of an affected sample succeeded, proving the root cause was provider concurrency/error handling rather than missing credentials or balance.
+- Render test tuning is live: `FINAL_GENERATION_WORKERS=1`, `TENCENT_TOKENHUB_POLL_TIMEOUT=150`, Start Command `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 180`.
+- After the tuning deploy, the real menu was uploaded again; all six background styles succeeded in 16-21 seconds each, and all six free samples succeeded in one request in 88.42 seconds with zero pending results.
+- Visual QA of the six free samples passed dish identity, full-frame composition, and a coherent light-wood style. It did not prove exact selected-background reuse: current preview generation passes a text style prompt to TokenHub but does not condition on the selected background image.
+- Restarting Render removed the previously uploaded menu and generated local images. This confirms the existing `objectStorage.provider=local` blocker is a real durability defect, not only a readiness warning.
+- Added `AI-Project/handoffs/2026-07-29/04_TASK1_LIVE_EVIDENCE.md` so ChatGPT Pro receives the exact real-provider failure/recovery evidence, the false `混元未配置` root cause, and the boundary between prompt-level style similarity and true selected-background image conditioning.
+- Chrome reconnect succeeded and a fresh logged-in ChatGPT Pro page is ready. The sanitized ZIP was rechecked at 372,289 bytes with SHA-256 `d29bfcaecd10c53e95949a7e870249e512853744934a7560775826f8b3c10136`, but Chrome rejected `fileChooser.setFiles` because the ChatGPT Chrome Extension does not currently have file-URL access. No source was transmitted; user action to enable that extension permission is pending.
+- User authorized direct Computer Use for the extension setting. Four Computer Use attempts remained blocked because macOS Accessibility and Screen Recording permissions for ChatGPT are still pending. Chrome's dedicated control interface also explicitly blocks navigation to `chrome://extensions` by security policy, so it cannot safely toggle its own extension permission. Manual user action remains the only available path; no workaround was attempted.
+- After the user enabled file-URL access, Chrome successfully attached the sanitized ZIP, but ChatGPT kept the send button disabled for ZIP and nontrivial text attachments. A 44-byte probe proved the chooser and permission worked; the blocker is ChatGPT attachment parsing, not local file access.
+- ChatGPT Pro Task 1 conversation created: `https://chatgpt.com/c/6a6ae1aa-d71c-83e8-9f20-ffcf2aa49cb7` (`任务1补丁分析`).
+- The external engineer received the complete task requirements and live Render evidence. Source delivery was switched to the public repository at exact deployed commit `1dbcbb48aac38a118367e650cbd6d27af4faa17f`; unauthenticated `git ls-remote` verified it is publicly readable.
+- A clean temporary clone at `/tmp/waimai-image-tool-1dbcbb4` confirmed `app.py`, `static/app.js`, and `tests/test_app_generation.py` are byte-identical to the current isolated worktree despite the commit-label difference, so a patch to the deployed commit's generation files can be independently applied here.
+- Official Tencent documentation confirms `hy-image-v3.0` accepts up to three reference images through `images`, but does not guarantee background pixels remain unchanged and does not expose background-lock/input-fidelity/mask controls. The product must distinguish reference-conditioned similarity from exact background identity; exact identity requires deterministic foreground-mask composition.
+- Independent acceptance review found two P1 defects beyond the original symptom: `preview_samples()` can abort the entire six-image batch if any future raises, and the frontend clears all preview state before one bulk request, so an escaped exception loses already completed samples. It also found `/api/style-preview-sample?index=abc` returns 500 because `ValueError` is not handled.
+- Local Task 1 patch now classifies provider failures as transient/quota/auth/terminal, keeps raw redacted diagnostics in server logs only, and reserves `WaitingForModelConfig` for a genuinely unconfigured provider.
+- The frontend now fetches the six-row manifest without generation, calls the existing per-sample endpoint serially, updates stable slots immediately, retries at most once only for network failures or HTTP 408/425/429/5xx/provider-marked transient failures, and retains partial successes.
+- The bulk backend route also isolates per-sample exceptions so one failed future cannot erase five successful rows; invalid sample indices now return 400 for non-integers and 404 for negative/out-of-range values.
+- Focused Task 1 tests pass: 60 passed across generation, customer UI contract, and security regression suites.
+- Local browser verification used the real 56-row light-food menu with Tencent calls deliberately disabled and deterministic local fallback enabled. Six backgrounds rendered, the sample UI visibly progressed from `2/6` to `6/6`, and server logs proved one manifest request followed by six ordered `/api/style-preview-sample` requests. This is UI/control-flow evidence only, not a new real-provider claim.
+- ChatGPT Pro's first response was rejected for non-applicable pseudocode, unexecuted PASS claims, incomplete index handling, duplicate retry, and an incorrect HY-Image reference-input conclusion. Its corrected review explicitly withdrew those claims and found no confirmed P0/P1 in the implemented Task 1 scope.
+- Conditional review checks are now locked: structured `retryable=false` overrides HTTP status, stale style responses are rejected before state writes, and repeated sample requests reuse the cached generated preview.
+- Final Task 1 verification after the review fixes: 62 focused tests and 360 full tests passed; Python compile, both JavaScript syntax checks, and `git diff --check` passed.
+- Final latest-code browser verification again observed `2/6` then `6/6` for the real 56-row menu under explicitly labeled deterministic fallback.
+- Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 同步并推送 ResourceInsufficient UI 文案补丁。
-2. 在腾讯云控制台为混元/AIArt 开通可用资源包或后付费。
-3. 资源开通后重新请求 `https://waimai-image-tool-1.onrender.com/api/style-background?style=style-1&generate=1`，确认返回真实图片 URL。
-4. 若返回 URL，再验证前端 6 张背景逐张加载和选择背景后的样图生成。
+1. 仅提交隔离分支，不推送；记录提交 SHA。
+2. 等待明确授权：关闭 Render `Auto-Deploy` 后推送，或允许这次 `main` 推送同时触发测试环境部署。
+
+## Latest Verified Checkpoint
+- 支付下单入口现在强制有效手机号会话，只接受服务端版本化套餐 `packageId`；用户、金额、积分、支付渠道和订单 ID 不再由浏览器指定，幂等键只从 `Idempotency-Key` 请求头读取。
+- 支付回调按冻结订单金额校验后才允许入账；客户充值 UI 已改为固定套餐下单并移除直接加积分的自定义充值入口。
+- 支付目录、服务、计费、API、增长联动和安全定向回归：`59 passed`。
+- 40 叶品类 taxonomy、套餐指纹和主站图库门禁已独立验收；解析/匹配/上传相关回归：`130 passed`。
+- 真实 `menu` 目录基线来自代理只读验证：24/24 Excel、3,038 行解析成功；约 31.24% 为 `unknown`，这些记录只允许规范化名称完全一致的图库复用，否则强制生图。该比例不是准确率证据。
+- ChatGPT Pro Task 4: `https://chatgpt.com/c/6a6b207b-bf8c-83e8-93df-46d41e49fc78`，报告和补丁已归档并独立审查。
+- ChatGPT Pro Task 5: `https://chatgpt.com/c/6a6b4d37-5198-83e8-b047-be3107d9987b`，生产 growth/finance review 正在进行；已独立确认 migration 007 缺失、生产 SQLite 路由和跨事务 outbox 风险。
+- Task 5 sanitized archive: `/Users/guiguixiaxia/Documents/Codex-Handoffs/waimai-image-tool/2026-07-29/waimai-image-tool-current-task5-v1.zip`, size `821144`, SHA-256 `fcf962bab69dcad0abeec48cdf7644abd026ac7659e3326f27934ba0fd679b56`, baseline commit `4d3214bbd251914fa314265d5ac98d12c1a302fa`.
+- 当前仍未提交、未推送、未部署、未执行数据库迁移。
+- Prompt Worker closure: done locally; `POST /generate -> generate queue -> prompt Worker -> TokenHub adapter -> done/failed` is implemented, the API health check requires a live queue-scoped `prompt-worker` TTL heartbeat, the customer Web remains unchanged, and the product Worker remains isolated on `product-generate`.
+- Prompt Worker focused verification: 48 passed across prompt flow, SaaS API, Render blueprint, and Redis reliability tests.
+- Full local regression after Prompt Worker closure: 774 passed; scoped Python compilation, Render YAML parsing, credential scan, and `git diff --check` passed.
+- Prompt Worker external verification: not performed; no real Redis, TokenHub request, Render resource creation, deployment, migration, commit, or push occurred.
+- PostgreSQL revision settlement foundation: done locally. Terminal `product_revision` Redis tasks now recompute the frozen revision digest, verify owner/job/fence, re-read canonical manifest and image bytes, and produce the same fenced completion object used by the PostgreSQL job store.
+- Independent settlement reconciler now dispatches both `product_batch` and `product_revision`; active tasks remain side-effect free and poison jobs remain isolated.
+- Free revision settlement now finalizes a zero-point target without creating synthetic debit/refund point orders or ledger rows. Active free-rework quota counting has an owner/parent/job-type scoped PostgreSQL query.
+- Revision settlement/store/reconciler focused verification: `57 passed`; scoped Python compilation passed.
+- Security read-only audit confirmed four P0 groups: anonymous admin reads, global latest-menu preview leakage, replayable/cross-user object and export tokens, and anonymous private media/model-input reads. No production environment was touched.
+- Customer preview/menu isolation: done locally. `/api/plan`, `/api/style-background`, `/api/style-preview`, and `/api/style-preview-sample` now authenticate before any generation boundary, require an owner-scoped `menuUploadId` outside explicit local demo mode, and run against its immutable materialized menu snapshot.
+- Customer preview frontend binding: done locally. All four preview/background request families now propagate the current `menuUploadId`.
+- Private media exposure closure: done locally. Anonymous `/media` access is limited to image files beneath `seed_public/` and `demo_store/`; generated, selected-background, uploaded-library, and metadata paths are denied. `/model-inputs` is unavailable in staging, production, and Render runtimes.
+- Preview/media security contract verification: `27 passed`; related generation/product/background/security/UI regression: `136 passed`; Python and JavaScript syntax checks passed.
+- Live PostgreSQL fail-closed boundary: done locally. Product runtime selection no longer chooses SQLite in staging, production, or Render when `DATABASE_URL` is absent or `PRODUCT_POSTGRES_ENABLED=false`; those configurations enter the PostgreSQL path and return a controlled 503 before provider, queue, or SQLite writes.
+- PostgreSQL configuration parsing now rejects an explicitly disabled product runtime, and product-generation readiness separately reports database URL presence and the required enabled flag.
+- The only live-label SQLite compatibility is a test-only switch that requires both Flask `TESTING` and `ALLOW_SQLITE_PRODUCT_RUNTIME_FOR_TESTS=true`; it is not honored by a real runtime.
+- PostgreSQL fail-closed/runtime/readiness and adjacent API regression verification passed: `50`, `87`, and `26` test selections.
+- PostgreSQL refinement status/cancel ordering: done locally. Owner-scoped revision type and immutable digest validation now happens before settlement, Redis reads, or cancellation mutation.
+- Durable terminal revision status no longer requires Redis. Active cancellation checks the exact Redis revision first; a Redis terminal result is settled and cancellation is rejected, while a running cancellation is requested in Redis before PostgreSQL.
+- A running PostgreSQL revision with a missing/unavailable Redis task fails without mutating PostgreSQL. Formal generation job IDs passed to revision status/cancel are rejected before side effects.
+- Outbox claim-loss compensation: done locally and independently reviewed. After Redis acceptance, `OutboxClaimLost` triggers an atomic exact-task cancellation only when job, owner, request SHA-256, full payload, fence, and outbox identity match; mismatched tasks remain untouched.
+- Refinement ordering regression: `35 passed`; outbox/Redis regression: `51 passed`; scoped Python compilation passed.
+- Atomic PostgreSQL free-rework allocation: done locally. `create_or_get_revision_job_with_quota()` locks the owned succeeded parent batch, resolves idempotent replay before quota counting, chooses an immutable free/paid request candidate, and writes job, optional paid wallet debit, settlement, and outbox in one transaction.
+- The refinement HTTP route now uses the atomic quota API for `rework`; `refine` remains on the existing atomic paid path. The in-process lock is no longer the production quota authority.
+- Atomic quota/store/refinement/reconciler regression: `102 passed`. Real PostgreSQL multi-connection blocking and isolation behavior remain unverified.
+- Private preview media delivery: done locally. Generated background/sample paths receive short-lived preview tokens bound to the authenticated user and exact path; `/api/private-media` requires the owner Bearer session and rejects anonymous, cross-user, and path-tampered access.
+- The frontend recursively materializes signed private image URLs into authenticated Blob URLs at the API boundary, caches repeated fetches, validates `image/*`, and revokes Blob URLs when the auth session changes.
+- Preview/media/UI/generation/security regression: `166 passed`; JavaScript syntax, Python compilation, and `git diff --check` passed.
+- Full local regression after security, PostgreSQL refinement, outbox compensation, atomic quota, and private preview delivery: `860 passed in 10.40s`.
+- Payment callback wallet-repair retry: done locally. If the payment event commits but the external wallet mutation fails, replaying the same provider event now retries the same idempotent credit/refund order instead of permanently returning a zero effect.
+- Payment crash-window fault injection: credit and refund recovery both pass. The first wallet mutation can fail after the payment event commits, the duplicate provider event repairs it, and later replays remain idempotent; this does not make the SQLite payment order/event store durable.
+- PostgreSQL customer reads are now side-effect free. Generation/refinement status and generation manifest no longer read Redis or invoke Web settlement; payload builders read the durable job, settlement snapshot, and existing wallet account only. The independent reconciler remains the sole terminal-state/settlement writer.
+- Read-purity and adjacent settlement regression: `27 passed` in the PostgreSQL HTTP suite plus `43 passed` across refinement, generation/revision settlement, reconciler, and batch transaction suites.
+- Generation/refinement cancellation no longer performs Web settlement. Active Redis cancellation is requested before PostgreSQL cancellation intent, queued unpublished jobs can be canceled durably, wrong job types fail before side effects, and Redis terminal results are left to the independent reconciler.
+- Canceled/failed PostgreSQL responses now say `积分退款处理中` until the durable settlement records the full refund; only then do they claim points were returned.
+- Cancellation/read-purity PostgreSQL HTTP regression: `29 passed`; adjacent outbox/settlement/refinement/batch suites: `61 passed`.
+- Private preview persistence was independently reviewed after agent delivery. Backgrounds and free samples are stored under opaque owner/menu-scoped private object keys with image/metadata SHA-256 checks; live storage failures return 503 instead of serving local-only data.
+- Review found and fixed one missing context edge: formal generation now resolves the selected background inside the same owner/menu preview context, so a Render restart can restore the chosen background before freezing the batch.
+- Preview persistence plus PostgreSQL route verification: `64 passed`; selected-background/generation/product/security/UI/SaaS adjacent regression: `150 passed`.
+- Two isolated security workers are in progress for the admin authorization dependency and one-time nonce consumer foundations; main-thread PostgreSQL refinement route integration remains the immediate critical path.
+- PostgreSQL refinement HTTP integration: done locally. Production submission creates the revision job, paid debit or zero-point free job, settlement, and outbox through `ProductJobStore`; Web does not directly enqueue the revision and does not touch SQLite billing/job storage.
+- Production refinement status verifies an available Redis terminal task through the revision settlement engine, then reads durable PostgreSQL state. A missing Redis task no longer triggers Web republish; the independent outbox/reconciler services own recovery.
+- Production refinement asset and cancellation routes are owner-scoped through PostgreSQL. Queued cancellation settles from the durable debit target; a running job without its Redis task fails closed.
+- Focused PostgreSQL refinement verification: `82 passed` across runtime integration, refinement API, revision settlement, reconciler, and job-store suites; `app.py` compilation passed.
+- Admin authorization foundation returned from its isolated worker and awaits main-app authorizer wiring plus independent regression. One-time nonce foundation and an independent PostgreSQL refinement audit remain in progress.
+- Customer background/free-preview durability now uses deterministic `generated/customer-previews/v1/` object keys scoped by hashed owner and menu-upload identities. Image bytes and integrity metadata are written to the configured private object store and rehydrated after local cache deletion.
+- Existing private-media tokens remain bound to the authenticated owner and exact path. Anonymous, cross-user, and path-tampered requests remain rejected; valid signed URLs recover their exact object while unexpired.
+- Staging, production, and Render require a ready remote-private store for these assets. Configuration, network, write, read-back, or integrity failures return HTTP 503 and never serve the generated local file as a live fallback; explicit local demo remains local.
+- Six-background and six-parallel-free-preview recovery tests pass without a second provider call. Focused verification: `51 passed`; full regression: `873 passed in 10.86s`; scoped Python compilation and `git diff --check` passed.
+- No real COS or Render restart was exercised for this checkpoint. No payment, ledger, Redis/PG job file, deployment, migration, commit, or push was performed.
+- `ProductPaymentStore` now supports server-catalog-frozen order creation, one-time provider checkout binding, owner-safe lookup, strict event replay, partial/full refunds, and payment event plus point ledger mutation in one PostgreSQL transaction.
+- The live real-provider HTTP path no longer writes `payment_orders` or `payment_events` to SQLite. Local fake payment and explicit SQLite test override remain unchanged.
+- Disposable real PostgreSQL protocol smoke passed: order creation, signed Alipay checkout, paid callback, identical callback replay, one payment event, one 500-point credit, and zero SQLite payment orders. Direct store smoke also passed paid replay plus partial/full refund with final balance 0 and exactly three ledger rows.
+- The same Flask/Alipay/PostgreSQL path is now a gated protocol test: it skips without `TEST_POSTGRES_DSN` and passed against the disposable PostgreSQL container when explicitly enabled.
+- PostgreSQL readiness schema probing now requires both payment tables from migration `004`; focused runtime verification passed `7 passed, 1 skipped`.
+- Payment success and each refund now enqueue a digest-bound PostgreSQL growth event through the same cursor as the payment event and wallet mutation. An outbox write failure rolls back the entire payment transaction; replay repairs a historically missing outbox row without re-crediting.
+- Real Flask protocol verification proved a repeated signed Alipay notify leaves one paid event, one 500-point credit, and one pending first-payment growth outbox row. A test sentinel proved the live path does not call synchronous SQLite growth processing.
+- Growth outbox fake/real protocol and payment integration verification passed `70 passed, 1 skipped`; explicit PostgreSQL API protocol passed `1 passed`.
+- Payment service/store/API focused verification passed: `50 passed` for service/store and the complete payment/product API selection passed. Production growth, auth, withdrawal/settlement, admin audit, and library/export index persistence remain blocking and must not be reported complete.
+- Live admin payment reconciliation now requires `Idempotency-Key`, rejects the fake provider, derives stable server-owned event/action IDs, and writes the payment event, wallet mutation, growth outbox, and finance audit in one PostgreSQL transaction. Identical replay is exact; an injected audit failure rolls back all four effects.
+- Payment reconciliation verification passed the disposable real-PostgreSQL protocol (`1 passed`) and the adjacent payment/store/API/security selection (`140 passed`).
+- Added append-only migration `012_fix_menu_object_ref_constraint.sql` instead of rewriting checksum-tracked migration 003. It replaces PostgreSQL's invalid `{0,1023}` repetition with an explicit length check plus an unbounded allowlist regex while retaining path-traversal guards.
+- The menu constraint migration passed static verification (`1 passed, 1 skipped`) and disposable real PostgreSQL verification (`2 passed`), including two applications of migration 012 plus real menu-record create and exact replay.
+- PostgreSQL admin read and immutable security stores have returned from isolated workers and are under independent route/readiness review; their worker-reported full-suite results are not yet accepted as integration evidence.
+- Production admin dashboard and all eight list resources now select PostgreSQL providers dynamically; local demo keeps the existing SQLite provider. PostgreSQL failures return controlled 503 payloads instead of `ok=true` zero data.
+- Live risk, asset-access, and generic audit actions now require `Idempotency-Key`, use trusted server actors and stable server IDs, and write migration 011 immutable PostgreSQL records. Client `actorUserId` and client request IDs are not trusted identities.
+- Asset audit IDs now support guarded 512-character relative object references, including `/`, while rejecting traversal, schemes, duplicate separators, backslashes, and control characters.
+- Live invite acceptance consults the latest PostgreSQL user/IP risk decisions before freezing a new relation's risk snapshot; replay continues to use the original immutable snapshot.
+- Migration 011's three tables are now required by PostgreSQL readiness. The production admin HTTP protocol proved risk replay/conflict, path-bearing asset access, trusted audit actor, dashboard/list reads, zero SQLite creation, and fail-closed 503 behavior.
+- Independent verification after integration: affected default suites `224 passed, 5 skipped`; disposable real PostgreSQL suites `78 passed`. No deployment, external migration, commit, or push occurred.
+- Production `/api/upload-library` now requires admin authorization, `Idempotency-Key`, a known taxonomy category/style, and ready remote-private object storage before reading or writing the archive.
+- ZIP imports enforce bounded archive/entry/uncompressed/image sizes, compression ratio, safe relative members, no symlinks/encryption, Pillow decode/pixel limits, metadata-stripping normalization, and read-back SHA-256 verification.
+- Append-only migration 013 records immutable import batches/items. All asset registrations and the exact batch ledger commit in one PostgreSQL transaction; same-key changed content conflicts, and newly created objects are removed when upload verification or PostgreSQL commit fails.
+- Imported assets enter `pending_review` with trusted provenance and `reuse_scope=tenant`. Approved shared backgrounds/products are queried only after the authenticated user's owner-scoped library misses; unreviewed assets remain ineligible.
+- The live `product_db_conn()` now centrally raises `LiveSQLiteAccessForbidden` and returns controlled HTTP 503. Explicit local demo and the test-only SQLite override remain available.
+- Library/import/asset/readiness verification passed `120 passed, 4 skipped`; disposable real PostgreSQL verification passed `51 passed`, including approval, cross-user shared lookup, exact replay/change conflict, zero SQLite creation, and failed-import object cleanup.
+- ChatGPT Pro Task 5 remains visibly in progress and has not delivered final artifacts. No interruption or duplicate task was sent.
+- Complete default regression after the library import and live SQLite guard passed `1213 passed, 20 skipped`.
+- Complete disposable PostgreSQL regression passed `1231 passed, 2 skipped`; the two remaining skips were Redis-gated tests.
+- Complete disposable PostgreSQL plus real Redis DB 15 regression passed `1233 passed in 28.95s` with zero skips. Redis `5.0.8` connected successfully to `redis://127.0.0.1:56379/15`.
+- These results are local integration evidence. They do not prove real COS, paid Hunyuan/TokenHub generation, Render deployment, or production database migration.
+- All 24 Excel files under `/Users/guiguixiaxia/Documents/menus` parse successfully: `3038` rows total, including `516` rows classified as `套餐/组合`.
+- The first three-platform deterministic end-to-end menu run passed for `运营数据_蔬适圈·中式轻食健康餐（万达店）.xlsx`: 56 formal dish images, 168 exported platform derivatives, six unique backgrounds, six free samples, exact selected-background SHA consistency, and output-download SHA verification.
+- The first E2E report is `scripts/reports/menu-e2e-deterministic-smoke-20260730.json`. It is local deterministic-provider evidence, not a paid Tencent provider claim.
+- Full-menu batch acceptance found a real free-sample defect on `运营数据_朱小小螺蛳粉(春熙路店).xlsx`: a generated filename containing `#` was emitted as an unescaped `/media` URL, so URL parsing truncated it as a fragment and the private-media safety filter removed the URL.
+- `media_url_for_path()` now percent-encodes the relative path while preserving `/`. The fix is limited to URL serialization; generation, filenames, storage, and authorization are unchanged.
+- Reserved-character URL regression plus the deterministic acceptance contract passed `2 passed`. The same 98-row menu then passed all stages, including 98 formal images and 294 three-platform export derivatives.
+- Real-menu taxonomy inspection also confirmed that the 40-leaf dish taxonomy exists, but menu-level background category detection still uses five coarse rules and only three category-specific six-style prompt sets. That is now the next correctness gap under audit.
+- Final all-menu evidence is `scripts/reports/menu-e2e-deterministic-all-20260730.json`: `24/24` menus passed, `3038/3038` formal dish rows passed, and `9114` Meituan/Taobao-Eleme/JD derivatives were validated.
+- Across the 24 final runs, the deterministic provider boundary recorded 144 style-background calls, 3182 foreground calls, and 3182 mask calls. Every menu also passed six free samples, selected-background identity, manifest row/name/output SHA checks, and delivery ZIP checks.
+- The first aggregate process exited nonzero only because it retained the pre-fix 螺蛳粉 result in memory. The exact failed menu was rerun successfully and the aggregate was rebuilt from the 24 immutable final per-menu JSON reports; no individual result was rewritten by hand.
+- The all-menu result is not production-provider evidence and does not validate Tencent account quota, model quality, COS networking, or Render deployment.
+- Added `background_profiles.py` without changing the 40 stable taxonomy IDs. Every leaf category now has a category-specific scene profile combined with six distinct style axes; no leaf silently falls back to the old three-category prompt table.
+- Menu background selection now prefers an explicit store taxonomy, otherwise combines item taxonomy, combo-component, and bounded keyword evidence. No evidence returns a truthful `mixed` context.
+- Pure-background prohibitions are at the front of the prompt and have a dedicated negative prompt. Style background cache version is now 3 and cache identity binds taxonomy ID, profile version, and prompt SHA-256.
+- Focused taxonomy/background/generation verification passed `61 passed`.
+- `scripts/reports/menu-background-taxonomy-20260730.json` passed: 40 profiles, six unique prompts each, 24 real menus, 3038 rows, and 516 combo rows. This report validates prompt/category coverage only.
+- Post-change complete deterministic E2E for the 84-row Southeast Asian menu passed: 84 formal images and 252 platform derivatives. Evidence: `scripts/reports/menu-e2e-background-v3-thai-20260730.json`.
+- Core taxonomy classification now removes follower-marketing and flavor-only phrases before category evidence and gives the concrete `锅贴` shape precedence over the broader `牛肉锅` substring.
+- Exact regressions prove `【粉丝福利】烤翅一对` and `火锅味微辣` stay unknown while `酥炸牛肉锅贴` is `dumpling_wonton`.
+- Matching/taxonomy/parser/background focused verification passed `29 passed`. All 24 local Excel files still parse to 3038 rows and 516 combos; conservative unknowns continue to require generation instead of unsafe reuse.
+- Complete default regression after the reserved-character, 40-category, and taxonomy-edge fixes passed `1221 passed, 20 skipped`.
+- The first PostgreSQL+Redis run found one stale test expectation for `style-background.v2`; production registration correctly used v3. The protocol test now asks `product_asset_pipeline_version("category_background")` instead of pinning an obsolete version.
+- Focused real PostgreSQL library-import protocol passed `1 passed`; complete disposable PostgreSQL plus real Redis regression then passed `1241 passed in 28.52s` with zero skips.

@@ -175,10 +175,7 @@ def fit_to_platform(img: Image.Image, platform_id: str) -> Image.Image:
     spec = PLATFORMS.get(platform_id, PLATFORMS["meituan"])
     target = (int(spec["width"]), int(spec["height"]))
     src = img.convert("RGBA")
-    fitted = ImageOps.contain(src, target, Image.Resampling.LANCZOS)
-    canvas = Image.new("RGBA", target, edge_background(src))
-    canvas.alpha_composite(fitted, ((target[0] - fitted.width) // 2, (target[1] - fitted.height) // 2))
-    return canvas
+    return ImageOps.fit(src, target, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
 
 def save_platform_image(img: Image.Image, target: Path, max_kb: int) -> int:

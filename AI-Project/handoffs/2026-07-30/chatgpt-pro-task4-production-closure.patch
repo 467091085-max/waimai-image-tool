@@ -1,0 +1,4371 @@
+diff --git a/admin_panel.py b/admin_panel.py
+index 3c6585d3a15474b007d63b894b788140b804b702..30eafaaac38e5eb6b7e25e59352528e3758463bd 100644
+--- a/admin_panel.py
++++ b/admin_panel.py
+@@ -29,6 +29,7 @@ class AdminDependencies:
+     current_menu_path: Callable[[], Path | None]
+     parse_menu: Callable[[Path | None], Mapping[str, Any]]
+     upload_dir: Path
++    authorized: Callable[[], bool] = lambda: False
+     db_path: Path | str | None = None
+     ai_asset_manifest_path: Path | str | None = None
+
+@@ -36,6 +37,14 @@ class AdminDependencies:
+ def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
+     blueprint = Blueprint("admin", __name__)
+
++    @blueprint.before_request
++    def require_admin_authorization():
++        if deps.authorized():
++            return None
++        if request.path.startswith("/api/"):
++            return jsonify({"error": "管理接口未授权", "code": "admin_forbidden"}), 403
++        return Response("Forbidden", status=403, mimetype="text/plain")
++
+     @blueprint.get("/admin")
+     def admin_home() -> Response | str:
+         response = render_template("admin.html")
+diff --git a/app.py b/app.py
+index 1b5de1dc7826448e9f22317423b9a5a7ae9984dd..5d0619ab60a1ed92b19dfb1296990ae29993bf74 100644
+--- a/app.py
++++ b/app.py
+@@ -62,9 +62,11 @@ from matching_engine import (
+ )
+ from menu_parser import parse_menu as parse_excel_menu
+ from shared.batch_contract import (
++    JOB_TYPE as MENU_BATCH_JOB_TYPE,
+     BatchContractError,
+     canonical_json,
+     freeze_menu_batch_contract,
++    request_sha256 as menu_request_sha256,
+ )
+ from shared.menu_upload_store import (
+     InvalidMenuUploadInput,
+@@ -74,17 +76,13 @@ from shared.menu_upload_store import (
+ )
+ from shared.postgres_runtime import (
+     PostgresRuntimeError,
++    assess_product_postgres,
+     postgres_connection,
+ )
+-from shared.product_generation_settlement import (
+-    ProductGenerationSettlementError,
+-    apply_generation_completion,
+-    completion_from_redis_task,
+-    settle_terminal_job,
+-)
+ from shared.product_job_store import (
+     CancellationRequested as PostgresCancellationRequested,
+     FenceMismatch,
++    FreeReworkQuotaExhausted,
+     InsufficientPointBalance,
+     InvalidProductJobInput,
+     JobNotFound as PostgresJobNotFound,
+@@ -451,26 +449,34 @@ def env_truthy(name: str, default: bool = False) -> bool:
+     return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+-def postgres_product_runtime_enabled() -> bool:
+-    database_url = str(os.environ.get("DATABASE_URL") or "").strip().lower()
+-    if not database_url.startswith(("postgres://", "postgresql://")):
+-        return False
++def live_product_runtime_detected() -> bool:
+     app_env = str(os.environ.get("APP_ENV") or "").strip().lower()
+-    live_default = app_env in {"production", "prod", "staging", "render"}
+-    if not app_env:
+-        live_default = bool(
+-            any(
+-                str(os.environ.get(name) or "").strip()
+-                for name in (
+-                    "RENDER",
+-                    "RENDER_SERVICE_ID",
+-                    "RENDER_EXTERNAL_URL",
+-                )
++    if app_env in {"production", "prod", "staging", "render"}:
++        return True
++    return bool(
++        any(
++            str(os.environ.get(name) or "").strip()
++            for name in (
++                "RENDER",
++                "RENDER_SERVICE_ID",
++                "RENDER_EXTERNAL_URL",
+             )
+-            or ".onrender.com"
+-            in str(os.environ.get("PUBLIC_BASE_URL") or "").lower()
+         )
+-    return env_truthy("PRODUCT_POSTGRES_ENABLED", default=live_default)
++        or ".onrender.com"
++        in str(os.environ.get("PUBLIC_BASE_URL") or "").lower()
++    )
++
++
++def postgres_product_runtime_enabled() -> bool:
++    # Live runtimes must fail closed on PostgreSQL configuration errors.  A
++    # false/missing feature flag must never reopen the SQLite product path.
++    if live_product_runtime_detected():
++        return True
++    database_url = str(os.environ.get("DATABASE_URL") or "").strip().lower()
++    return (
++        database_url.startswith(("postgres://", "postgresql://"))
++        and env_truthy("PRODUCT_POSTGRES_ENABLED", default=False)
++    )
+
+
+ def external_library_media_enabled() -> bool:
+@@ -554,7 +560,11 @@ def is_local_request() -> bool:
+
+
+ def local_demo_auth_allowed() -> bool:
+-    return env_truthy("ENABLE_LOCAL_DEMO_AUTH", default=True) and is_local_request()
++    return (
++        not live_product_runtime_detected()
++        and env_truthy("ENABLE_LOCAL_DEMO_AUTH", default=True)
++        and is_local_request()
++    )
+
+
+ def billing_write_authorized() -> bool:
+@@ -567,8 +577,10 @@ def billing_token_configured() -> bool:
+
+ def local_demo_billing_allowed(user_id: str) -> bool:
+     return (
+-        env_truthy("ENABLE_LOCAL_DEMO_BILLING", default=True)
++        not live_product_runtime_detected()
++        and env_truthy("ENABLE_LOCAL_DEMO_BILLING", default=True)
+         and not billing_token_configured()
++        and is_local_request()
+         and user_id == billing.DEFAULT_USER_ID
+     )
+
+@@ -594,7 +606,8 @@ def generation_token_configured() -> bool:
+
+ def local_demo_generation_allowed() -> bool:
+     return (
+-        env_truthy("ENABLE_LOCAL_DEMO_GENERATION", default=False)
++        not live_product_runtime_detected()
++        and env_truthy("ENABLE_LOCAL_DEMO_GENERATION", default=False)
+         and not generation_token_configured()
+         and is_local_request()
+     )
+@@ -620,7 +633,7 @@ def session_token_from_request() -> str:
+         token = auth[7:].strip()
+         if token:
+             return token
+-    return str(request.headers.get("X-Session-Token") or request.args.get("sessionToken") or "").strip()
++    return str(request.headers.get("X-Session-Token") or "").strip()
+
+
+ def auth_error_response(exc: auth_service.AuthError):
+@@ -1286,10 +1299,21 @@ def generation_provider_readiness() -> dict[str, Any]:
+
+ def product_generation_readiness() -> dict[str, Any]:
+     app_env = runtime_environment_label()
+-    live_runtime = app_env in {"production", "prod", "staging", "render"} or render_runtime_detected()
++    live_runtime = live_product_runtime_detected()
+     redis_configured = bool(str(os.environ.get("REDIS_URL") or "").strip())
+     database_url = str(os.environ.get("DATABASE_URL") or "").strip()
+     postgres_configured = database_url.lower().startswith(("postgres://", "postgresql://"))
++    postgres_probe = (
++        assess_product_postgres()
++        if postgres_configured
++        else {
++            "configured": False,
++            "reachable": False,
++            "schemaReady": False,
++            "error": "postgres_database_url_required",
++            "missingTables": [],
++        }
++    )
+     product_worker_declared = env_truthy("PRODUCT_WORKER_ENABLED", default=False)
+     product_worker_service_id = (
+         str(os.environ.get("PRODUCT_WORKER_SERVICE_ID") or "product-worker").strip()
+@@ -1384,6 +1408,10 @@ def product_generation_readiness() -> dict[str, Any]:
+             blocking_issues.append("postgres_product_job_store_required")
+             missing_config.append("DATABASE_URL")
+             required_config.append({"key": "database_url", "env": ["DATABASE_URL"]})
++        elif not bool(postgres_probe.get("reachable")):
++            blocking_issues.append("postgres_product_job_store_unreachable")
++        elif not bool(postgres_probe.get("schemaReady")):
++            blocking_issues.append("postgres_product_schema_incomplete")
+         if not product_worker_declared:
+             blocking_issues.append("product_worker_service_required")
+             missing_config.append("PRODUCT_WORKER_ENABLED")
+@@ -1451,6 +1479,9 @@ def product_generation_readiness() -> dict[str, Any]:
+         "queueName": queue_name,
+         "redisConfigured": redis_configured,
+         "postgresConfigured": postgres_configured,
++        "postgresRuntimeRequired": live_runtime,
++        "postgresRuntimeEnabled": postgres_product_runtime_enabled(),
++        "postgresProbe": postgres_probe,
+         "durableJobStore": (
+             "postgresql" if postgres_configured else "sqlite_local_demo"
+         ),
+@@ -4056,6 +4087,7 @@ def prepare_results_for_export(
+ SENSITIVE_PUBLIC_PAYLOAD_KEYS = frozenset(
+     (
+         "deliveryAssets",
++        "_transactionEnvelope",
+         "path",
+         "localPath",
+         "local_path",
+@@ -4202,13 +4234,19 @@ def object_storage_export_payload(
+     *,
+     scope: str,
+     platforms: list[str] | str | None,
++    user_id: str,
++    generation_job_id: str = "",
+ ) -> dict[str, Any]:
+     secret = object_access_signing_secret()
+     if not secret:
++        if postgres_product_runtime_enabled():
++            raise RuntimeError("object signing secret is required for production export")
+         return payload
+
+     local_export = export_file_from_download_url(str(payload.get("download") or ""))
+     if local_export is None:
++        if postgres_product_runtime_enabled():
++            raise RuntimeError("production export must be uploaded to object storage")
+         return payload
+
+     local_path, relative_name = local_export
+@@ -4219,24 +4257,29 @@ def object_storage_export_payload(
+     stored_key = storage.put_file(local_path, object_key=object_key)
+     access = object_storage_service.create_signed_access(
+         stored_key,
+-        current_user_id(),
++        str(user_id),
+         asset_security.EXPORT,
+         asset_security.EXPORT,
+         secret,
+         base_url="/objects",
+     )
+-    package_id = record_export_package(
+-        object_key=stored_key,
+-        scope=scope,
+-        platforms=platforms,
+-        image_count=int(payload.get("images") or 0),
+-        file_size=local_path.stat().st_size,
+-        metadata={
+-            "rows": payload.get("rows"),
+-            "watermark": payload.get("watermark"),
+-            "legacyDownload": payload.get("download"),
+-        },
+-    )
++    if postgres_product_runtime_enabled():
++        package_id = "export_" + hashlib.sha256(
++            f"{generation_job_id}|{stored_key}|{user_id}".encode("utf-8")
++        ).hexdigest()[:32]
++    else:
++        package_id = record_export_package(
++            object_key=stored_key,
++            scope=scope,
++            platforms=platforms,
++            image_count=int(payload.get("images") or 0),
++            file_size=local_path.stat().st_size,
++            metadata={
++                "rows": payload.get("rows"),
++                "watermark": payload.get("watermark"),
++                "legacyDownload": payload.get("download"),
++            },
++        )
+     return {
+         **payload,
+         "download": access["url"],
+@@ -6664,43 +6707,63 @@ def api_growth_create_withdrawal():
+     return jsonify({"ok": True, "agentId": agent["id"], "withdrawal": record}), 201
+
+
++def payment_postgres_boundary_error():
++    return (
++        jsonify(
++            {
++                "error": "正式环境支付订单必须使用 PostgreSQL 支付存储。",
++                "code": "payment_postgres_store_required",
++            }
++        ),
++        503,
++    )
++
++
+ @app.post("/api/payments/orders")
+ def api_create_payment_order():
++    principal, principal_error = customer_request_principal()
++    if principal_error is not None:
++        return principal_error
++    assert principal is not None
++    if postgres_product_runtime_enabled():
++        return payment_postgres_boundary_error()
++
+     payload = request.get_json(silent=True) or {}
+-    user_id = str(payload.get("userId") or current_authenticated_user_id())
+-    provider = requested_payment_provider(payload)
++    allowed = {"packageId", "idempotencyKey", "idempotency_key"}
++    unexpected = sorted(str(key) for key in payload if str(key) not in allowed)
++    if unexpected:
++        return payment_error_response(
++            payment_service.InvalidPaymentInput(
++                "Only server-priced packageId and an optional idempotencyKey are accepted: "
++                + ", ".join(unexpected)
++            )
++        )
++    provider = str(os.environ.get("PAYMENT_PROVIDER") or "fake").strip() or "fake"
+     try:
+         payment_service.ensure_payment_checkout_available(provider, os.environ)
+-        if payload.get("cash") is not None:
+-            cash = int(payload.get("cash") or 0)
+-            points = billing.points_for_recharge(cash)
+-            amount_cents = cash * 100
+-        else:
+-            amount_cents = int(payload.get("amountCents") or payload.get("amount_cents") or 0)
+-            points = int(payload.get("points") or 0)
+-        if amount_cents <= 0 or points <= 0:
+-            raise payment_service.InvalidPaymentInput("Payment amount and points must be positive")
+         conn = product_db_conn()
+         try:
+-            order = payment_service.create_payment_order(
++            order = payment_service.create_catalog_payment_order(
+                 conn,
+-                user_id=user_id,
+-                amount_cents=amount_cents,
+-                points=points,
++                authenticated_user_id=str(principal["userId"]),
++                request={"packageId": str(payload.get("packageId") or "")},
+                 provider=provider,
+-                order_id=str(payload.get("orderId") or payload.get("order_id") or "").strip() or None,
+-                idempotency_key=str(payload.get("idempotencyKey") or payload.get("idempotency_key") or "").strip()
++                idempotency_key=str(
++                    payload.get("idempotencyKey")
++                    or payload.get("idempotency_key")
++                    or ""
++                ).strip()
+                 or None,
+             )
+             if order["provider"] != "fake":
+                 checkout = payment_service.create_payment_checkout(order, os.environ)
+-                order = payment_service.attach_payment_provider_payload(conn, order["order_id"], checkout)
++                order = payment_service.attach_payment_provider_payload(
++                    conn, order["order_id"], checkout
++                )
+         finally:
+             conn.close()
+     except payment_service.PaymentServiceError as exc:
+         return payment_error_response(exc)
+-    except billing.BillingError as exc:
+-        return billing_json_error(exc)
+     except (TypeError, ValueError) as exc:
+         return payment_error_response(payment_service.InvalidPaymentInput(str(exc)))
+
+@@ -6771,6 +6834,8 @@ def apply_payment_callback_effects(
+
+ @app.post("/api/payments/fake-callback")
+ def api_fake_payment_callback():
++    if postgres_product_runtime_enabled():
++        return payment_postgres_boundary_error()
+     body = request.get_json(silent=True) or {}
+     provider = str(body.get("provider") or "fake")
+     if provider.strip().lower() == "fake" and not payment_service.fake_payment_provider_enabled(os.environ):
+@@ -6814,6 +6879,8 @@ def api_fake_payment_callback():
+
+ @app.post("/api/payments/alipay/notify")
+ def api_alipay_payment_notify():
++    if postgres_product_runtime_enabled():
++        return payment_postgres_boundary_error()
+     body = dict(request.form.items())
+     if not body:
+         json_body = request.get_json(silent=True)
+@@ -6853,6 +6920,8 @@ def api_admin_reconcile_payment():
+         if not admin_write_authorized():
+             return forbidden("管理写接口未授权", "admin_write_forbidden")
+         return forbidden("支付对账权限不足", "admin_permission_forbidden")
++    if postgres_product_runtime_enabled():
++        return payment_postgres_boundary_error()
+
+     body = request.get_json(silent=True) or {}
+     reason = str(body.get("reason") or "").strip()
+@@ -6936,9 +7005,27 @@ def api_admin_reconcile_payment():
+ @app.post("/api/objects/sign")
+ def api_sign_object_access():
+     payload = request.get_json(silent=True) or {}
+-    user_id = str(payload.get("userId") or current_authenticated_user_id())
+-    if not object_write_authorized(user_id):
+-        return forbidden("对象访问签名未授权", "object_write_forbidden")
++    internal = configured_request_token(
++        ("OBJECT_API_TOKEN", "ADMIN_API_TOKEN"),
++        "X-Object-Token",
++    )
++    if internal:
++        user_id = str(payload.get("userId") or payload.get("user_id") or "").strip()
++        if not user_id:
++            return jsonify({"error": "对象所有者缺失", "code": "object_owner_required"}), 400
++    else:
++        if postgres_product_runtime_enabled():
++            return forbidden("正式环境对象签名只能由服务端签发", "object_write_forbidden")
++        principal, principal_error = customer_request_principal()
++        if principal_error is not None:
++            return principal_error
++        assert principal is not None
++        user_id = str(principal["userId"])
++        supplied_user_id = str(
++            payload.get("userId") or payload.get("user_id") or ""
++        ).strip()
++        if supplied_user_id and not hmac.compare_digest(supplied_user_id, user_id):
++            return forbidden("对象所有者不匹配", "object_owner_mismatch")
+
+     secret = object_access_signing_secret()
+     if not secret:
+@@ -6950,9 +7037,16 @@ def api_sign_object_access():
+             user_id=user_id,
+             purpose=str(payload.get("purpose") or asset_security.PREVIEW),
+             variant=str(payload.get("variant") or asset_security.PREVIEW),
+-            expires_in=float(payload.get("expiresIn") or payload.get("expires_in") or asset_security.DOWNLOAD_TOKEN_TTL_SECONDS),
++            expires_in=min(
++                float(
++                    payload.get("expiresIn")
++                    or payload.get("expires_in")
++                    or asset_security.DOWNLOAD_TOKEN_TTL_SECONDS
++                ),
++                float(asset_security.DOWNLOAD_TOKEN_TTL_SECONDS),
++            ),
+             secret=secret,
+-            base_url=str(payload.get("baseUrl") or payload.get("base_url") or "/objects"),
++            base_url="/objects",
+         )
+     except (TypeError, ValueError, asset_security.AssetTokenError):
+         return jsonify({"error": "对象访问签名请求无效", "code": "invalid_object_access_request"}), 400
+@@ -7360,6 +7454,11 @@ def api_debit():
+     if billing_write_authorized():
+         user_id = str(payload.get("userId") or current_user_id())
+     else:
++        if postgres_product_runtime_enabled():
++            return forbidden(
++                "正式任务扣费必须与任务和 outbox 在同一 PostgreSQL 事务中创建",
++                "product_transaction_required",
++            )
+         principal, principal_error = customer_request_principal()
+         if principal_error is not None:
+             return principal_error
+@@ -7489,6 +7588,8 @@ def api_ops_deployment_config():
+
+ @app.get("/api/admin/queue-snapshot")
+ def api_admin_queue_snapshot():
++    if not admin_write_authorized():
++        return forbidden("管理接口未授权", "admin_write_forbidden")
+     return jsonify({"ok": True, "queue": generation_queue.snapshot()})
+
+
+@@ -9204,36 +9305,56 @@ def apply_revision_export_overrides(
+     overridden_rows: set[int] = set()
+     storage = object_storage_service.get_object_storage_service()
+     for revision_job_id_value in normalized_ids:
+-        record, contract = persisted_revision_record(
+-            revision_job_id_value,
+-            principal,
+-        )
+-        if (
+-            str(record.get("status") or "") != "succeeded"
+-            or not hmac.compare_digest(
+-                str(contract.get("parentGenerationJobId") or ""),
+-                parent_generation_job_id,
++        if postgres_product_runtime_enabled():
++            detail = postgres_owned_revision_detail(
++                revision_job_id_value,
++                principal,
++            )
++            contract = detail.job["request_payload"]
++            if str(detail.job.get("status") or "") != "succeeded":
++                raise MenuUploadError(
++                    "revision_export_not_ready",
++                    "修改版本尚未完成或不属于当前正式任务",
++                    status=425,
++                )
++            document, _ = load_postgres_revision_manifest_context(
++                revision_job_id_value,
++                principal,
++            )
++        else:
++            record, contract = persisted_revision_record(
++                revision_job_id_value,
++                principal,
++            )
++            if str(record.get("status") or "") != "succeeded":
++                raise MenuUploadError(
++                    "revision_export_not_ready",
++                    "修改版本尚未完成或不属于当前正式任务",
++                    status=425,
++                )
++            result = (
++                record.get("result")
++                if isinstance(record.get("result"), dict)
++                else {}
++            )
++            manifest = (
++                result.get("manifest")
++                if isinstance(result.get("manifest"), dict)
++                else {}
++            )
++            document = load_revision_result_manifest_document(
++                manifest,
++                contract,
+             )
++        if not hmac.compare_digest(
++            str(contract.get("parentGenerationJobId") or ""),
++            parent_generation_job_id,
+         ):
+             raise MenuUploadError(
+                 "revision_export_not_ready",
+                 "修改版本尚未完成或不属于当前正式任务",
+                 status=425,
+             )
+-        result = (
+-            record.get("result")
+-            if isinstance(record.get("result"), dict)
+-            else {}
+-        )
+-        manifest = (
+-            result.get("manifest")
+-            if isinstance(result.get("manifest"), dict)
+-            else {}
+-        )
+-        document = load_revision_result_manifest_document(
+-            manifest,
+-            contract,
+-        )
+         row_number = int(contract["sourceDeliveryAsset"]["rowNumber"])
+         if row_number in overridden_rows or row_number not in rows_by_number:
+             raise MenuUploadError(
+@@ -9384,6 +9505,19 @@ def execute_generation_batch_job(
+         refunded_points=refunded_points,
+     )
+     plan["deliveryAssets"] = persist_generation_delivery_assets(contract, plan)
++    plan["_transactionEnvelope"] = {
++        "schemaVersion": 1,
++        "taskType": "product_batch",
++        "jobType": str(contract["jobType"]),
++        "jobId": str(contract["jobId"]),
++        "ownerUserId": str(contract["userId"]),
++        "requestSha256": str(contract["idempotency"]["requestSha256"]),
++        "menu": {
++            "uploadId": str(contract["menuUploadId"]),
++            **dict(contract["menu"]),
++        },
++        "selectedBackground": dict(contract["selectedBackground"]),
++    }
+     public_result = public_plan_payload(plan)
+     if execution_guard is not None:
+         execution_guard()
+@@ -9657,9 +9791,24 @@ def redis_result_manifest(
+     }
+
+
+-def postgres_owned_generation_detail(
++def _frozen_product_contract_digest(contract: dict[str, Any]) -> str:
++    job_type = str(contract.get("jobType") or "")
++    if job_type == MENU_BATCH_JOB_TYPE:
++        return menu_request_sha256(contract)
++    if job_type == REVISION_JOB_TYPE:
++        return revision_request_sha256(contract)
++    raise BatchContractError(
++        "product_job_type_mismatch",
++        "PostgreSQL product job has an unsupported job type",
++        field="jobType",
++    )
++
++
++def postgres_owned_product_detail(
+     job_id: str,
+     principal: dict[str, Any],
++    *,
++    expected_job_type: str,
+ ) -> Any:
+     owner_user_id = str(principal.get("userId") or "")
+     with postgres_connection() as connection:
+@@ -9679,8 +9828,20 @@ def postgres_owned_generation_detail(
+         if isinstance(contract.get("idempotency"), dict)
+         else ""
+     )
++    try:
++        recomputed_sha = _frozen_product_contract_digest(contract)
++    except (BatchContractError, RefinementContractError):
++        raise
++    except Exception as exc:
++        raise BatchContractError(
++            "product_job_contract_mismatch",
++            "PostgreSQL product job frozen request is invalid",
++            field="idempotency.requestSha256",
++        ) from exc
+     if (
+-        not expected_sha
++        str(contract.get("jobType") or "") != expected_job_type
++        or not expected_sha
++        or not hmac.compare_digest(expected_sha, recomputed_sha)
+         or not hmac.compare_digest(
+             expected_sha,
+             str(detail.job.get("request_sha256") or ""),
+@@ -9693,15 +9854,46 @@ def postgres_owned_generation_detail(
+             str(contract.get("userId") or ""),
+             owner_user_id,
+         )
++        or not hmac.compare_digest(
++            str(detail.job.get("owner_user_id") or ""),
++            owner_user_id,
++        )
+     ):
+-        raise BatchContractError(
+-            "generation_job_contract_mismatch",
+-            "PostgreSQL generation job does not match its frozen request",
++        error_cls = (
++            RefinementContractError
++            if expected_job_type == REVISION_JOB_TYPE
++            else BatchContractError
++        )
++        raise error_cls(
++            "product_job_contract_mismatch",
++            "PostgreSQL product job does not match its frozen request",
+             field="idempotency.requestSha256",
+         )
+     return detail
+
+
++def postgres_owned_generation_detail(
++    job_id: str,
++    principal: dict[str, Any],
++) -> Any:
++    return postgres_owned_product_detail(
++        job_id,
++        principal,
++        expected_job_type=MENU_BATCH_JOB_TYPE,
++    )
++
++
++def postgres_owned_revision_detail(
++    job_id: str,
++    principal: dict[str, Any],
++) -> Any:
++    return postgres_owned_product_detail(
++        job_id,
++        principal,
++        expected_job_type=REVISION_JOB_TYPE,
++    )
++
++
+ def load_postgres_generation_manifest_context(
+     job_id: str,
+     principal: dict[str, Any],
+@@ -9714,72 +9906,67 @@ def load_postgres_generation_manifest_context(
+             "生成结果尚未准备完成",
+             status=425,
+         )
+-    contract = (
+-        job.get("request_payload")
+-        if isinstance(job.get("request_payload"), dict)
+-        else {}
+-    )
++    contract = job["request_payload"]
+     manifest = {
+         "objectKey": str(job.get("manifest_ref") or ""),
+         "sha256": str(job.get("manifest_sha256") or ""),
+         "requestSha256": str(job.get("request_sha256") or ""),
+     }
+-    return (
+-        load_generation_result_manifest_document(manifest, contract),
+-        contract,
+-    )
++    return load_generation_result_manifest_document(manifest, contract), contract
+
+
+-def postgres_apply_generation_settlement(
++def load_postgres_revision_manifest_context(
+     job_id: str,
+-    owner_user_id: str,
+-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+-    with postgres_connection() as connection:
+-        store = ProductJobStore(connection)
+-        result = settle_terminal_job(
+-            store,
+-            job_id=job_id,
+-            owner_user_id=owner_user_id,
+-            reconciler_id="web-settlement-reconciler",
+-        )
+-    return result.get("settlement"), result.get("account")
+-
+-
+-def settle_postgres_generation_task(
+-    task: dict[str, Any],
+     principal: dict[str, Any],
+-) -> None:
+-    try:
+-        completion = completion_from_redis_task(task)
+-    except ProductGenerationSettlementError as exc:
+-        raise BatchContractError(
+-            "generation_task_contract_mismatch",
+-            str(exc),
+-            field="idempotency.requestSha256",
+-        ) from exc
+-    if completion is None:
+-        return
+-    if (
+-        principal.get("internal") is not True
+-        and not hmac.compare_digest(
+-            completion.owner_user_id,
+-            str(principal.get("userId") or ""),
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    detail = postgres_owned_revision_detail(job_id, principal)
++    job = detail.job
++    if str(job.get("status") or "") != "succeeded":
++        raise MenuUploadError(
++            "revision_manifest_not_ready",
++            "修改结果尚未准备完成",
++            status=425,
+         )
+-    ):
+-        raise RedisTaskNotFound("task not found")
++    contract = job["request_payload"]
++    object_key = str(job.get("manifest_ref") or "")
+     try:
+-        with postgres_connection() as connection:
+-            apply_generation_completion(
+-                ProductJobStore(connection),
+-                completion,
+-                reconciler_id="web-status-reconciler",
++        manifest_size = len(
++            object_storage_service.get_object_storage_service().read_bytes(
++                object_storage_service.validate_object_key(object_key)
+             )
+-    except ProductGenerationSettlementError as exc:
+-        raise BatchContractError(
+-            "generation_job_contract_mismatch",
+-            str(exc),
+-            field="idempotency.requestSha256",
+         )
++    except Exception as exc:
++        raise MenuUploadError(
++            "revision_manifest_unavailable",
++            "修改结果暂时不可用",
++            status=503,
++        ) from exc
++    manifest = {
++        "objectKey": object_key,
++        "sha256": str(job.get("manifest_sha256") or ""),
++        "size": manifest_size,
++        "requestSha256": str(job.get("request_sha256") or ""),
++        "jobId": str(job.get("id") or ""),
++        "taskType": "product_revision",
++    }
++    return load_revision_result_manifest_document(manifest, contract), contract
++
++
++def _postgres_account(owner_user_id: str) -> dict[str, Any]:
++    with postgres_connection() as connection:
++        account = ProductJobStore(connection).get_account(
++            owner_user_id=owner_user_id
++        )
++    if account is None:
++        raise WalletIntegrityError(
++            f"point account is missing for owner: {owner_user_id}"
++        )
++    return account
++
++
++def _settlement_refund_points(detail: Any) -> int:
++    settlement = detail.settlement or {}
++    return int(settlement.get("refund_applied_points") or 0)
+
+
+ def postgres_generation_job_payload(
+@@ -9806,23 +9993,28 @@ def postgres_generation_job_payload(
+             },
+             contract,
+         )
+-    settlement, account = postgres_apply_generation_settlement(
+-        job_id,
+-        str(principal["userId"]),
+-    )
++    account = _postgres_account(str(principal["userId"]))
+     requested = int(job.get("requested_count") or 0)
+     completed = int(job.get("completed_count") or 0)
+     failed = int(job.get("failed_count") or 0)
+     canceled = requested if status == "canceled" else 0
+-    refunded_points = int(
+-        (settlement or {}).get("refund_applied_points") or 0
+-    )
+-    account_balance = int((account or {}).get("balance_points") or 0)
++    refunded_points = _settlement_refund_points(detail)
++    settlement_applied = str((detail.settlement or {}).get("status") or "") == "applied"
++    account_balance = int(account.get("balance_points") or 0)
+     if isinstance(result, dict):
+         result["account"] = {
+             "userId": str(principal["userId"]),
+             "balance": account_balance,
+         }
++    terminal_error = None
++    if status in {"failed", "canceled"}:
++        terminal_error = (
++            "任务已取消，积分已自动退回。"
++            if status == "canceled" and settlement_applied
++            else "生成任务失败，积分已自动退回。"
++            if status == "failed" and settlement_applied
++            else "任务已结束，积分结算处理中。"
++        )
+     return {
+         "jobId": str(job["id"]),
+         "status": status,
+@@ -9832,13 +10024,7 @@ def postgres_generation_job_payload(
+         "failed": failed,
+         "canceled": canceled,
+         "result": result,
+-        "error": (
+-            "任务已取消，积分已自动退回。"
+-            if status == "canceled"
+-            else "生成任务失败，积分已自动退回。"
+-            if status == "failed"
+-            else None
+-        ),
++        "error": terminal_error,
+         "createdAt": job.get("created_at"),
+         "updatedAt": job.get("updated_at"),
+         "startedAt": job.get("started_at"),
+@@ -9865,31 +10051,270 @@ def postgres_generation_job_payload(
+     }
+
+
+-def settle_persisted_generation_job(
+-    contract: dict[str, Any],
+-    *,
+-    status: str,
+-    completed_count: int,
+-    failed_count: int,
+-    manifest: dict[str, Any] | None = None,
+-    error_message: str | None = None,
+-) -> None:
+-    job_id = str(contract["jobId"])
+-    conn = product_db_conn()
+-    try:
+-        record = storage_db.get_generation_job(conn, job_id)
+-        persisted_sha = str(
+-            record.get("request", {})
+-            .get("idempotency", {})
+-            .get("requestSha256", "")
+-        )
+-        expected_sha = str(contract["idempotency"]["requestSha256"])
+-        if not persisted_sha or not hmac.compare_digest(persisted_sha, expected_sha):
+-            raise BatchContractError(
+-                "generation_job_contract_mismatch",
+-                "persisted generation job does not match Redis task",
+-                field="idempotency.requestSha256",
+-            )
++def postgres_revision_job_payload(
++    job_id: str,
++    principal: dict[str, Any],
++) -> dict[str, Any]:
++    detail = postgres_owned_revision_detail(job_id, principal)
++    job = detail.job
++    contract = job["request_payload"]
++    status = {
++        "queued": "queued",
++        "running": "running",
++        "succeeded": "completed",
++        "failed": "failed",
++        "canceled": "canceled",
++    }.get(str(job.get("status") or ""), "failed")
++    result = None
++    if status == "completed":
++        document, _ = load_postgres_revision_manifest_context(job_id, principal)
++        result = public_revision_result(document, contract)
++    account = _postgres_account(str(principal["userId"]))
++    refunded_points = _settlement_refund_points(detail)
++    settlement_applied = str((detail.settlement or {}).get("status") or "") == "applied"
++    response = public_revision_submission(
++        contract,
++        status=status,
++        idempotent=True,
++    )
++    response["account"] = {
++        "userId": str(principal["userId"]),
++        "balance": int(account.get("balance_points") or 0),
++    }
++    response.update(
++        {
++            "result": result,
++            "error": (
++                "修改任务已取消，积分已自动退回。"
++                if status == "canceled" and settlement_applied
++                else "修改任务失败，积分已自动退回。"
++                if status == "failed" and settlement_applied
++                else "修改任务已结束，积分结算处理中。"
++                if status in {"failed", "canceled"}
++                else None
++            ),
++            "cancelRequested": bool(job.get("cancel_requested")),
++            "billing": {
++                "chargedPoints": int(contract["billing"]["totalPoints"]),
++                "refundedPoints": refunded_points,
++                "netPoints": max(
++                    0,
++                    int(contract["billing"]["totalPoints"])
++                    - refunded_points,
++                ),
++                "freeReworkQuotaVerified": bool(
++                    contract["billing"]["freeReworkQuotaVerified"]
++                ),
++            },
++        }
++    )
++    return response
++
++
++def create_postgres_revision_job(
++    contract: dict[str, Any],
++    *,
++    free_rework_quota_limit: int | None = None,
++) -> tuple[dict[str, Any], dict[str, Any], bool]:
++    source = contract["sourceDeliveryAsset"]
++    background = contract["selectedBackground"]
++    billing_snapshot = contract["billing"]
++    idempotency = contract["idempotency"]
++    user_id = str(contract["userId"])
++    quota_args: dict[str, Any] = {}
++    if bool(billing_snapshot.get("freeReworkQuotaVerified")):
++        if free_rework_quota_limit is None or free_rework_quota_limit <= 0:
++            raise InvalidProductJobInput("free rework quota is missing")
++        quota_args = {
++            "free_rework_parent_job_id": str(
++                contract["parentGenerationJobId"]
++            ),
++            "free_rework_quota": int(free_rework_quota_limit),
++        }
++    with postgres_connection() as connection:
++        store = ProductJobStore(connection)
++        result = store.create_or_get_job_with_debit(
++            owner_user_id=user_id,
++            idempotency_key=str(idempotency["key"]),
++            request_sha256=str(idempotency["requestSha256"]),
++            request_payload=contract,
++            menu_upload_id=str(contract["parentGenerationJobId"]),
++            menu_object_ref=str(source["objectKey"]),
++            menu_object_sha256=str(source["sha256"]),
++            selected_background_ref=str(background["objectKey"]),
++            selected_background_sha256=str(background["sha256"]),
++            requested_count=1,
++            debit_order_id=str(billing_snapshot["debitOrderId"]),
++            debit_points=int(billing_snapshot["totalPoints"]),
++            refund_order_id=str(billing_snapshot["refundOrderId"]),
++            job_id=str(contract["jobId"]),
++            outbox_id=f"outbox:{contract['jobId']}",
++            account_metadata={"source": "customer_revision"},
++            debit_metadata={
++                "parentGenerationJobId": contract["parentGenerationJobId"],
++                "pricingVersion": billing_snapshot["pricingVersion"],
++                "jobType": contract["jobType"],
++            },
++            **quota_args,
++        )
++        account = store.get_account(owner_user_id=user_id)
++    if account is None:
++        raise WalletIntegrityError(
++            f"point account disappeared after revision creation: {contract['jobId']}"
++        )
++    return result.job, account, result.created
++
++
++def resolve_postgres_parent_delivery_asset_snapshot(
++    parent_job_id: str,
++    asset_id: str,
++    principal: dict[str, Any],
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    detail = postgres_owned_generation_detail(parent_job_id, principal)
++    if str(detail.job.get("status") or "") != "succeeded":
++        raise MenuUploadError(
++            "revision_source_not_ready",
++            "原始正式图片尚未完成，暂不能修改",
++            status=425,
++        )
++    parent_contract = detail.job["request_payload"]
++    result_document, _ = load_postgres_generation_manifest_context(
++        parent_job_id, principal
++    )
++    normalized_asset_id = str(asset_id or "").strip().lower()
++    source_object_key, source_bytes = generation_delivery_asset(
++        result_document, normalized_asset_id
++    )
++    delivery_assets = (
++        result_document.get("deliveryAssets")
++        if isinstance(result_document.get("deliveryAssets"), list)
++        else []
++    )
++    delivery_asset = next(
++        (
++            value
++            for value in delivery_assets
++            if isinstance(value, dict)
++            and hmac.compare_digest(
++                str(value.get("assetId") or "").lower(),
++                normalized_asset_id,
++            )
++        ),
++        None,
++    )
++    if delivery_asset is None:
++        raise MenuUploadError(
++            "generation_asset_not_found", "生成图片不存在", status=404
++        )
++    row_number = int(delivery_asset.get("row") or 0)
++    source_row = None
++    for index, value in enumerate(result_document.get("results") or [], start=1):
++        if not isinstance(value, dict):
++            continue
++        candidate_ids = {
++            str(candidate.get("deliveryAssetId") or "").lower()
++            for candidate in value.get("candidates") or []
++            if isinstance(candidate, dict)
++        }
++        if normalized_asset_id in candidate_ids and int(value.get("row") or index) == row_number:
++            source_row = value
++            break
++    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
++    if (
++        source_row is None
++        or row_number <= 0
++        or not hmac.compare_digest(
++            source_sha256,
++            str(delivery_asset.get("sha256") or "").lower(),
++        )
++    ):
++        raise MenuUploadError(
++            "generation_asset_binding_invalid",
++            "生成图片与菜单行的绑定或完整性无效",
++        )
++    return parent_contract, {
++        "assetId": normalized_asset_id,
++        "objectKey": source_object_key,
++        "sha256": source_sha256,
++        "rowNumber": row_number,
++        "dishName": str(source_row.get("name") or "").strip(),
++    }
++
++
++def resolve_postgres_revision_delivery_asset_snapshot(
++    source_revision_job_id: str,
++    source_asset_id: str,
++    parent_generation_job_id: str,
++    principal: dict[str, Any],
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    detail = postgres_owned_revision_detail(source_revision_job_id, principal)
++    revision_contract = detail.job["request_payload"]
++    if (
++        str(detail.job.get("status") or "") != "succeeded"
++        or not hmac.compare_digest(
++            str(revision_contract.get("parentGenerationJobId") or ""),
++            parent_generation_job_id,
++        )
++    ):
++        raise MenuUploadError(
++            "revision_source_not_ready",
++            "上一版修改图片尚未完成，暂不能继续修改",
++            status=425,
++        )
++    document, _ = load_postgres_revision_manifest_context(
++        source_revision_job_id, principal
++    )
++    image_asset = document["imageAsset"]
++    normalized_asset_id = str(source_asset_id or "").strip()
++    if not hmac.compare_digest(
++        str(image_asset.get("assetId") or ""), normalized_asset_id
++    ):
++        raise MenuUploadError(
++            "revision_source_not_found", "上一版修改图片不存在", status=404
++        )
++    parent_detail = postgres_owned_generation_detail(
++        parent_generation_job_id, principal
++    )
++    if str(parent_detail.job.get("status") or "") != "succeeded":
++        raise MenuUploadError(
++            "revision_source_not_ready",
++            "原始正式图片尚未完成，暂不能继续修改",
++            status=425,
++        )
++    return parent_detail.job["request_payload"], {
++        "assetId": normalized_asset_id,
++        "objectKey": str(image_asset["objectKey"]),
++        "sha256": str(image_asset["sha256"]),
++        "rowNumber": int(revision_contract["sourceDeliveryAsset"]["rowNumber"]),
++        "dishName": str(revision_contract["sourceDeliveryAsset"]["dishName"]),
++    }
++
++
++def settle_persisted_generation_job(
++    contract: dict[str, Any],
++    *,
++    status: str,
++    completed_count: int,
++    failed_count: int,
++    manifest: dict[str, Any] | None = None,
++    error_message: str | None = None,
++) -> None:
++    job_id = str(contract["jobId"])
++    conn = product_db_conn()
++    try:
++        record = storage_db.get_generation_job(conn, job_id)
++        persisted_sha = str(
++            record.get("request", {})
++            .get("idempotency", {})
++            .get("requestSha256", "")
++        )
++        expected_sha = str(contract["idempotency"]["requestSha256"])
++        if not persisted_sha or not hmac.compare_digest(persisted_sha, expected_sha):
++            raise BatchContractError(
++                "generation_job_contract_mismatch",
++                "persisted generation job does not match Redis task",
++                field="idempotency.requestSha256",
++            )
+         current_status = str(record.get("status") or "")
+         if current_status in storage_db.TERMINAL_JOB_STATUSES:
+             if current_status != status:
+@@ -10191,6 +10616,237 @@ def batch_contract_error_response(exc: BatchContractError):
+     )
+
+
++def postgres_revision_submission_payload(
++    contract: dict[str, Any],
++    job: dict[str, Any],
++    account: dict[str, Any],
++    *,
++    created: bool,
++) -> dict[str, Any]:
++    status = {
++        "queued": "queued",
++        "running": "running",
++        "succeeded": "completed",
++        "failed": "failed",
++        "canceled": "canceled",
++    }.get(str(job.get("status") or ""), "failed")
++    total_points = int(contract["billing"]["totalPoints"])
++    response = public_revision_submission(
++        contract,
++        status=status,
++        idempotent=not created,
++    )
++    response["account"] = {
++        "userId": str(contract["userId"]),
++        "balance": int(account["balance_points"]),
++        "updatedAt": account.get("updated_at"),
++    }
++    response["transaction"] = {
++        "ok": True,
++        "idempotent": not created,
++        "userId": str(contract["userId"]),
++        "orderId": str(contract["billing"]["debitOrderId"]),
++        "direction": "debit",
++        "points": total_points,
++        "balance": int(account["balance_points"]),
++        "balanceAfter": int(account["balance_points"]),
++        "createdAt": job.get("created_at"),
++    }
++    return response
++
++
++def submit_postgres_image_refinement(
++    *,
++    parent_job_id: str,
++    source_asset_id: str,
++    source_revision_job_id: str,
++    mode: str,
++    refine_prompt: Any,
++    idempotency_key: str,
++    job_id: str,
++    principal: dict[str, Any],
++):
++    try:
++        existing = postgres_owned_revision_detail(job_id, principal)
++    except RedisTaskNotFound:
++        existing = None
++    except (BatchContractError, RefinementContractError) as exc:
++        return batch_contract_error_response(exc)
++    if existing is not None:
++        existing_contract = existing.job["request_payload"]
++        existing_source = existing_contract.get("sourceDeliveryAsset", {})
++        if not hmac.compare_digest(
++            str(existing_source.get("assetId") or ""), source_asset_id
++        ):
++            return batch_contract_error_response(
++                RefinementContractError(
++                    "idempotency_conflict",
++                    "idempotency key was already used for a different source image",
++                    field="idempotency.key",
++                )
++            )
++        try:
++            replay_contract = freeze_revision_batch_contract(
++                job_id=job_id,
++                parent_generation_job_id=parent_job_id,
++                user_id=str(principal["userId"]),
++                source_delivery_asset=existing_contract["sourceDeliveryAsset"],
++                selected_background=existing_contract["selectedBackground"],
++                quality=str(existing_contract["quality"]["id"]),
++                mode=mode,
++                refine_prompt=refine_prompt,
++                idempotency_key=idempotency_key,
++                free_rework_quota_verified=bool(
++                    existing_contract["billing"]["freeReworkQuotaVerified"]
++                ),
++                debit_order_id=str(existing_contract["billing"]["debitOrderId"]),
++                refund_order_id=str(existing_contract["billing"]["refundOrderId"]),
++                pricing_version=str(existing_contract["billing"]["pricingVersion"]),
++                created_at=str(existing_contract["createdAt"]),
++            )
++        except (KeyError, RefinementContractError) as exc:
++            if isinstance(exc, RefinementContractError):
++                return batch_contract_error_response(exc)
++            return batch_contract_error_response(
++                RefinementContractError(
++                    "revision_job_contract_mismatch",
++                    "persisted revision job contract is invalid",
++                    field="jobId",
++                )
++            )
++        if not hmac.compare_digest(
++            str(replay_contract["idempotency"]["requestSha256"]),
++            str(existing_contract["idempotency"]["requestSha256"]),
++        ):
++            return batch_contract_error_response(
++                RefinementContractError(
++                    "idempotency_conflict",
++                    "idempotency key was already used for a different request",
++                    field="idempotency.key",
++                )
++            )
++        try:
++            return jsonify(postgres_revision_job_payload(job_id, principal))
++        except (ProductJobStoreError, PostgresRuntimeError) as exc:
++            app.logger.exception("PostgreSQL revision replay unavailable for %s", job_id)
++            return jsonify({
++                "error": "修改任务状态暂时不可用",
++                "code": "postgres_revision_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
++
++    readiness = gemini_image_edit_readiness()
++    if not bool(readiness.get("ready")):
++        return jsonify({
++            "error": "图片精修服务未配置，已停止扣费。",
++            "code": "image_refinement_provider_not_ready",
++            "readiness": readiness,
++        }), 503
++
++    try:
++        if source_revision_job_id:
++            parent_contract, source_snapshot = (
++                resolve_postgres_revision_delivery_asset_snapshot(
++                    source_revision_job_id,
++                    source_asset_id,
++                    parent_job_id,
++                    principal,
++                )
++            )
++        else:
++            parent_contract, source_snapshot = (
++                resolve_postgres_parent_delivery_asset_snapshot(
++                    parent_job_id,
++                    source_asset_id,
++                    principal,
++                )
++            )
++        background_snapshot = verified_selected_background_snapshot(
++            parent_contract
++        )
++        parent_image_count = int(
++            parent_contract.get("billing", {}).get("imageCount") or 0
++            if isinstance(parent_contract.get("billing"), dict)
++            else 0
++        )
++        free_quota = free_rework_quota(parent_image_count)
++        free_candidate = mode == "rework" and free_quota > 0
++        contract = freeze_revision_batch_contract(
++            job_id=job_id,
++            parent_generation_job_id=parent_job_id,
++            user_id=str(principal["userId"]),
++            source_delivery_asset=source_snapshot,
++            selected_background=background_snapshot,
++            quality=str(parent_contract.get("quality", {}).get("id") or ""),
++            mode=mode,
++            refine_prompt=refine_prompt,
++            idempotency_key=idempotency_key,
++            free_rework_quota_verified=free_candidate,
++        )
++        try:
++            postgres_job, postgres_account, created = create_postgres_revision_job(
++                contract,
++                free_rework_quota_limit=free_quota if free_candidate else None,
++            )
++        except FreeReworkQuotaExhausted:
++            contract = freeze_revision_batch_contract(
++                job_id=job_id,
++                parent_generation_job_id=parent_job_id,
++                user_id=str(principal["userId"]),
++                source_delivery_asset=source_snapshot,
++                selected_background=background_snapshot,
++                quality=str(parent_contract.get("quality", {}).get("id") or ""),
++                mode=mode,
++                refine_prompt=refine_prompt,
++                idempotency_key=idempotency_key,
++                free_rework_quota_verified=False,
++            )
++            postgres_job, postgres_account, created = create_postgres_revision_job(
++                contract
++            )
++    except RedisTaskNotFound:
++        return jsonify({"error": "原始生成任务不存在"}), 404
++    except MenuUploadError as exc:
++        return menu_upload_error_response(exc)
++    except (BatchContractError, RefinementContractError) as exc:
++        return batch_contract_error_response(exc)
++    except InsufficientPointBalance as exc:
++        return billing_json_error(postgres_wallet_error(exc))
++    except RequestDigestConflict as exc:
++        return batch_contract_error_response(
++            RefinementContractError(
++                "idempotency_conflict",
++                str(exc),
++                field="idempotency.key",
++            )
++        )
++    except (PointOrderConflict, WalletIntegrityError, InvalidProductJobInput) as exc:
++        app.logger.exception("PostgreSQL revision transaction failed for %s", job_id)
++        return jsonify({
++            "error": "修改任务交易暂时不可用，未重复扣费。",
++            "code": "postgres_revision_transaction_failed",
++            "reason": type(exc).__name__,
++        }), 503
++    except (ProductJobStoreError, PostgresRuntimeError) as exc:
++        app.logger.exception("PostgreSQL revision unavailable for %s", job_id)
++        return jsonify({
++            "error": "修改任务暂时不可用，未扣费。",
++            "code": "postgres_revision_unavailable",
++            "reason": type(exc).__name__,
++        }), 503
++    except (TypeError, ValueError) as exc:
++        return jsonify({"error": str(exc), "code": "invalid_revision_request"}), 400
++
++    return jsonify(
++        postgres_revision_submission_payload(
++            contract,
++            postgres_job,
++            postgres_account,
++            created=created,
++        )
++    )
++
++
+ @app.post("/api/image-refinements")
+ def api_image_refinements():
+     payload = request.get_json(silent=True) or {}
+@@ -10242,6 +10898,18 @@ def api_image_refinements():
+     except ValueError as exc:
+         return jsonify({"error": str(exc), "code": "invalid_revision_request"}), 400
+
++    if postgres_product_runtime_enabled():
++        return submit_postgres_image_refinement(
++            parent_job_id=parent_job_id,
++            source_asset_id=source_asset_id,
++            source_revision_job_id=source_revision_job_id,
++            mode=mode,
++            refine_prompt=refine_prompt,
++            idempotency_key=idempotency_key,
++            job_id=job_id,
++            principal=principal,
++        )
++
+     with REVISION_BATCH_SUBMIT_LOCK:
+         try:
+             existing_record, existing_contract = persisted_revision_record(
+@@ -10587,6 +11255,25 @@ def api_image_refinement(job_id: str):
+         normalized_job_id = validate_generation_job_id(job_id)
+     except ValueError as exc:
+         return jsonify({"error": str(exc)}), 400
++    if postgres_product_runtime_enabled():
++        try:
++            return jsonify(postgres_revision_job_payload(normalized_job_id, principal))
++        except RedisTaskNotFound:
++            return jsonify({"error": "修改任务不存在"}), 404
++        except MenuUploadError as exc:
++            return menu_upload_error_response(exc)
++        except (BatchContractError, RefinementContractError) as exc:
++            return batch_contract_error_response(exc)
++        except (ProductJobStoreError, PostgresRuntimeError) as exc:
++            app.logger.exception(
++                "PostgreSQL revision status unavailable for %s",
++                normalized_job_id,
++            )
++            return jsonify({
++                "error": "修改任务状态暂时不可用",
++                "code": "postgres_revision_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
+     try:
+         redis_product_queue = product_redis_queue()
+     except (RedisQueueError, ValueError, TypeError) as exc:
+@@ -10669,30 +11356,36 @@ def api_image_refinement_asset(job_id: str):
+     except ValueError as exc:
+         return jsonify({"error": str(exc)}), 400
+     try:
+-        record, contract = persisted_revision_record(
+-            normalized_job_id,
+-            principal,
+-        )
+-        if str(record.get("status") or "") != "succeeded":
+-            raise MenuUploadError(
+-                "revision_asset_not_ready",
+-                "修改图片尚未准备完成",
+-                status=425,
++        if postgres_product_runtime_enabled():
++            document, contract = load_postgres_revision_manifest_context(
++                normalized_job_id,
++                principal,
++            )
++        else:
++            record, contract = persisted_revision_record(
++                normalized_job_id,
++                principal,
++            )
++            if str(record.get("status") or "") != "succeeded":
++                raise MenuUploadError(
++                    "revision_asset_not_ready",
++                    "修改图片尚未准备完成",
++                    status=425,
++                )
++            result = (
++                record.get("result")
++                if isinstance(record.get("result"), dict)
++                else {}
++            )
++            manifest = (
++                result.get("manifest")
++                if isinstance(result.get("manifest"), dict)
++                else {}
++            )
++            document = load_revision_result_manifest_document(
++                manifest,
++                contract,
+             )
+-        result = (
+-            record.get("result")
+-            if isinstance(record.get("result"), dict)
+-            else {}
+-        )
+-        manifest = (
+-            result.get("manifest")
+-            if isinstance(result.get("manifest"), dict)
+-            else {}
+-        )
+-        document = load_revision_result_manifest_document(
+-            manifest,
+-            contract,
+-        )
+         image_asset = document["imageAsset"]
+         object_key = object_storage_service.validate_object_key(
+             str(image_asset["objectKey"])
+@@ -10704,6 +11397,17 @@ def api_image_refinement_asset(job_id: str):
+         return jsonify({"error": "修改图片不存在"}), 404
+     except MenuUploadError as exc:
+         return menu_upload_error_response(exc)
++    except (BatchContractError, RefinementContractError) as exc:
++        return batch_contract_error_response(exc)
++    except (ProductJobStoreError, PostgresRuntimeError) as exc:
++        app.logger.exception(
++            "PostgreSQL revision asset unavailable for %s", normalized_job_id
++        )
++        return jsonify({
++            "error": "修改图片暂时不可用",
++            "code": "postgres_revision_unavailable",
++            "reason": type(exc).__name__,
++        }), 503
+     response = send_file(
+         io.BytesIO(raw),
+         mimetype="image/png",
+@@ -10723,6 +11427,50 @@ def api_cancel_image_refinement(job_id: str):
+         normalized_job_id = validate_generation_job_id(job_id)
+     except ValueError as exc:
+         return jsonify({"error": str(exc)}), 400
++    if postgres_product_runtime_enabled():
++        try:
++            postgres_owned_revision_detail(normalized_job_id, principal)
++            with postgres_connection() as connection:
++                ProductJobStore(connection).request_cancel(
++                    job_id=normalized_job_id,
++                    owner_user_id=str(principal["userId"]),
++                )
++            try:
++                redis_product_queue = product_redis_queue()
++                if redis_product_queue is not None:
++                    try:
++                        redis_product_queue.request_cancel(normalized_job_id)
++                    except RedisTaskNotFound:
++                        pass
++            except (RedisQueueError, ValueError, TypeError):
++                app.logger.warning(
++                    "Revision cancel signal pending for %s", normalized_job_id
++                )
++            return jsonify(postgres_revision_job_payload(normalized_job_id, principal))
++        except (PostgresJobNotFound, RedisTaskNotFound):
++            return jsonify({"error": "修改任务不存在"}), 404
++        except JobStateConflict:
++            try:
++                existing = postgres_revision_job_payload(normalized_job_id, principal)
++            except (PostgresJobNotFound, RedisTaskNotFound):
++                return jsonify({"error": "修改任务不存在"}), 404
++            return jsonify({
++                "error": "任务已结束，不能取消。",
++                "code": "revision_job_already_finished",
++                "job": existing,
++            }), 409
++        except (BatchContractError, RefinementContractError) as exc:
++            return batch_contract_error_response(exc)
++        except (ProductJobStoreError, PostgresRuntimeError) as exc:
++            app.logger.exception(
++                "PostgreSQL revision cancellation unavailable for %s",
++                normalized_job_id,
++            )
++            return jsonify({
++                "error": "取消修改任务暂时不可用",
++                "code": "postgres_revision_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
+     try:
+         redis_product_queue = product_redis_queue()
+     except (RedisQueueError, ValueError, TypeError) as exc:
+@@ -11201,80 +11949,29 @@ def api_generation_job(job_id: str):
+         normalized_job_id = validate_generation_job_id(job_id)
+     except ValueError as exc:
+         return jsonify({"error": str(exc)}), 400
+-    try:
+-        redis_product_queue = product_redis_queue()
+-    except (RedisQueueError, ValueError, TypeError) as exc:
+-        return generation_queue_error_response(RuntimeError(str(exc)))
+     if postgres_product_runtime_enabled():
+-        if redis_product_queue is None:
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "正式生成队列暂时不可用",
+-                        "code": "redis_generation_queue_required",
+-                    }
+-                ),
+-                503,
+-            )
+         try:
+-            try:
+-                postgres_task = redis_product_queue.get(
+-                    normalized_job_id
+-                )
+-            except RedisTaskNotFound:
+-                postgres_task = None
+-            if postgres_task is not None:
+-                settle_postgres_generation_task(
+-                    postgres_task,
+-                    principal,
+-                )
+             return jsonify(
+-                postgres_generation_job_payload(
+-                    normalized_job_id,
+-                    principal,
+-                )
++                postgres_generation_job_payload(normalized_job_id, principal)
+             )
+-        except (RedisTaskNotFound, PostgresJobNotFound):
++        except RedisTaskNotFound:
+             return jsonify({"error": "任务不存在"}), 404
+         except BatchContractError as exc:
+             return batch_contract_error_response(exc)
+-        except (
+-            FenceMismatch,
+-            JobStateConflict,
+-            SettlementConflict,
+-            WalletIntegrityError,
+-        ) as exc:
+-            app.logger.exception(
+-                "PostgreSQL generation settlement pending for %s",
+-                normalized_job_id,
+-            )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "任务已结束，但积分结算需要重试。",
+-                        "code": "generation_settlement_pending",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+         except (ProductJobStoreError, PostgresRuntimeError) as exc:
+             app.logger.exception(
+                 "PostgreSQL generation status unavailable for %s",
+                 normalized_job_id,
+             )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "生成任务状态暂时不可用",
+-                        "code": "postgres_generation_unavailable",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+-        except RedisQueueError as exc:
+-            return generation_queue_error_response(RuntimeError(str(exc)))
++            return jsonify({
++                "error": "生成任务状态暂时不可用",
++                "code": "postgres_generation_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
++    try:
++        redis_product_queue = product_redis_queue()
++    except (RedisQueueError, ValueError, TypeError) as exc:
++        return generation_queue_error_response(RuntimeError(str(exc)))
+     if redis_product_queue is not None:
+         try:
+             task, terminal_record = product_redis_task_or_terminal_record(
+@@ -11330,19 +12027,9 @@ def api_generation_job_manifest(job_id: str):
+         return jsonify({"error": str(exc)}), 400
+     if postgres_product_runtime_enabled():
+         try:
+-            redis_product_queue = product_redis_queue()
+-            if redis_product_queue is not None:
+-                try:
+-                    task = redis_product_queue.get(normalized_job_id)
+-                except RedisTaskNotFound:
+-                    task = None
+-                if task is not None:
+-                    settle_postgres_generation_task(task, principal)
+-            result_document, _contract = (
+-                load_postgres_generation_manifest_context(
+-                    normalized_job_id,
+-                    principal,
+-                )
++            result_document, _contract = load_postgres_generation_manifest_context(
++                normalized_job_id,
++                principal,
+             )
+             return jsonify(public_plan_payload(result_document))
+         except RedisTaskNotFound:
+@@ -11351,43 +12038,16 @@ def api_generation_job_manifest(job_id: str):
+             return menu_upload_error_response(exc)
+         except BatchContractError as exc:
+             return batch_contract_error_response(exc)
+-        except (
+-            FenceMismatch,
+-            JobStateConflict,
+-            SettlementConflict,
+-            WalletIntegrityError,
+-        ) as exc:
+-            app.logger.exception(
+-                "PostgreSQL generation manifest settlement pending for %s",
+-                normalized_job_id,
+-            )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "生成结果已完成，但积分结算需要重试。",
+-                        "code": "generation_settlement_pending",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+         except (ProductJobStoreError, PostgresRuntimeError) as exc:
+             app.logger.exception(
+                 "PostgreSQL generation manifest unavailable for %s",
+                 normalized_job_id,
+             )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "生成结果暂时不可用",
+-                        "code": "postgres_generation_unavailable",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+-        except (RedisQueueError, ValueError, TypeError) as exc:
+-            return generation_queue_error_response(RuntimeError(str(exc)))
++            return jsonify({
++                "error": "生成结果暂时不可用",
++                "code": "postgres_generation_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
+     try:
+         return jsonify(
+             load_generation_result_manifest(normalized_job_id, principal)
+@@ -11525,98 +12185,59 @@ def api_cancel_generation_job(job_id: str):
+     except ValueError as exc:
+         return jsonify({"error": str(exc)}), 400
+
+-    try:
+-        redis_product_queue = product_redis_queue()
+-    except (RedisQueueError, ValueError, TypeError) as exc:
+-        return generation_queue_error_response(RuntimeError(str(exc)))
+     if postgres_product_runtime_enabled():
+         try:
++            postgres_owned_generation_detail(normalized_job_id, principal)
+             with postgres_connection() as connection:
+-                canceled = ProductJobStore(connection).request_cancel(
++                ProductJobStore(connection).request_cancel(
+                     job_id=normalized_job_id,
+                     owner_user_id=str(principal["userId"]),
+                 )
+-            if redis_product_queue is not None:
+-                try:
+-                    task = redis_product_queue.get(normalized_job_id)
+-                except RedisTaskNotFound:
+-                    task = None
+-                if task is not None:
+-                    redis_batch_contract(task, principal)
+-                    redis_product_queue.request_cancel(normalized_job_id)
+-                elif str(canceled.job.get("status") or "") == "running":
+-                    raise RedisQueueError(
+-                        "running PostgreSQL job has no Redis task"
+-                    )
+-            if str(canceled.job.get("status") or "") == "canceled":
+-                postgres_apply_generation_settlement(
+-                    normalized_job_id,
+-                    str(principal["userId"]),
++            try:
++                redis_product_queue = product_redis_queue()
++                if redis_product_queue is not None:
++                    try:
++                        redis_product_queue.request_cancel(normalized_job_id)
++                    except RedisTaskNotFound:
++                        pass
++            except (RedisQueueError, ValueError, TypeError):
++                app.logger.warning(
++                    "Generation cancel signal pending for %s", normalized_job_id
+                 )
+             return jsonify(
+-                postgres_generation_job_payload(
+-                    normalized_job_id,
+-                    principal,
+-                )
++                postgres_generation_job_payload(normalized_job_id, principal)
+             )
+-        except PostgresJobNotFound:
++        except (PostgresJobNotFound, RedisTaskNotFound):
+             return jsonify({"error": "任务不存在"}), 404
+         except JobStateConflict:
+             try:
+                 existing = postgres_generation_job_payload(
+-                    normalized_job_id,
+-                    principal,
++                    normalized_job_id, principal
+                 )
+             except (PostgresJobNotFound, RedisTaskNotFound):
+                 return jsonify({"error": "任务不存在"}), 404
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "任务已结束，不能取消。",
+-                        "code": "generation_job_already_finished",
+-                        "job": existing,
+-                    }
+-                ),
+-                409,
+-            )
++            return jsonify({
++                "error": "任务已结束，不能取消。",
++                "code": "generation_job_already_finished",
++                "job": existing,
++            }), 409
+         except BatchContractError as exc:
+             return batch_contract_error_response(exc)
+-        except (
+-            SettlementConflict,
+-            WalletIntegrityError,
+-            FenceMismatch,
+-        ) as exc:
+-            app.logger.exception(
+-                "PostgreSQL generation cancellation settlement pending for %s",
+-                normalized_job_id,
+-            )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "任务已取消，但自动退款需要重试。",
+-                        "code": "generation_cancel_refund_pending",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+         except (ProductJobStoreError, PostgresRuntimeError) as exc:
+             app.logger.exception(
+                 "PostgreSQL generation cancellation unavailable for %s",
+                 normalized_job_id,
+             )
+-            return (
+-                jsonify(
+-                    {
+-                        "error": "取消任务暂时不可用",
+-                        "code": "postgres_generation_unavailable",
+-                        "reason": type(exc).__name__,
+-                    }
+-                ),
+-                503,
+-            )
+-        except RedisQueueError as exc:
+-            return generation_queue_error_response(RuntimeError(str(exc)))
++            return jsonify({
++                "error": "取消任务暂时不可用",
++                "code": "postgres_generation_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
++
++    try:
++        redis_product_queue = product_redis_queue()
++    except (RedisQueueError, ValueError, TypeError) as exc:
++        return generation_queue_error_response(RuntimeError(str(exc)))
+     if redis_product_queue is not None:
+         try:
+             task, terminal_record = product_redis_task_or_terminal_record(
+@@ -11764,6 +12385,16 @@ def api_cancel_generation_job(job_id: str):
+
+ @app.post("/api/generate-final")
+ def api_generate_final():
++    if postgres_product_runtime_enabled():
++        return (
++            jsonify(
++                {
++                    "error": "正式生成必须通过认证任务事务提交",
++                    "code": "product_transaction_required",
++                }
++            ),
++            409,
++        )
+     payload = request.get_json(silent=True) or {}
+     try:
+         style = validate_requested_style(str(payload.get("style") or ""))
+@@ -11834,6 +12465,8 @@ def upload_menu():
+
+ @app.post("/api/upload-library")
+ def upload_library():
++    if not admin_write_authorized():
++        return forbidden("管理写接口未授权", "admin_write_forbidden")
+     file = request.files.get("file")
+     if not file:
+         return jsonify({"error": "没有收到图库 zip"}), 400
+@@ -11899,6 +12532,7 @@ def api_export():
+         payload.get("jobId") or payload.get("generationJobId") or ""
+     ).strip()
+     platforms: list[str] | str | None = payload.get("platforms") or ["meituan"]
++    export_user_id = ""
+     watermark = (
+         payload.get("watermark")
+         if isinstance(payload.get("watermark"), dict)
+@@ -11910,12 +12544,19 @@ def api_export():
+         if principal_error is not None:
+             return principal_error
+         assert principal is not None
++        export_user_id = str(principal["userId"])
+         try:
+             normalized_job_id = validate_generation_job_id(requested_job_id)
+-            result_document, contract = load_persisted_generation_manifest_context(
+-                normalized_job_id,
+-                principal,
+-            )
++            if postgres_product_runtime_enabled():
++                result_document, contract = load_postgres_generation_manifest_context(
++                    normalized_job_id,
++                    principal,
++                )
++            else:
++                result_document, contract = load_persisted_generation_manifest_context(
++                    normalized_job_id,
++                    principal,
++                )
+             platforms = generation_contract_export_platforms(
+                 contract,
+                 payload.get("platforms"),
+@@ -11951,6 +12592,20 @@ def api_export():
+                 shutil.rmtree(staging_dir, ignore_errors=True)
+         except MenuUploadError as exc:
+             return menu_upload_error_response(exc)
++        except RedisTaskNotFound:
++            return jsonify({"error": "生成任务不存在"}), 404
++        except (BatchContractError, RefinementContractError) as exc:
++            return batch_contract_error_response(exc)
++        except (ProductJobStoreError, PostgresRuntimeError) as exc:
++            app.logger.exception(
++                "PostgreSQL export source unavailable for %s",
++                requested_job_id,
++            )
++            return jsonify({
++                "error": "正式生成结果暂时不可用",
++                "code": "postgres_generation_unavailable",
++                "reason": type(exc).__name__,
++            }), 503
+         except ValueError as exc:
+             return jsonify({"error": str(exc)}), 400
+     else:
+@@ -11999,6 +12654,8 @@ def api_export():
+             export_payload,
+             scope=scope,
+             platforms=platforms,
++            user_id=export_user_id or current_user_id(),
++            generation_job_id=requested_job_id,
+         )
+     except Exception as exc:
+         return jsonify(
+@@ -12026,6 +12683,8 @@ def external_media(name: str):
+
+ @app.get("/model-inputs/<path:name>")
+ def model_inputs(name: str):
++    if postgres_product_runtime_enabled() or not is_local_request():
++        return jsonify({"error": "图片不存在"}), 404
+     if not re.fullmatch(r"[a-f0-9]{24}\.jpg", name):
+         return jsonify({"error": "图片不存在"}), 404
+     return send_from_directory(MODEL_INPUT_DIR, name)
+@@ -12084,6 +12743,25 @@ def object_access(object_key: str):
+         )
+         return jsonify({"error": "对象访问未授权", "code": "object_access_forbidden", "reason": "object_key_mismatch"}), 403
+
++    principal, principal_error = customer_request_principal()
++    if principal_error is not None:
++        return principal_error
++    assert principal is not None
++    if not hmac.compare_digest(
++        str(payload.get("user_id") or ""),
++        str(principal.get("userId") or ""),
++    ):
++        record_asset_access_audit(
++            asset_id=requested_key,
++            action=asset_action_for_purpose(str(payload.get("purpose") or ""), "object_access"),
++            user_id=str(principal.get("userId") or ""),
++            asset_type="object",
++            allowed=False,
++            deny_reason="owner_mismatch",
++            metadata={"route": "objects"},
++        )
++        return jsonify({"error": "对象访问未授权", "code": "object_access_forbidden", "reason": "owner_mismatch"}), 403
++
+     storage = object_storage_service.get_object_storage_service()
+     try:
+         if not storage.exists(requested_key):
+@@ -12117,12 +12795,17 @@ def object_access(object_key: str):
+
+ @app.get("/download/<path:name>")
+ def download(name: str):
++    principal, principal_error = customer_request_principal()
++    if principal_error is not None:
++        return principal_error
++    assert principal is not None
++    user_id = str(principal["userId"])
+     relative_name = safe_export_download_name(name)
+     if relative_name is None:
+         record_asset_access_audit(
+             asset_id=str(name or ""),
+             action="export",
+-            user_id=current_user_id(),
++            user_id=user_id,
+             asset_type="export",
+             allowed=False,
+             deny_reason="asset_not_found",
+@@ -12135,7 +12818,7 @@ def download(name: str):
+         record_asset_access_audit(
+             asset_id=relative_name,
+             action="export",
+-            user_id=current_user_id(),
++            user_id=user_id,
+             asset_type="export",
+             allowed=False,
+             deny_reason="missing_secret",
+@@ -12143,7 +12826,6 @@ def download(name: str):
+         )
+         return jsonify({"error": "下载签名密钥未配置", "code": "download_signing_secret_missing"}), 503
+     if signing_secret:
+-        user_id = current_user_id()
+         decision = download_guard.authorize_download(
+             asset_record={
+                 "asset_id": relative_name,
+@@ -12181,7 +12863,7 @@ def download(name: str):
+         record_asset_access_audit(
+             asset_id=relative_name,
+             action="export",
+-            user_id=current_user_id(),
++            user_id=user_id,
+             asset_type="export",
+             allowed=True,
+             metadata={"route": "download", "localDemo": True},
+@@ -12218,6 +12900,7 @@ app.register_blueprint(
+             current_menu_path=current_menu_path,
+             parse_menu=parse_menu,
+             upload_dir=UPLOAD_DIR,
++            authorized=admin_write_authorized,
+             db_path=storage_db.DEFAULT_DB_PATH,
+             ai_asset_manifest_path=ai_asset_manifest_path(),
+         )
+diff --git a/render.yaml b/render.yaml
+index 3f3fa19f34ed26c7d5acb072daf2aac65ce5875d..2ca8d44d44411b530de3da6297e0dd7435a1fc5a 100644
+--- a/render.yaml
++++ b/render.yaml
+@@ -71,6 +71,7 @@ services:
+     runtime: python
+     plan: free
+     buildCommand: pip install -r requirements.txt
++    preDeployCommand: python -m shared.postgres_migrations
+     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
+     healthCheckPath: /
+     autoDeployTrigger: "off"
+diff --git a/shared/postgres_migrations.py b/shared/postgres_migrations.py
+index 23bc4cf9a20dcc57054f3e7ff9377c2607761c88..c12183a049fa142931afe9ae5bb9964a00298e28 100644
+--- a/shared/postgres_migrations.py
++++ b/shared/postgres_migrations.py
+@@ -1,11 +1,18 @@
+ from __future__ import annotations
+
+ import hashlib
++import json
+ import re
++import sys
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Iterable
+
++from shared.postgres_runtime import (
++    PostgresRuntimeError,
++    postgres_connection,
++)
++
+
+ DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+ SCHEMA_MIGRATIONS_TABLE = "waimai_schema_migrations"
+@@ -368,3 +375,54 @@ def _close_quietly(connection: Any) -> None:
+         connection.close()
+     except BaseException:
+         pass
++
++
++def main() -> int:
++    try:
++        with postgres_connection() as connection:
++            result = run_postgres_migrations(connection)
++    except (PostgresMigrationError, PostgresRuntimeError) as exc:
++        payload = {
++            "ok": False,
++            "code": exc.code,
++        }
++        version = str(getattr(exc, "version", "") or "")
++        cause_type = str(getattr(exc, "cause_type", "") or "")
++        if version:
++            payload["version"] = version
++        if cause_type:
++            payload["causeType"] = cause_type
++        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
++        return 1
++    except Exception as exc:
++        print(
++            json.dumps(
++                {
++                    "ok": False,
++                    "code": "migration_unexpected_failure",
++                    "causeType": type(exc).__name__,
++                },
++                sort_keys=True,
++            ),
++            file=sys.stderr,
++        )
++        return 1
++
++    print(
++        json.dumps(
++            {
++                "ok": True,
++                "discoveredVersions": list(result.discovered_versions),
++                "previouslyAppliedVersions": list(
++                    result.previously_applied_versions
++                ),
++                "appliedVersions": list(result.applied_versions),
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/shared/product_generation_settlement.py b/shared/product_generation_settlement.py
+index ce7a246a23c24d4977fb9110001ef5702c61b665..97536ff7b579132ef3a2d5a35975223d56e8db6a 100644
+--- a/shared/product_generation_settlement.py
++++ b/shared/product_generation_settlement.py
+@@ -5,22 +5,27 @@ import hmac
+ import json
+ import re
+ from dataclasses import dataclass
++from pathlib import PurePosixPath
+ from typing import Any, Mapping
+
+ import object_storage_service
+ from shared.batch_contract import (
+     JOB_TYPE as MENU_BATCH_JOB_TYPE,
+-    request_sha256,
++    canonical_json,
++    request_sha256 as menu_request_sha256,
+ )
+-from shared.product_job_store import (
+-    ProductJobStore,
+-    SettlementConflict,
++from shared.product_job_store import ProductJobStore, SettlementConflict
++from shared.refinement_contract import (
++    JOB_TYPE as REVISION_BATCH_JOB_TYPE,
++    revision_request_sha256,
+ )
+
+
+ PRODUCT_BATCH_TASK_TYPE = "product_batch"
++PRODUCT_REVISION_TASK_TYPE = "product_revision"
+ SHA256_RE = re.compile(r"[a-f0-9]{64}")
+ TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
++DELIVERY_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+ class ProductGenerationSettlementError(RuntimeError):
+@@ -40,6 +45,7 @@ class GenerationCompletion:
+     job_id: str
+     owner_user_id: str
+     request_sha256: str
++    job_type: str
+     fence: int
+     terminal_status: str
+     requested_count: int
+@@ -64,31 +70,37 @@ def completion_from_redis_task(
+         raise InvalidProductTask(f"unsupported terminal Redis status: {status}")
+
+     payload = _mapping(envelope.get("payload"), "task.payload")
+-    if _text(payload.get("taskType"), "task.payload.taskType") != PRODUCT_BATCH_TASK_TYPE:
+-        raise InvalidProductTask("Redis task is not a product batch")
++    task_type = _text(payload.get("taskType"), "task.payload.taskType")
++    if task_type == PRODUCT_BATCH_TASK_TYPE:
++        contract_key = "batchContract"
++        expected_job_type = MENU_BATCH_JOB_TYPE
++        digest_function = menu_request_sha256
++    elif task_type == PRODUCT_REVISION_TASK_TYPE:
++        contract_key = "revisionContract"
++        expected_job_type = REVISION_BATCH_JOB_TYPE
++        digest_function = revision_request_sha256
++    else:
++        raise InvalidProductTask("Redis task has an unsupported product task type")
++
+     contract = _mapping(
+-        payload.get("batchContract"),
+-        "task.payload.batchContract",
++        payload.get(contract_key),
++        f"task.payload.{contract_key}",
+     )
+-    if _text(contract.get("jobType"), "contract.jobType") != MENU_BATCH_JOB_TYPE:
+-        raise InvalidProductTask("product batch job type mismatch")
++    job_type = _text(contract.get("jobType"), "contract.jobType")
++    if not hmac.compare_digest(job_type, expected_job_type):
++        raise InvalidProductTask("product job type does not match Redis task type")
+
+     job_id = _text(contract.get("jobId"), "contract.jobId")
+     owner_user_id = _text(contract.get("userId"), "contract.userId")
+-    idempotency = _mapping(
+-        contract.get("idempotency"),
+-        "contract.idempotency",
+-    )
++    idempotency = _mapping(contract.get("idempotency"), "contract.idempotency")
+     request_digest = _sha256(
+         idempotency.get("requestSha256"),
+         "contract.idempotency.requestSha256",
+     )
+     try:
+-        calculated_digest = request_sha256(contract)
++        calculated_digest = digest_function(contract)
+     except Exception as exc:
+-        raise InvalidProductTask(
+-            "product batch request cannot be digested"
+-        ) from exc
++        raise InvalidProductTask("product request cannot be digested") from exc
+     _require_digest(calculated_digest, request_digest, "contract digest")
+     _require_text(envelope.get("task_id"), job_id, "task.task_id")
+     _require_text(
+@@ -107,30 +119,32 @@ def completion_from_redis_task(
+     )
+
+     billing = _mapping(contract.get("billing"), "contract.billing")
+-    quality = _mapping(contract.get("quality"), "contract.quality")
+-    requested_count = _positive_int(
+-        billing.get("imageCount"),
+-        "contract.billing.imageCount",
+-    )
+     total_points = _nonnegative_int(
+         billing.get("totalPoints"),
+         "contract.billing.totalPoints",
+     )
+-    points_per_image = _nonnegative_int(
+-        quality.get("pointsPerImage"),
+-        "contract.quality.pointsPerImage",
+-    )
+-    result = (
+-        envelope.get("result")
+-        if isinstance(envelope.get("result"), Mapping)
+-        else {}
+-    )
++    if task_type == PRODUCT_BATCH_TASK_TYPE:
++        quality = _mapping(contract.get("quality"), "contract.quality")
++        requested_count = _positive_int(
++            billing.get("imageCount"),
++            "contract.billing.imageCount",
++        )
++        points_per_image = _nonnegative_int(
++            quality.get("pointsPerImage"),
++            "contract.quality.pointsPerImage",
++        )
++    else:
++        requested_count = 1
++        points_per_image = total_points
++
++    result = envelope.get("result") if isinstance(envelope.get("result"), Mapping) else {}
+     canceled = status == "failed" and bool(result.get("canceled"))
+     if status == "failed":
+         return GenerationCompletion(
+             job_id=job_id,
+             owner_user_id=owner_user_id,
+             request_sha256=request_digest,
++            job_type=job_type,
+             fence=fence,
+             terminal_status="canceled" if canceled else "failed",
+             requested_count=requested_count,
+@@ -146,35 +160,47 @@ def completion_from_redis_task(
+             ),
+         )
+
+-    manifest, document = _load_manifest(
+-        result,
+-        contract,
+-        object_store=object_store,
+-    )
+-    generation = _mapping(
+-        document.get("generation"),
+-        "manifest.generation",
+-        error_type=ProductManifestIntegrityError,
+-    )
+-    completed_count = _nonnegative_int(
+-        generation.get("succeeded"),
+-        "manifest.generation.succeeded",
+-        error_type=ProductManifestIntegrityError,
+-    )
+-    if completed_count > requested_count:
+-        raise ProductManifestIntegrityError(
+-            "manifest succeeded count exceeds frozen image count"
++    if task_type == PRODUCT_BATCH_TASK_TYPE:
++        manifest, document = _load_menu_manifest(
++            result,
++            contract,
++            object_store=object_store,
+         )
+-    failed_count = requested_count - completed_count
+-    refund_target = (
+-        total_points
+-        if completed_count == 0
+-        else min(total_points, failed_count * points_per_image)
+-    )
++        generation = _mapping(
++            document.get("generation"),
++            "manifest.generation",
++            error_type=ProductManifestIntegrityError,
++        )
++        completed_count = _nonnegative_int(
++            generation.get("succeeded"),
++            "manifest.generation.succeeded",
++            error_type=ProductManifestIntegrityError,
++        )
++        if completed_count > requested_count:
++            raise ProductManifestIntegrityError(
++                "manifest succeeded count exceeds frozen image count"
++            )
++        failed_count = requested_count - completed_count
++        refund_target = (
++            total_points
++            if completed_count == 0
++            else min(total_points, failed_count * points_per_image)
++        )
++    else:
++        manifest, _document = _load_revision_manifest(
++            result,
++            contract,
++            object_store=object_store,
++        )
++        completed_count = 1
++        failed_count = 0
++        refund_target = 0
++
+     return GenerationCompletion(
+         job_id=job_id,
+         owner_user_id=owner_user_id,
+         request_sha256=request_digest,
++        job_type=job_type,
+         fence=fence,
+         terminal_status="succeeded",
+         requested_count=requested_count,
+@@ -200,6 +226,33 @@ def apply_generation_completion(
+     )
+     if detail is None:
+         raise InvalidProductTask("PostgreSQL job is missing or has another owner")
++    contract = (
++        detail.job.get("request_payload")
++        if isinstance(detail.job.get("request_payload"), Mapping)
++        else {}
++    )
++    if not hmac.compare_digest(
++        str(contract.get("jobType") or ""),
++        completion.job_type,
++    ):
++        raise InvalidProductTask("PostgreSQL job type does not match completion")
++    _require_text(contract.get("jobId"), completion.job_id, "PostgreSQL contract jobId")
++    _require_text(
++        contract.get("userId"),
++        completion.owner_user_id,
++        "PostgreSQL contract userId",
++    )
++    try:
++        contract_digest = (
++            menu_request_sha256(contract)
++            if completion.job_type == MENU_BATCH_JOB_TYPE
++            else revision_request_sha256(contract)
++            if completion.job_type == REVISION_BATCH_JOB_TYPE
++            else ""
++        )
++    except Exception as exc:
++        raise InvalidProductTask("PostgreSQL frozen request cannot be digested") from exc
++    _require_digest(contract_digest, completion.request_sha256, "PostgreSQL contract digest")
+     _require_digest(
+         detail.job.get("request_sha256"),
+         completion.request_sha256,
+@@ -258,14 +311,9 @@ def settle_terminal_job(
+             "account": store.get_account(owner_user_id=owner_user_id),
+         }
+     if settlement_status not in {"pending", "claimed"}:
+-        raise SettlementConflict(
+-            f"generation settlement requires review: {job_id}"
+-        )
++        raise SettlementConflict(f"generation settlement requires review: {job_id}")
+
+-    version = _nonnegative_int(
+-        settlement.get("version"),
+-        "settlement.version",
+-    )
++    version = _nonnegative_int(settlement.get("version"), "settlement.version")
+     claim = store.claim_settlement_once(
+         job_id=job_id,
+         expected_version=version,
+@@ -293,46 +341,264 @@ def settle_terminal_job(
+     }
+
+
+-def _load_manifest(
++def _load_menu_manifest(
+     result: Mapping[str, Any],
+     contract: Mapping[str, Any],
+     *,
+     object_store: Any | None,
+ ) -> tuple[dict[str, str], dict[str, Any]]:
+     job_id = _text(contract.get("jobId"), "contract.jobId")
+-    request_digest = _sha256(
+-        _mapping(contract.get("idempotency"), "contract.idempotency").get(
+-            "requestSha256"
++    owner = _text(contract.get("userId"), "contract.userId")
++    request_digest = _contract_digest(contract)
++    expected_key = object_storage_service.validate_object_key(
++        f"{object_storage_service.GENERATED_PREFIX}manifests/{job_id}/{request_digest}.json"
++    )
++    manifest, document, storage = _load_manifest_bytes(
++        result,
++        expected_task_type=PRODUCT_BATCH_TASK_TYPE,
++        expected_job_id=job_id,
++        expected_request_sha256=request_digest,
++        expected_object_key=expected_key,
++        object_store=object_store,
++    )
++
++    generation_batch = _mapping(
++        document.get("generationBatch"),
++        "manifest.generationBatch",
++        error_type=ProductManifestIntegrityError,
++    )
++    _require_text(
++        generation_batch.get("jobId"),
++        job_id,
++        "manifest.generationBatch.jobId",
++        error_type=ProductManifestIntegrityError,
++    )
++    _require_digest(
++        generation_batch.get("requestSha256"),
++        request_digest,
++        "manifest.generationBatch.requestSha256",
++        error_type=ProductManifestIntegrityError,
++    )
++    _require_text(
++        generation_batch.get("menuUploadId"),
++        _text(contract.get("menuUploadId"), "contract.menuUploadId"),
++        "manifest.generationBatch.menuUploadId",
++        error_type=ProductManifestIntegrityError,
++    )
++    billing = _mapping(contract.get("billing"), "contract.billing")
++    if generation_batch.get("chargedPoints") != billing.get("totalPoints"):
++        raise ProductManifestIntegrityError(
++            "manifest generationBatch charged points mismatch"
++        )
++    _require_text(
++        generation_batch.get("pricingVersion"),
++        _text(billing.get("pricingVersion"), "contract.billing.pricingVersion"),
++        "manifest.generationBatch.pricingVersion",
++        error_type=ProductManifestIntegrityError,
++    )
++
++    private = _mapping(
++        document.get("_transactionEnvelope"),
++        "manifest._transactionEnvelope",
++        error_type=ProductManifestIntegrityError,
++    )
++    expected_scalars = {
++        "schemaVersion": 1,
++        "taskType": PRODUCT_BATCH_TASK_TYPE,
++        "jobType": MENU_BATCH_JOB_TYPE,
++        "jobId": job_id,
++        "ownerUserId": owner,
++        "requestSha256": request_digest,
++    }
++    for field, expected in expected_scalars.items():
++        if private.get(field) != expected:
++            raise ProductManifestIntegrityError(
++                f"manifest transaction envelope {field} mismatch"
++            )
++
++    menu_contract = _mapping(contract.get("menu"), "contract.menu")
++    menu_manifest = _mapping(
++        private.get("menu"),
++        "manifest._transactionEnvelope.menu",
++        error_type=ProductManifestIntegrityError,
++    )
++    _require_text(
++        menu_manifest.get("uploadId"),
++        _text(contract.get("menuUploadId"), "contract.menuUploadId"),
++        "manifest transaction menu uploadId",
++        error_type=ProductManifestIntegrityError,
++    )
++    _validate_snapshot_and_bytes(
++        storage,
++        menu_manifest,
++        menu_contract,
++        "menu",
++        require_asset_id=False,
++    )
++    _validate_snapshot_and_bytes(
++        storage,
++        _mapping(
++            private.get("selectedBackground"),
++            "manifest._transactionEnvelope.selectedBackground",
++            error_type=ProductManifestIntegrityError,
+         ),
+-        "contract.idempotency.requestSha256",
++        _mapping(contract.get("selectedBackground"), "contract.selectedBackground"),
++        "selectedBackground",
++        require_asset_id=True,
++    )
++
++    generation = _mapping(
++        document.get("generation"),
++        "manifest.generation",
++        error_type=ProductManifestIntegrityError,
++    )
++    succeeded = _nonnegative_int(
++        generation.get("succeeded"),
++        "manifest.generation.succeeded",
++        error_type=ProductManifestIntegrityError,
++    )
++    requested = _positive_int(
++        billing.get("imageCount"),
++        "contract.billing.imageCount",
++    )
++    if succeeded > requested:
++        raise ProductManifestIntegrityError("manifest succeeded count exceeds request")
++    _validate_delivery_assets(
++        storage,
++        document,
++        job_id=job_id,
++        request_digest=request_digest,
++        requested_count=requested,
++        succeeded_count=succeeded,
++    )
++    return manifest, document
++
++
++def _load_revision_manifest(
++    result: Mapping[str, Any],
++    contract: Mapping[str, Any],
++    *,
++    object_store: Any | None,
++) -> tuple[dict[str, str], dict[str, Any]]:
++    job_id = _text(contract.get("jobId"), "contract.jobId")
++    request_digest = _contract_digest(contract)
++    expected_manifest_key = object_storage_service.validate_object_key(
++        f"{object_storage_service.GENERATED_PREFIX}revisions/{job_id}/{request_digest}/manifest.json"
++    )
++    manifest, document, storage = _load_manifest_bytes(
++        result,
++        expected_task_type=PRODUCT_REVISION_TASK_TYPE,
++        expected_job_id=job_id,
++        expected_request_sha256=request_digest,
++        expected_object_key=expected_manifest_key,
++        object_store=object_store,
++    )
++    expected_scalars = {
++        "schemaVersion": 1,
++        "taskType": PRODUCT_REVISION_TASK_TYPE,
++        "jobType": REVISION_BATCH_JOB_TYPE,
++        "jobId": job_id,
++        "parentGenerationJobId": _text(
++            contract.get("parentGenerationJobId"),
++            "contract.parentGenerationJobId",
++        ),
++        "requestSha256": request_digest,
++        "mode": _text(contract.get("mode"), "contract.mode"),
++    }
++    for field, expected in expected_scalars.items():
++        if document.get(field) != expected:
++            raise ProductManifestIntegrityError(
++                f"revision manifest {field} mismatch"
++            )
++
++    source_contract = _mapping(
++        contract.get("sourceDeliveryAsset"),
++        "contract.sourceDeliveryAsset",
++    )
++    background_contract = _mapping(
++        contract.get("selectedBackground"),
++        "contract.selectedBackground",
++    )
++    _validate_snapshot_and_bytes(
++        storage,
++        _mapping(
++            document.get("sourceDeliveryAsset"),
++            "manifest.sourceDeliveryAsset",
++            error_type=ProductManifestIntegrityError,
++        ),
++        source_contract,
++        "sourceDeliveryAsset",
++        require_asset_id=True,
++    )
++    _validate_snapshot_and_bytes(
++        storage,
++        _mapping(
++            document.get("selectedBackground"),
++            "manifest.selectedBackground",
++            error_type=ProductManifestIntegrityError,
++        ),
++        background_contract,
++        "selectedBackground",
++        require_asset_id=True,
++    )
++
++    asset = _mapping(
++        document.get("imageAsset"),
++        "manifest.imageAsset",
++        error_type=ProductManifestIntegrityError,
++    )
++    expected_asset_key = object_storage_service.validate_object_key(
++        f"{object_storage_service.GENERATED_PREFIX}revisions/{job_id}/{request_digest}/revision.png"
++    )
++    _require_text(
++        asset.get("assetId"),
++        f"revision_{request_digest[:32]}",
++        "manifest.imageAsset.assetId",
++        error_type=ProductManifestIntegrityError,
+     )
+-    _require_text(result.get("job_id"), job_id, "result.job_id")
++    _require_text(
++        asset.get("objectKey"),
++        expected_asset_key,
++        "manifest.imageAsset.objectKey",
++        error_type=ProductManifestIntegrityError,
++    )
++    _require_text(
++        asset.get("mimeType"),
++        "image/png",
++        "manifest.imageAsset.mimeType",
++        error_type=ProductManifestIntegrityError,
++    )
++    _validate_asset_bytes(storage, asset, "revision imageAsset")
++    return manifest, document
++
++
++def _load_manifest_bytes(
++    result: Mapping[str, Any],
++    *,
++    expected_task_type: str,
++    expected_job_id: str,
++    expected_request_sha256: str,
++    expected_object_key: str,
++    object_store: Any | None,
++) -> tuple[dict[str, str], dict[str, Any], Any]:
++    _require_text(result.get("job_id"), expected_job_id, "result.job_id")
+     _require_text(
+         result.get("task_type"),
+-        PRODUCT_BATCH_TASK_TYPE,
++        expected_task_type,
+         "result.task_type",
+     )
+     _require_digest(
+         result.get("request_sha256"),
+-        request_digest,
++        expected_request_sha256,
+         "result.request_sha256",
+     )
+-    expected_key = object_storage_service.validate_object_key(
+-        f"{object_storage_service.GENERATED_PREFIX}manifests/"
+-        f"{job_id}/{request_digest}.json"
+-    )
+     try:
+         object_key = object_storage_service.validate_object_key(
+-            _text(
+-                result.get("manifest_object_key"),
+-                "result.manifest_object_key",
+-            )
++            _text(result.get("manifest_object_key"), "result.manifest_object_key")
+         )
+     except (TypeError, ValueError) as exc:
+-        raise ProductManifestIntegrityError(
+-            "manifest object key is invalid"
+-        ) from exc
+-    if not hmac.compare_digest(object_key, expected_key):
++        raise ProductManifestIntegrityError("manifest object key is invalid") from exc
++    if not hmac.compare_digest(object_key, expected_object_key):
+         raise ProductManifestIntegrityError(
+             "manifest object key does not match the frozen request"
+         )
+@@ -349,13 +615,8 @@ def _load_manifest(
+     try:
+         raw = storage.read_bytes(object_key)
+     except Exception as exc:
+-        raise ProductManifestIntegrityError(
+-            "manifest object is unavailable"
+-        ) from exc
+-    if not hmac.compare_digest(
+-        hashlib.sha256(raw).hexdigest(),
+-        manifest_sha256,
+-    ):
++        raise ProductManifestIntegrityError("manifest object is unavailable") from exc
++    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), manifest_sha256):
+         raise ProductManifestIntegrityError("manifest digest mismatch")
+     try:
+         document = json.loads(raw)
+@@ -363,29 +624,188 @@ def _load_manifest(
+         raise ProductManifestIntegrityError("manifest JSON is invalid") from exc
+     if not isinstance(document, dict):
+         raise ProductManifestIntegrityError("manifest must be a JSON object")
+-    generation_batch = _mapping(
+-        document.get("generationBatch"),
+-        "manifest.generationBatch",
++    if canonical_json(document).encode("utf-8") != raw:
++        raise ProductManifestIntegrityError("manifest JSON is not canonical")
++    return (
++        {"objectKey": object_key, "sha256": manifest_sha256},
++        document,
++        storage,
++    )
++
++
++def _validate_delivery_assets(
++    storage: Any,
++    document: Mapping[str, Any],
++    *,
++    job_id: str,
++    request_digest: str,
++    requested_count: int,
++    succeeded_count: int,
++) -> None:
++    assets = document.get("deliveryAssets")
++    if not isinstance(assets, list):
++        raise ProductManifestIntegrityError("manifest deliveryAssets must be a list")
++    if len(assets) != succeeded_count:
++        raise ProductManifestIntegrityError(
++            "manifest delivery asset count does not match succeeded count"
++        )
++
++    candidate_bindings: set[tuple[int, str]] = set()
++    results = document.get("results")
++    if not isinstance(results, list):
++        raise ProductManifestIntegrityError("manifest results must be a list")
++    for index, row in enumerate(results, start=1):
++        if not isinstance(row, Mapping):
++            continue
++        row_number = row.get("row") or index
++        if isinstance(row_number, bool) or not isinstance(row_number, int):
++            continue
++        candidates = row.get("candidates")
++        if not isinstance(candidates, list):
++            continue
++        for candidate in candidates:
++            if isinstance(candidate, Mapping):
++                asset_id = str(candidate.get("deliveryAssetId") or "")
++                if asset_id:
++                    candidate_bindings.add((row_number, asset_id))
++
++    seen_ids: set[str] = set()
++    seen_keys: set[str] = set()
++    seen_rows: set[int] = set()
++    expected_prefix = (
++        f"{object_storage_service.GENERATED_PREFIX}delivery/"
++        f"{job_id}/{request_digest}/"
++    )
++    for raw_asset in assets:
++        asset = _mapping(
++            raw_asset,
++            "manifest.deliveryAssets[]",
++            error_type=ProductManifestIntegrityError,
++        )
++        row = _positive_int(
++            asset.get("row"),
++            "manifest.deliveryAssets[].row",
++            error_type=ProductManifestIntegrityError,
++        )
++        if row > requested_count or row in seen_rows:
++            raise ProductManifestIntegrityError("delivery asset row is invalid or duplicated")
++        asset_id = _text(
++            asset.get("assetId"),
++            "manifest.deliveryAssets[].assetId",
++            error_type=ProductManifestIntegrityError,
++        )
++        try:
++            object_key = object_storage_service.validate_object_key(
++                _text(
++                    asset.get("objectKey"),
++                    "manifest.deliveryAssets[].objectKey",
++                    error_type=ProductManifestIntegrityError,
++                )
++            )
++        except (TypeError, ValueError) as exc:
++            raise ProductManifestIntegrityError("delivery asset key is invalid") from exc
++        sha256 = _sha256(
++            asset.get("sha256"),
++            "manifest.deliveryAssets[].sha256",
++            error_type=ProductManifestIntegrityError,
++        )
++        suffix = PurePosixPath(object_key).suffix.lower()
++        if suffix not in DELIVERY_SUFFIXES:
++            raise ProductManifestIntegrityError("delivery asset suffix is invalid")
++        expected_key = f"{expected_prefix}{row:04d}_{sha256}{suffix}"
++        if not hmac.compare_digest(object_key, expected_key):
++            raise ProductManifestIntegrityError("delivery asset key is not deterministic")
++        expected_asset_id = "asset_" + hashlib.sha256(
++            f"{job_id}|{request_digest}|{row}|{sha256}".encode("utf-8")
++        ).hexdigest()[:32]
++        if not hmac.compare_digest(asset_id, expected_asset_id):
++            raise ProductManifestIntegrityError("delivery asset id is not deterministic")
++        if asset_id in seen_ids or object_key in seen_keys:
++            raise ProductManifestIntegrityError("delivery asset identity is duplicated")
++        if (row, asset_id) not in candidate_bindings:
++            raise ProductManifestIntegrityError("delivery asset is not bound to its result row")
++        _validate_asset_bytes(storage, asset, "delivery asset")
++        seen_ids.add(asset_id)
++        seen_keys.add(object_key)
++        seen_rows.add(row)
++
++
++def _validate_snapshot_and_bytes(
++    storage: Any,
++    actual: Mapping[str, Any],
++    expected: Mapping[str, Any],
++    label: str,
++    *,
++    require_asset_id: bool,
++) -> None:
++    keys = ["objectKey", "sha256"]
++    if require_asset_id:
++        keys.insert(0, "assetId")
++    for key in keys:
++        actual_value = str(actual.get(key) or "")
++        expected_value = str(expected.get(key) or "")
++        if not actual_value or not hmac.compare_digest(actual_value, expected_value):
++            raise ProductManifestIntegrityError(
++                f"manifest {label} {key} mismatch"
++            )
++    try:
++        object_key = object_storage_service.validate_object_key(
++            str(actual["objectKey"])
++        )
++    except (KeyError, TypeError, ValueError) as exc:
++        raise ProductManifestIntegrityError(
++            f"manifest {label} object key is invalid"
++        ) from exc
++    expected_sha256 = _sha256(
++        actual.get("sha256"),
++        f"manifest.{label}.sha256",
+         error_type=ProductManifestIntegrityError,
+     )
+-    _require_text(
+-        generation_batch.get("jobId"),
+-        job_id,
+-        "manifest.generationBatch.jobId",
++    try:
++        raw = storage.read_bytes(object_key)
++    except Exception as exc:
++        raise ProductManifestIntegrityError(
++            f"manifest {label} object is unavailable"
++        ) from exc
++    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
++        raise ProductManifestIntegrityError(
++            f"manifest {label} object digest mismatch"
++        )
++
++
++def _validate_asset_bytes(storage: Any, asset: Mapping[str, Any], label: str) -> None:
++    try:
++        object_key = object_storage_service.validate_object_key(
++            str(asset.get("objectKey") or "")
++        )
++    except (TypeError, ValueError) as exc:
++        raise ProductManifestIntegrityError(f"{label} object key is invalid") from exc
++    expected_sha256 = _sha256(
++        asset.get("sha256"),
++        f"{label}.sha256",
+         error_type=ProductManifestIntegrityError,
+     )
+-    _require_digest(
+-        generation_batch.get("requestSha256"),
+-        request_digest,
+-        "manifest.generationBatch.requestSha256",
++    expected_size = _positive_int(
++        asset.get("size"),
++        f"{label}.size",
+         error_type=ProductManifestIntegrityError,
+     )
+-    return (
+-        {
+-            "objectKey": object_key,
+-            "sha256": manifest_sha256,
+-        },
+-        document,
++    try:
++        raw = storage.read_bytes(object_key)
++    except Exception as exc:
++        raise ProductManifestIntegrityError(f"{label} object is unavailable") from exc
++    if len(raw) != expected_size or not hmac.compare_digest(
++        hashlib.sha256(raw).hexdigest(),
++        expected_sha256,
++    ):
++        raise ProductManifestIntegrityError(f"{label} object bytes mismatch")
++
++
++def _contract_digest(contract: Mapping[str, Any]) -> str:
++    idempotency = _mapping(contract.get("idempotency"), "contract.idempotency")
++    return _sha256(
++        idempotency.get("requestSha256"),
++        "contract.idempotency.requestSha256",
+     )
+
+
+diff --git a/shared/product_job_store.py b/shared/product_job_store.py
+index 527e3412ea9a7a10ea168daf0b015225a04f9b5c..6778f9f508ee640c57780bba73e861a67e00b3ef 100644
+--- a/shared/product_job_store.py
++++ b/shared/product_job_store.py
+@@ -108,6 +108,15 @@ class PointOrderConflict(ProductJobStoreError):
+     pass
+
+
++class FreeReworkQuotaExhausted(ProductJobStoreError):
++    def __init__(self, *, parent_job_id: str, quota: int) -> None:
++        super().__init__(
++            f"free rework quota exhausted: parent_job_id={parent_job_id}, quota={quota}"
++        )
++        self.parent_job_id = parent_job_id
++        self.quota = quota
++
++
+ class WalletIntegrityError(ProductJobStoreError):
+     pass
+
+@@ -275,6 +284,23 @@ INSERT INTO product_generation_outbox (
+ ) VALUES (%s, %s, 'product_generation.requested', %s::jsonb)
+ """
+
++_LOCK_FREE_REWORK_QUOTA_SQL = """
++/* product_job_store:lock_free_rework_quota */
++SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
++"""
++
++_COUNT_FREE_REWORK_QUOTA_SQL = """
++/* product_job_store:count_free_rework_quota */
++SELECT COUNT(*) AS used
++FROM product_generation_jobs
++WHERE owner_user_id = %s
++  AND request_payload ->> 'jobType' = 'delivery_asset_revision_batch'
++  AND request_payload ->> 'parentGenerationJobId' = %s
++  AND request_payload ->> 'mode' = 'rework'
++  AND request_payload #>> '{billing,freeReworkQuotaVerified}' = 'true'
++  AND status IN ('queued', 'running', 'succeeded')
++"""
++
+ _CLAIM_OUTBOX_SQL = """
+ /* product_job_store:claim_outbox */
+ WITH candidates AS (
+@@ -1117,6 +1143,8 @@ class ProductJobStore:
+         outbox_id: str | None = None,
+         account_metadata: Mapping[str, Any] | None = None,
+         debit_metadata: Mapping[str, Any] | None = None,
++        free_rework_parent_job_id: str | None = None,
++        free_rework_quota: int | None = None,
+     ) -> CreateOrGetResult:
+         """Atomically debit points and create the job, settlement, and outbox.
+
+@@ -1138,6 +1166,33 @@ class ProductJobStore:
+         requested = _nonnegative_int(requested_count, "requested_count")
+         debit = _nonnegative_int(debit_points, "debit_points")
+         request_json = _json_payload(request_payload, "request_payload")
++        quota_parent: str | None = None
++        quota_limit: int | None = None
++        if free_rework_parent_job_id is not None or free_rework_quota is not None:
++            if free_rework_parent_job_id is None or free_rework_quota is None:
++                raise InvalidProductJobInput(
++                    "free rework parent and quota must be provided together"
++                )
++            quota_parent = _identifier(
++                free_rework_parent_job_id,
++                "free_rework_parent_job_id",
++            )
++            quota_limit = _positive_int(free_rework_quota, "free_rework_quota")
++            billing = (
++                request_payload.get("billing")
++                if isinstance(request_payload.get("billing"), Mapping)
++                else {}
++            )
++            if (
++                request_payload.get("jobType") != "delivery_asset_revision_batch"
++                or request_payload.get("parentGenerationJobId") != quota_parent
++                or request_payload.get("mode") != "rework"
++                or billing.get("freeReworkQuotaVerified") is not True
++                or debit != 0
++            ):
++                raise InvalidProductJobInput(
++                    "free rework quota parameters do not match the frozen request"
++                )
+         account_metadata_json = _wallet_metadata_payload(
+             account_metadata or {},
+             "account_metadata",
+@@ -1192,6 +1247,23 @@ class ProductJobStore:
+                 self._validate_job_replay(cursor, existing, digest)
+                 return CreateOrGetResult(job=existing, created=False)
+
++            if quota_parent is not None and quota_limit is not None:
++                cursor.execute(
++                    _LOCK_FREE_REWORK_QUOTA_SQL,
++                    (f"free-rework:{owner}:{quota_parent}",),
++                )
++                cursor.execute(
++                    _COUNT_FREE_REWORK_QUOTA_SQL,
++                    (owner, quota_parent),
++                )
++                quota_row = _fetchone_dict(cursor)
++                used = int((quota_row or {}).get("used") or 0)
++                if used >= quota_limit:
++                    raise FreeReworkQuotaExhausted(
++                        parent_job_id=quota_parent,
++                        quota=quota_limit,
++                    )
++
+             available = int(account["balance_points"])
+             if available < debit:
+                 raise InsufficientPointBalance(
+diff --git a/shared/redis_queue.py b/shared/redis_queue.py
+index c0c083f2a488948f5cfc945839adbd6b0ae81225..abf3d55e38567786db60adebdafb70eb1bbbb0d1 100644
+--- a/shared/redis_queue.py
++++ b/shared/redis_queue.py
+@@ -933,10 +933,23 @@ if existing then
+     end
+     local existing_sha = string.sub(existing, 1, separator - 1)
+     local existing_task_id = string.sub(existing, separator + 1)
+-    if existing_sha == ARGV[11] then
++    if existing_sha ~= ARGV[11] then
++        return {-1, existing_task_id}
++    end
++    if existing_task_id ~= ARGV[1] then
++        -- Ordinary idempotent callers may omit task_id and therefore propose a
++        -- fresh random id on replay. Preserve the original durable binding.
+         return {0, existing_task_id}
+     end
+-    return {-1, existing_task_id}
++    if task_type == "hash" then
++        return {0, existing_task_id}
++    end
++    if task_type ~= "none" then
++        return {-4, existing_task_id}
++    end
++    -- The durable outbox can deliberately republish the exact task after Redis
++    -- task loss. Recreate the missing hash and queue receipt atomically while
++    -- preserving the original claim binding.
+ end
+ if task_type ~= "none" then
+     return {-3, ARGV[1]}
+diff --git a/tests/redis_test_double.py b/tests/redis_test_double.py
+index d79e8dbf516e4b77ac60a58b990eabf3e5112a25..7c27219485bce14de1f22a201c6741c7421e0e11 100644
+--- a/tests/redis_test_double.py
++++ b/tests/redis_test_double.py
+@@ -186,9 +186,15 @@ class RedisTestDouble:
+                 return [-2, existing]
+             existing_sha = existing[:separator]
+             existing_task_id = existing[separator + 1 :]
+-            if existing_sha == args[10]:
++            if existing_sha != args[10]:
++                return [-1, existing_task_id]
++            if existing_task_id != args[0]:
+                 return [0, existing_task_id]
+-            return [-1, existing_task_id]
++            task_type = self._key_type(task_key)
++            if task_type == "hash":
++                return [0, existing_task_id]
++            if task_type != "none":
++                return [-4, existing_task_id]
+         if self._key_type(task_key) != "none":
+             return [-3, args[0]]
+         now = str(self._now_ms())
+diff --git a/tests/test_admin_panel.py b/tests/test_admin_panel.py
+index abbd2f09d8b9cdc31c8e0e3d21e78d9d842a587c..87446cd42ee2bafea6f2f64f4a88c04f7cf9b413 100644
+--- a/tests/test_admin_panel.py
++++ b/tests/test_admin_panel.py
+@@ -21,6 +21,8 @@ def make_app(
+     upload_dir: Path,
+     ai_asset_manifest_path: Path | None = None,
+     db_path: Path | None = None,
++    *,
++    authorized: bool = True,
+ ) -> Flask:
+     app = Flask(
+         __name__,
+@@ -80,6 +82,7 @@ def make_app(
+                 current_menu_path=lambda: upload_dir / "ok.xlsx",
+                 parse_menu=parse_menu,
+                 upload_dir=upload_dir,
++                authorized=lambda: authorized,
+                 db_path=db_path or upload_dir / "admin-test.db",
+                 ai_asset_manifest_path=ai_asset_manifest_path,
+             )
+@@ -89,6 +92,18 @@ def make_app(
+
+
+ class AdminPanelTests(unittest.TestCase):
++    def test_admin_blueprint_denies_anonymous_page_and_api_access(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            client = make_app(Path(tmp), authorized=False).test_client()
++
++            page_response = client.get("/admin")
++            api_response = client.get("/api/admin/dashboard")
++
++        self.assertEqual(page_response.status_code, 403)
++        self.assertEqual(page_response.get_data(as_text=True), "Forbidden")
++        self.assertEqual(api_response.status_code, 403)
++        self.assertEqual(api_response.get_json()["code"], "admin_forbidden")
++
+     def assert_page_contract(self, data: dict[str, Any], resource: str, total: int, limit: int, offset: int) -> None:
+         self.assertTrue(data["ok"])
+         self.assertEqual(data["resource"], resource)
+diff --git a/tests/test_postgres_migrations.py b/tests/test_postgres_migrations.py
+index af7bc7486eb027db07c269e2cc3e13afaeec7ee8..2ba55966a5cd1c71520448d80f826026755116e0 100644
+--- a/tests/test_postgres_migrations.py
++++ b/tests/test_postgres_migrations.py
+@@ -1,11 +1,14 @@
+ from __future__ import annotations
+
+ import hashlib
++import json
++from contextlib import contextmanager
+ from pathlib import Path
+ from typing import Any
+
+ import pytest
+
++import shared.postgres_migrations as migration_module
+ from shared.postgres_migrations import (
+     MIGRATION_ADVISORY_LOCK_KEY,
+     MigrationRunResult,
+@@ -13,6 +16,7 @@ from shared.postgres_migrations import (
+     discover_migrations,
+     run_postgres_migrations,
+ )
++from shared.postgres_runtime import PostgresRuntimeError
+
+
+ class SqlProtocolCursor:
+@@ -454,3 +458,115 @@ def test_incomplete_or_nested_transaction_control_is_rejected(
+         discover_migrations(tmp_path)
+
+     assert nested.value.code == "migration_transaction_control_forbidden"
++
++def test_cli_main_runs_migrations_and_emits_redacted_summary(
++    monkeypatch: pytest.MonkeyPatch,
++    capsys: pytest.CaptureFixture[str],
++) -> None:
++    connection = object()
++
++    @contextmanager
++    def fake_connection():
++        yield connection
++
++    monkeypatch.setattr(
++        migration_module,
++        "postgres_connection",
++        fake_connection,
++    )
++    monkeypatch.setattr(
++        migration_module,
++        "run_postgres_migrations",
++        lambda value: MigrationRunResult(
++            discovered_versions=("001.sql", "002.sql"),
++            previously_applied_versions=("001.sql",),
++            applied_versions=("002.sql",),
++        )
++        if value is connection
++        else pytest.fail("unexpected connection"),
++    )
++
++    assert migration_module.main() == 0
++
++    captured = capsys.readouterr()
++    assert captured.err == ""
++    assert json.loads(captured.out) == {
++        "ok": True,
++        "discoveredVersions": ["001.sql", "002.sql"],
++        "previouslyAppliedVersions": ["001.sql"],
++        "appliedVersions": ["002.sql"],
++    }
++
++
++def test_cli_main_fails_closed_without_disclosing_database_url(
++    monkeypatch: pytest.MonkeyPatch,
++    capsys: pytest.CaptureFixture[str],
++) -> None:
++    secret_url = "postgresql://user:secret@example.invalid/database"
++
++    @contextmanager
++    def failing_connection():
++        raise PostgresRuntimeError(
++            "postgres_connection_failed",
++            cause_type="OperationalError",
++        )
++        yield  # pragma: no cover
++
++    monkeypatch.setenv("DATABASE_URL", secret_url)
++    monkeypatch.setattr(
++        migration_module,
++        "postgres_connection",
++        failing_connection,
++    )
++
++    assert migration_module.main() == 1
++
++    captured = capsys.readouterr()
++    assert captured.out == ""
++    assert json.loads(captured.err) == {
++        "ok": False,
++        "code": "postgres_connection_failed",
++        "causeType": "OperationalError",
++    }
++    assert secret_url not in captured.err
++
++
++def test_cli_main_reports_migration_version_without_sql_or_credentials(
++    monkeypatch: pytest.MonkeyPatch,
++    capsys: pytest.CaptureFixture[str],
++) -> None:
++    connection = object()
++
++    @contextmanager
++    def fake_connection():
++        yield connection
++
++    def fail_migration(value: object) -> MigrationRunResult:
++        assert value is connection
++        raise PostgresMigrationError(
++            "migration_execution_failed",
++            version="003_product_jobs.sql",
++            cause_type="ProgrammingError",
++        )
++
++    monkeypatch.setattr(
++        migration_module,
++        "postgres_connection",
++        fake_connection,
++    )
++    monkeypatch.setattr(
++        migration_module,
++        "run_postgres_migrations",
++        fail_migration,
++    )
++
++    assert migration_module.main() == 1
++
++    captured = capsys.readouterr()
++    assert captured.out == ""
++    assert json.loads(captured.err) == {
++        "ok": False,
++        "code": "migration_execution_failed",
++        "version": "003_product_jobs.sql",
++        "causeType": "ProgrammingError",
++    }
+diff --git a/tests/test_postgres_product_runtime_integration.py b/tests/test_postgres_product_runtime_integration.py
+index 47233f575eebc69ec2a48badf741e8a3a636035f..cab08cd571e62c3193ef843205d2e0fbdfa681c3 100644
+--- a/tests/test_postgres_product_runtime_integration.py
++++ b/tests/test_postgres_product_runtime_integration.py
+@@ -8,10 +8,6 @@ import pytest
+
+ import app as app_module
+ from shared.batch_contract import BatchContractError
+-from shared.product_generation_settlement import (
+-    GenerationCompletion,
+-    InvalidProductTask,
+-)
+ from shared.redis_queue import TaskNotFound
+
+
+@@ -162,81 +158,29 @@ def test_postgres_manifest_context_verifies_private_pointer(
+     }
+
+
+-def test_terminal_redis_task_completes_postgres_with_fence_and_refund(
++def test_status_route_reads_postgres_without_redis_or_web_settlement(
++    client: Any,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    applied: list[dict[str, Any]] = []
+-
+-    class FakeStore:
+-        def __init__(self, _connection: Any) -> None:
+-            pass
+-
+     monkeypatch.setattr(
+         app_module,
+-        "completion_from_redis_task",
+-        lambda _task: GenerationCompletion(
+-            job_id=JOB_ID,
+-            owner_user_id=USER_ID,
+-            request_sha256=REQUEST_SHA256,
+-            fence=7,
+-            terminal_status="succeeded",
+-            requested_count=3,
+-            completed_count=2,
+-            failed_count=1,
+-            refund_target_points=10,
+-            manifest_ref=(
+-                f"generated/manifests/{JOB_ID}/{REQUEST_SHA256}.json"
+-            ),
+-            manifest_sha256=MANIFEST_SHA256,
+-            error_message="",
+-        ),
+-    )
+-    monkeypatch.setattr(
+-        app_module,
+-        "postgres_connection",
+-        fake_postgres_connection,
+-    )
+-    monkeypatch.setattr(app_module, "ProductJobStore", FakeStore)
+-    monkeypatch.setattr(
+-        app_module,
+-        "apply_generation_completion",
+-        lambda _store, value, **kwargs: applied.append(
+-            {
+-                "completion": value,
+-                **kwargs,
+-            }
+-        ),
+-    )
+-
+-    app_module.settle_postgres_generation_task(
+-        {"task_id": JOB_ID},
+-        principal(),
++        "product_redis_queue",
++        lambda: pytest.fail("status must not read Redis in PostgreSQL mode"),
+     )
+-
+-    assert len(applied) == 1
+-    assert applied[0]["completion"].fence == 7
+-    assert applied[0]["completion"].refund_target_points == 10
+-    assert applied[0]["reconciler_id"] == "web-status-reconciler"
+-
+-
+-def test_invalid_terminal_task_is_mapped_to_batch_contract_error(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
+     monkeypatch.setattr(
+         app_module,
+-        "completion_from_redis_task",
+-        lambda _task: (_ for _ in ()).throw(
+-            InvalidProductTask("task.payload._productJobFence is required")
+-        ),
++        "postgres_generation_job_payload",
++        lambda _job_id, _principal: {
++            "jobId": JOB_ID,
++            "status": "running",
++            "cancelRequested": False,
++        },
+     )
+
+-    with pytest.raises(BatchContractError) as error:
+-        app_module.settle_postgres_generation_task(
+-            {"task_id": JOB_ID},
+-            principal(),
+-        )
++    response = client.get(f"/api/generation-jobs/{JOB_ID}")
+
+-    assert error.value.code == "generation_task_contract_mismatch"
++    assert response.status_code == 200
++    assert response.get_json()["status"] == "running"
+
+
+ def test_manifest_route_uses_postgres_and_never_sqlite(
+@@ -303,7 +247,7 @@ def test_asset_route_uses_postgres_and_never_sqlite(
+     assert response.data == b"png-bytes"
+
+
+-def test_cancel_route_updates_postgres_before_refund(
++def test_cancel_route_records_intent_without_web_settlement(
+     client: Any,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+@@ -315,55 +259,35 @@ def test_cancel_route_updates_postgres_before_refund(
+
+         def request_cancel(self, **kwargs: Any) -> SimpleNamespace:
+             calls.append(("cancel", kwargs))
+-            return SimpleNamespace(
+-                job={
+-                    "id": JOB_ID,
+-                    "status": "canceled",
+-                }
+-            )
++            return SimpleNamespace(job={"id": JOB_ID, "status": "canceled"})
+
+-    monkeypatch.setattr(app_module, "product_redis_queue", lambda: None)
+     monkeypatch.setattr(
+         app_module,
+-        "postgres_connection",
+-        fake_postgres_connection,
++        "postgres_owned_generation_detail",
++        lambda _job_id, _principal: SimpleNamespace(job={"id": JOB_ID}),
+     )
++    monkeypatch.setattr(app_module, "product_redis_queue", lambda: None)
++    monkeypatch.setattr(app_module, "postgres_connection", fake_postgres_connection)
+     monkeypatch.setattr(app_module, "ProductJobStore", FakeStore)
+-    monkeypatch.setattr(
+-        app_module,
+-        "postgres_apply_generation_settlement",
+-        lambda job_id, owner_user_id: calls.append(
+-            ("settle", (job_id, owner_user_id))
+-        ),
+-    )
+     monkeypatch.setattr(
+         app_module,
+         "postgres_generation_job_payload",
+-        lambda _job_id, _principal: {
+-            "jobId": JOB_ID,
+-            "status": "canceled",
+-        },
++        lambda _job_id, _principal: {"jobId": JOB_ID, "status": "canceled"},
+     )
+
+-    response = client.post(
+-        f"/api/generation-jobs/{JOB_ID}/cancel"
+-    )
++    response = client.post(f"/api/generation-jobs/{JOB_ID}/cancel")
+
+     assert response.status_code == 200
+     assert response.get_json()["status"] == "canceled"
+     assert calls == [
+         (
+             "cancel",
+-            {
+-                "job_id": JOB_ID,
+-                "owner_user_id": USER_ID,
+-            },
+-        ),
+-        ("settle", (JOB_ID, USER_ID)),
++            {"job_id": JOB_ID, "owner_user_id": USER_ID},
++        )
+     ]
+
+
+-def test_running_cancel_without_redis_task_fails_closed(
++def test_running_cancel_missing_redis_task_still_returns_durable_state(
+     client: Any,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+@@ -381,24 +305,28 @@ def test_running_cancel_without_redis_task_fails_closed(
+             )
+
+     class MissingQueue:
+-        def get(self, _job_id: str) -> dict[str, Any]:
++        def request_cancel(self, _job_id: str) -> dict[str, Any]:
+             raise TaskNotFound("missing")
+
+     monkeypatch.setattr(
+         app_module,
+-        "product_redis_queue",
+-        lambda: MissingQueue(),
++        "postgres_owned_generation_detail",
++        lambda _job_id, _principal: SimpleNamespace(job={"id": JOB_ID}),
+     )
++    monkeypatch.setattr(app_module, "product_redis_queue", lambda: MissingQueue())
++    monkeypatch.setattr(app_module, "postgres_connection", fake_postgres_connection)
++    monkeypatch.setattr(app_module, "ProductJobStore", FakeStore)
+     monkeypatch.setattr(
+         app_module,
+-        "postgres_connection",
+-        fake_postgres_connection,
++        "postgres_generation_job_payload",
++        lambda _job_id, _principal: {
++            "jobId": JOB_ID,
++            "status": "running",
++            "cancelRequested": True,
++        },
+     )
+-    monkeypatch.setattr(app_module, "ProductJobStore", FakeStore)
+
+-    response = client.post(
+-        f"/api/generation-jobs/{JOB_ID}/cancel"
+-    )
++    response = client.post(f"/api/generation-jobs/{JOB_ID}/cancel")
+
+-    assert response.status_code == 503
+-    assert response.get_json()["code"] == "generation_queue_unavailable"
++    assert response.status_code == 200
++    assert response.get_json()["cancelRequested"] is True
+diff --git a/tests/test_product_api_integration.py b/tests/test_product_api_integration.py
+index 8f57bfdc0f4b15bfbe7b852d83c5fd05c348b163..593eb1e2f37bffe06a8c17d4594d12e3c2e548dc 100644
+--- a/tests/test_product_api_integration.py
++++ b/tests/test_product_api_integration.py
+@@ -171,7 +171,7 @@ def _alipay_env() -> dict[str, str]:
+         format=serialization.PublicFormat.SubjectPublicKeyInfo,
+     ).decode("utf-8")
+     return {
+-        "APP_ENV": "staging",
++        "APP_ENV": "test",
+         "ENABLE_LOCAL_DEMO_BILLING": "false",
+         "PAYMENT_PROVIDER": "alipay",
+         "ALIPAY_APP_ID": "2021000000000000",
+@@ -1319,7 +1319,7 @@ def test_withdrawal_api_maps_service_errors_to_json(product_api: ProductApiFixtu
+ def test_fake_payment_order_is_available_in_local_demo(product_api: ProductApiFixture) -> None:
+     response = product_api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "local-demo-fake-pay"},
++        json={"packageId": "starter-500", "idempotencyKey": "local-demo-fake-pay"},
+     )
+     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders local demo")
+     order = _nested(payload, "order", fallback=payload)
+@@ -1344,7 +1344,7 @@ def test_fake_payment_order_blocked_when_demo_billing_disabled_without_explicit_
+
+     response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "provider": "fake"},
++        json={"packageId": "starter-500"},
+     )
+     payload = _json_for_status(response, 503, "POST /api/payments/orders fake provider disabled")
+
+@@ -1367,14 +1367,23 @@ def test_fake_payment_order_blocked_on_render_runtime_even_if_demo_billing_enabl
+         ALLOW_FAKE_PAYMENT_PROVIDER="true",
+     )
+
++    app_module = importlib.import_module("app")
++    monkeypatch.setattr(
++        app_module,
++        "customer_request_principal",
++        lambda: ({"userId": "render-user", "localDemo": False}, None),
++    )
+     response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "provider": "fake"},
++        json={"packageId": "starter-500"},
++    )
++    payload = _json_for_status(
++        response,
++        503,
++        "POST /api/payments/orders PostgreSQL boundary",
+     )
+-    payload = _json_for_status(response, 503, "POST /api/payments/orders fake provider render")
+
+-    assert payload["code"] == "payment_provider_unavailable"
+-    assert payload["provider"] == "fake"
++    assert payload["code"] == "payment_postgres_store_required"
+
+
+ def test_real_payment_order_fails_closed_until_adapter_exists(
+@@ -1398,7 +1407,7 @@ def test_real_payment_order_fails_closed_until_adapter_exists(
+
+     response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "wechat-adapter-missing"},
++        json={"packageId": "starter-500", "idempotencyKey": "wechat-adapter-missing"},
+     )
+     payload = _json_for_status(response, 503, "POST /api/payments/orders wechat adapter missing")
+
+@@ -1426,7 +1435,7 @@ def test_alipay_order_returns_signed_checkout_and_persists_pending_order(
+
+     response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "alipay-page-pay"},
++        json={"packageId": "starter-500", "idempotencyKey": "alipay-page-pay"},
+     )
+     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders alipay")
+
+@@ -1458,7 +1467,7 @@ def test_alipay_notify_marks_order_paid_and_credits_points(
+     api = _fresh_product_api(tmp_path, monkeypatch, **env)
+     create_response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "alipay-notify"},
++        json={"packageId": "starter-500", "idempotencyKey": "alipay-notify"},
+     )
+     create_payload = _json_for_status(create_response, (200, 201), "POST /api/payments/orders alipay")
+     provider_order_id = create_payload["order"]["providerOrderId"]
+@@ -1644,7 +1653,7 @@ def test_explicit_fake_payment_config_allows_order_when_demo_billing_disabled(
+
+     response = api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": f"explicit-{next(iter(explicit_env)).lower()}"},
++        json={"packageId": "starter-500", "idempotencyKey": f"explicit-{next(iter(explicit_env)).lower()}"},
+     )
+     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders explicit fake config")
+     order = _nested(payload, "order", fallback=payload)
+@@ -1660,7 +1669,7 @@ def test_fake_payment_callback_credits_billing_once(product_api: ProductApiFixtu
+
+     create_response = product_api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "pay-49-once"},
++        json={"packageId": "starter-500", "idempotencyKey": "pay-49-once"},
+         headers=_auth_header(token),
+     )
+     create_payload = _json_for_status(create_response, (200, 201), "POST /api/payments/orders")
+@@ -1675,7 +1684,7 @@ def test_fake_payment_callback_credits_billing_once(product_api: ProductApiFixtu
+
+     retry_response = product_api.client.post(
+         "/api/payments/orders",
+-        json={"cash": 49, "idempotencyKey": "pay-49-once"},
++        json={"packageId": "starter-500", "idempotencyKey": "pay-49-once"},
+         headers=_auth_header(token),
+     )
+     retry_payload = _json_for_status(retry_response, (200, 201), "POST /api/payments/orders idempotent retry")
+@@ -1736,11 +1745,15 @@ def test_signed_object_download_requires_token(product_api: ProductApiFixture) -
+     download_response = product_api.client.get(
+         f"/objects/{object_key}",
+         query_string={"token": sign_payload["token"]},
++        headers=_auth_header(token),
+     )
+     _assert_status(download_response, 200, f"GET /objects/{object_key}?token=...")
+     assert download_response.data == b"hello product object"
+
+-    missing_token_response = product_api.client.get(f"/objects/{object_key}")
++    missing_token_response = product_api.client.get(
++        f"/objects/{object_key}",
++        headers=_auth_header(token),
++    )
+     _assert_status(missing_token_response, (401, 403), f"GET /objects/{object_key} without token")
+
+     conn = storage_db.get_conn(product_api.storage_db_path)
+diff --git a/tests/test_product_generation_settlement.py b/tests/test_product_generation_settlement.py
+index 816f283529f815ed73a68079c6284a767847db43..ed383d6e92a7d9236f4dcbdaebb915289b4d254b 100644
+--- a/tests/test_product_generation_settlement.py
++++ b/tests/test_product_generation_settlement.py
+@@ -7,7 +7,7 @@ from typing import Any
+
+ import pytest
+
+-from shared.batch_contract import freeze_menu_batch_contract
++from shared.batch_contract import canonical_json, freeze_menu_batch_contract
+ from shared.product_generation_settlement import (
+     InvalidProductTask,
+     ProductManifestIntegrityError,
+@@ -15,6 +15,12 @@ from shared.product_generation_settlement import (
+     completion_from_redis_task,
+     settle_terminal_job,
+ )
++from shared.refinement_contract import freeze_revision_batch_contract
++
++
++MENU_BYTES = b"menu-workbook-bytes"
++BACKGROUND_BYTES = b"selected-background-bytes"
++SOURCE_BYTES = b"source-delivery-image"
+
+
+ class MemoryStorage:
+@@ -25,21 +31,30 @@ class MemoryStorage:
+         return self.objects[object_key]
+
+
+-def frozen_contract() -> dict[str, Any]:
++def sha256(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def frozen_contract(storage: MemoryStorage | None = None) -> dict[str, Any]:
++    menu_key = "menus/user-settle-1/menu.xlsx"
++    background_key = "backgrounds/menu-settle-1/style-2.png"
++    if storage is not None:
++        storage.objects[menu_key] = MENU_BYTES
++        storage.objects[background_key] = BACKGROUND_BYTES
+     return freeze_menu_batch_contract(
+         job_id="job-settle-1",
+         user_id="user-settle-1",
+         menu_upload_id="menu-settle-1",
+         menu={
+-            "objectKey": "menus/user-settle-1/menu.xlsx",
+-            "sha256": "1" * 64,
++            "objectKey": menu_key,
++            "sha256": sha256(MENU_BYTES),
+             "parserVersion": 1,
+         },
+         selected_background={
+             "assetId": "bg-settle-1",
+             "styleId": "style-2",
+-            "sha256": "2" * 64,
+-            "objectKey": "backgrounds/menu-settle-1/style-2.png",
++            "sha256": sha256(BACKGROUND_BYTES),
++            "objectKey": background_key,
+             "width": 1024,
+             "height": 768,
+         },
+@@ -59,23 +74,62 @@ def completed_task(
+     succeeded: int = 2,
+ ) -> dict[str, Any]:
+     digest = contract["idempotency"]["requestSha256"]
+-    object_key = (
+-        f"generated/manifests/{contract['jobId']}/{digest}.json"
+-    )
+-    raw = json.dumps(
+-        {
+-            "generationBatch": {
+-                "jobId": contract["jobId"],
+-                "requestSha256": digest,
+-            },
+-            "generation": {
+-                "succeeded": succeeded,
++    object_key = f"generated/manifests/{contract['jobId']}/{digest}.json"
++    delivery_assets: list[dict[str, Any]] = []
++    results: list[dict[str, Any]] = []
++    for row in range(1, succeeded + 1):
++        asset_bytes = f"delivery-asset-{row}".encode("utf-8")
++        asset_digest = sha256(asset_bytes)
++        asset_key = (
++            f"generated/delivery/{contract['jobId']}/{digest}/"
++            f"{row:04d}_{asset_digest}.png"
++        )
++        asset_id = "asset_" + hashlib.sha256(
++            f"{contract['jobId']}|{digest}|{row}|{asset_digest}".encode("utf-8")
++        ).hexdigest()[:32]
++        storage.objects[asset_key] = asset_bytes
++        delivery_assets.append(
++            {
++                "assetId": asset_id,
++                "row": row,
++                "objectKey": asset_key,
++                "sha256": asset_digest,
++                "size": len(asset_bytes),
++                "mimeType": "image/png",
++            }
++        )
++        results.append(
++            {
++                "row": row,
++                "candidates": [{"deliveryAssetId": asset_id}],
++            }
++        )
++    document = {
++        "_transactionEnvelope": {
++            "schemaVersion": 1,
++            "taskType": "product_batch",
++            "jobType": contract["jobType"],
++            "jobId": contract["jobId"],
++            "ownerUserId": contract["userId"],
++            "requestSha256": digest,
++            "menu": {
++                "uploadId": contract["menuUploadId"],
++                **contract["menu"],
+             },
+-            "results": [],
++            "selectedBackground": dict(contract["selectedBackground"]),
++        },
++        "generationBatch": {
++            "jobId": contract["jobId"],
++            "menuUploadId": contract["menuUploadId"],
++            "requestSha256": digest,
++            "pricingVersion": contract["billing"]["pricingVersion"],
++            "chargedPoints": contract["billing"]["totalPoints"],
+         },
+-        separators=(",", ":"),
+-        sort_keys=True,
+-    ).encode("utf-8")
++        "generation": {"succeeded": succeeded},
++        "deliveryAssets": delivery_assets,
++        "results": results,
++    }
++    raw = canonical_json(document).encode("utf-8")
+     storage.objects[object_key] = raw
+     return {
+         "task_id": contract["jobId"],
+@@ -88,11 +142,9 @@ def completed_task(
+             "_productJobFence": 4,
+         },
+         "result": {
+-            "image_url": (
+-                f"/api/generation-jobs/{contract['jobId']}/manifest"
+-            ),
++            "image_url": f"/api/generation-jobs/{contract['jobId']}/manifest",
+             "manifest_object_key": object_key,
+-            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
++            "manifest_sha256": sha256(raw),
+             "manifest_size": len(raw),
+             "request_sha256": digest,
+             "job_id": contract["jobId"],
+@@ -101,9 +153,97 @@ def completed_task(
+     }
+
+
++def frozen_revision_contract(storage: MemoryStorage) -> dict[str, Any]:
++    source_key = "generated/delivery/parent-1/source.png"
++    background_key = "backgrounds/menu-settle-1/style-2.png"
++    storage.objects[source_key] = SOURCE_BYTES
++    storage.objects[background_key] = BACKGROUND_BYTES
++    return freeze_revision_batch_contract(
++        job_id="revision-settle-1",
++        parent_generation_job_id="parent-1",
++        user_id="user-settle-1",
++        source_delivery_asset={
++            "assetId": "asset-source-1",
++            "objectKey": source_key,
++            "sha256": sha256(SOURCE_BYTES),
++            "rowNumber": 1,
++            "dishName": "dish one",
++        },
++        selected_background={
++            "assetId": "bg-settle-1",
++            "objectKey": background_key,
++            "sha256": sha256(BACKGROUND_BYTES),
++        },
++        quality="standard",
++        mode="refine",
++        refine_prompt="make it brighter",
++        idempotency_key="idem-revision-settle-1",
++        created_at="2026-07-29T12:00:00Z",
++    )
++
++
++def completed_revision_task(
++    contract: dict[str, Any],
++    storage: MemoryStorage,
++) -> dict[str, Any]:
++    digest = contract["idempotency"]["requestSha256"]
++    prefix = f"generated/revisions/{contract['jobId']}/{digest}"
++    asset_key = f"{prefix}/revision.png"
++    manifest_key = f"{prefix}/manifest.json"
++    asset_bytes = b"revised-image-bytes"
++    storage.objects[asset_key] = asset_bytes
++    document = {
++        "schemaVersion": 1,
++        "taskType": "product_revision",
++        "jobType": contract["jobType"],
++        "jobId": contract["jobId"],
++        "parentGenerationJobId": contract["parentGenerationJobId"],
++        "requestSha256": digest,
++        "mode": contract["mode"],
++        "sourceDeliveryAsset": {
++            "assetId": contract["sourceDeliveryAsset"]["assetId"],
++            "objectKey": contract["sourceDeliveryAsset"]["objectKey"],
++            "sha256": contract["sourceDeliveryAsset"]["sha256"],
++        },
++        "selectedBackground": {
++            "assetId": contract["selectedBackground"]["assetId"],
++            "objectKey": contract["selectedBackground"]["objectKey"],
++            "sha256": contract["selectedBackground"]["sha256"],
++        },
++        "imageAsset": {
++            "assetId": f"revision_{digest[:32]}",
++            "objectKey": asset_key,
++            "sha256": sha256(asset_bytes),
++            "size": len(asset_bytes),
++            "mimeType": "image/png",
++        },
++    }
++    raw = canonical_json(document).encode("utf-8")
++    storage.objects[manifest_key] = raw
++    return {
++        "task_id": contract["jobId"],
++        "owner_user_id": contract["userId"],
++        "request_sha256": digest,
++        "status": "done",
++        "payload": {
++            "taskType": "product_revision",
++            "revisionContract": contract,
++            "_productJobFence": 8,
++        },
++        "result": {
++            "manifest_object_key": manifest_key,
++            "manifest_sha256": sha256(raw),
++            "manifest_size": len(raw),
++            "request_sha256": digest,
++            "job_id": contract["jobId"],
++            "task_type": "product_revision",
++        },
++    }
++
++
+ def test_completion_verifies_manifest_and_partial_refund() -> None:
+-    contract = frozen_contract()
+     storage = MemoryStorage()
++    contract = frozen_contract(storage)
+
+     completion = completion_from_redis_task(
+         completed_task(contract, storage, succeeded=2),
+@@ -111,6 +251,7 @@ def test_completion_verifies_manifest_and_partial_refund() -> None:
+     )
+
+     assert completion is not None
++    assert completion.job_type == "menu_batch_generation"
+     assert completion.terminal_status == "succeeded"
+     assert completion.fence == 4
+     assert completion.completed_count == 2
+@@ -120,8 +261,8 @@ def test_completion_verifies_manifest_and_partial_refund() -> None:
+
+
+ def test_zero_delivery_refunds_entire_frozen_charge() -> None:
+-    contract = frozen_contract()
+     storage = MemoryStorage()
++    contract = frozen_contract(storage)
+
+     completion = completion_from_redis_task(
+         completed_task(contract, storage, succeeded=0),
+@@ -133,8 +274,8 @@ def test_zero_delivery_refunds_entire_frozen_charge() -> None:
+
+
+ def test_manifest_byte_tampering_fails_closed() -> None:
+-    contract = frozen_contract()
+     storage = MemoryStorage()
++    contract = frozen_contract(storage)
+     task = completed_task(contract, storage)
+     storage.objects[task["result"]["manifest_object_key"]] += b" "
+
+@@ -142,9 +283,35 @@ def test_manifest_byte_tampering_fails_closed() -> None:
+         completion_from_redis_task(task, object_store=storage)
+
+
++def test_delivery_asset_byte_tampering_fails_closed() -> None:
++    storage = MemoryStorage()
++    contract = frozen_contract(storage)
++    task = completed_task(contract, storage)
++    manifest = json.loads(storage.objects[task["result"]["manifest_object_key"]])
++    storage.objects[manifest["deliveryAssets"][0]["objectKey"]] += b"tampered"
++
++    with pytest.raises(ProductManifestIntegrityError):
++        completion_from_redis_task(task, object_store=storage)
++
++
++def test_transaction_envelope_owner_tampering_fails_closed() -> None:
++    storage = MemoryStorage()
++    contract = frozen_contract(storage)
++    task = completed_task(contract, storage)
++    manifest_key = task["result"]["manifest_object_key"]
++    document = json.loads(storage.objects[manifest_key])
++    document["_transactionEnvelope"]["ownerUserId"] = "another-user"
++    raw = canonical_json(document).encode("utf-8")
++    storage.objects[manifest_key] = raw
++    task["result"]["manifest_sha256"] = sha256(raw)
++
++    with pytest.raises(ProductManifestIntegrityError):
++        completion_from_redis_task(task, object_store=storage)
++
++
+ def test_contract_digest_tampering_fails_before_settlement() -> None:
+-    contract = frozen_contract()
+     storage = MemoryStorage()
++    contract = frozen_contract(storage)
+     task = completed_task(contract, storage)
+     task["payload"]["batchContract"]["billing"]["totalPoints"] += 1000
+
+@@ -152,6 +319,33 @@ def test_contract_digest_tampering_fails_before_settlement() -> None:
+         completion_from_redis_task(task, object_store=storage)
+
+
++def test_revision_completion_verifies_manifest_and_all_object_bytes() -> None:
++    storage = MemoryStorage()
++    contract = frozen_revision_contract(storage)
++
++    completion = completion_from_redis_task(
++        completed_revision_task(contract, storage),
++        object_store=storage,
++    )
++
++    assert completion is not None
++    assert completion.job_type == "delivery_asset_revision_batch"
++    assert completion.completed_count == 1
++    assert completion.failed_count == 0
++    assert completion.refund_target_points == 0
++    assert completion.fence == 8
++
++
++def test_revision_source_byte_tampering_fails_closed() -> None:
++    storage = MemoryStorage()
++    contract = frozen_revision_contract(storage)
++    task = completed_revision_task(contract, storage)
++    storage.objects[contract["sourceDeliveryAsset"]["objectKey"]] += b"tampered"
++
++    with pytest.raises(ProductManifestIntegrityError):
++        completion_from_redis_task(task, object_store=storage)
++
++
+ def test_failed_and_canceled_tasks_use_full_refund() -> None:
+     contract = frozen_contract()
+     digest = contract["idempotency"]["requestSha256"]
+@@ -202,8 +396,8 @@ def test_nonterminal_task_has_no_side_effect() -> None:
+
+
+ def test_apply_completion_uses_fence_then_claims_and_refunds() -> None:
+-    contract = frozen_contract()
+     storage = MemoryStorage()
++    contract = frozen_contract(storage)
+     completion = completion_from_redis_task(
+         completed_task(contract, storage),
+         object_store=storage,
+@@ -223,9 +417,8 @@ def test_apply_completion_uses_fence_then_claims_and_refunds() -> None:
+                 job={
+                     "id": contract["jobId"],
+                     "status": self.status,
+-                    "request_sha256": contract["idempotency"][
+-                        "requestSha256"
+-                    ],
++                    "request_payload": contract,
++                    "request_sha256": contract["idempotency"]["requestSha256"],
+                 },
+                 settlement={
+                     "status": self.settlement_status,
+@@ -281,6 +474,39 @@ def test_apply_completion_uses_fence_then_claims_and_refunds() -> None:
+     assert result["account"]["balance_points"] == 80
+
+
++def test_postgres_contract_mismatch_blocks_completion() -> None:
++    storage = MemoryStorage()
++    contract = frozen_contract(storage)
++    completion = completion_from_redis_task(
++        completed_task(contract, storage),
++        object_store=storage,
++    )
++    assert completion is not None
++    wrong_contract = json.loads(json.dumps(contract))
++    wrong_contract["userId"] = "other-user"
++
++    class WrongStore:
++        def get_owned_job_detail(self, **_kwargs: Any) -> SimpleNamespace:
++            return SimpleNamespace(
++                job={
++                    "status": "running",
++                    "request_payload": wrong_contract,
++                    "request_sha256": contract["idempotency"]["requestSha256"],
++                },
++                settlement={"status": "pending", "version": 0},
++            )
++
++        def complete_with_fence(self, **_kwargs: Any) -> None:
++            pytest.fail("mismatched PostgreSQL contract must not be completed")
++
++    with pytest.raises(InvalidProductTask):
++        apply_generation_completion(
++            WrongStore(),
++            completion,
++            reconciler_id="reconciler-1",
++        )
++
++
+ def test_applied_settlement_is_idempotent_without_reclaim() -> None:
+     class AppliedStore:
+         def get_owned_job_detail(self, **_kwargs: Any) -> SimpleNamespace:
+diff --git a/tests/test_product_job_store.py b/tests/test_product_job_store.py
+index 6590fcc6653348b014067d0831a478e8457b077f..aee136f94feae3cb6704059bcb5e19e4478f0589 100644
+--- a/tests/test_product_job_store.py
++++ b/tests/test_product_job_store.py
+@@ -9,6 +9,7 @@ from typing import Any
+ from shared.product_job_store import (
+     CancellationRequested,
+     FenceMismatch,
++    FreeReworkQuotaExhausted,
+     InsufficientPointBalance,
+     InvalidProductJobInput,
+     JobStateConflict,
+@@ -599,6 +600,58 @@ class ProductJobStoreTests(unittest.TestCase):
+         self.assertNotIn("browserPoints", outbox_payload)
+         self.assertNotIn("request", outbox_payload)
+
++    def test_free_rework_quota_is_locked_and_bounded_inside_creation_transaction(
++        self,
++    ) -> None:
++        request_payload = {
++            "jobType": "delivery_asset_revision_batch",
++            "parentGenerationJobId": "parent-job-1",
++            "mode": "rework",
++            "billing": {"freeReworkQuotaVerified": True},
++        }
++        exhausted = ScriptedConnection(
++            create_point_account=[[]],
++            select_point_account_for_update=[[account_row()]],
++            select_job_by_request_for_update=[[]],
++            lock_free_rework_quota=[[{}]],
++            count_free_rework_quota=[[{"used": 3}]],
++        )
++
++        with self.assertRaises(FreeReworkQuotaExhausted):
++            ProductJobStore(exhausted).create_or_get_job_with_debit(
++                owner_user_id="user-1",
++                idempotency_key="idem-free-1",
++                request_sha256=DIGEST_A,
++                request_payload=request_payload,
++                menu_upload_id="parent-job-1",
++                menu_object_ref="private/source/source.png",
++                menu_object_sha256=DIGEST_B,
++                selected_background_ref="private/background/bg.png",
++                selected_background_sha256=DIGEST_C,
++                requested_count=1,
++                debit_order_id="revision-free-1-debit",
++                debit_points=0,
++                refund_order_id="revision-free-1-refund",
++                job_id="revision-free-1",
++                outbox_id="outbox-revision-free-1",
++                free_rework_parent_job_id="parent-job-1",
++                free_rework_quota=3,
++            )
++
++        self.assertEqual(exhausted.rollbacks, 1)
++        self.assertEqual(
++            [call[0] for call in exhausted.calls],
++            [
++                "create_point_account",
++                "select_point_account_for_update",
++                "select_job_by_request_for_update",
++                "lock_free_rework_quota",
++                "count_free_rework_quota",
++            ],
++        )
++        self.assertIn("pg_advisory_xact_lock", exhausted.calls[3][1])
++        self.assertNotIn("create_job", [call[0] for call in exhausted.calls])
++
+     def test_atomic_job_replay_does_not_debit_again(self) -> None:
+         connection = ScriptedConnection(
+             create_point_account=[[]],
+diff --git a/tests/test_product_settlement_reconciler.py b/tests/test_product_settlement_reconciler.py
+index e5e6348e58f84c067717a069f29e567a1a8110ed..c6db5c7327891ba3f728edfec6df29da620a7067 100644
+--- a/tests/test_product_settlement_reconciler.py
++++ b/tests/test_product_settlement_reconciler.py
+@@ -35,6 +35,7 @@ def completion() -> GenerationCompletion:
+         job_id="job-1",
+         owner_user_id="user-1",
+         request_sha256=DIGEST,
++        job_type="menu_batch_generation",
+         fence=3,
+         terminal_status="succeeded",
+         requested_count=3,
+diff --git a/tests/test_redis_queue_reliability.py b/tests/test_redis_queue_reliability.py
+index 53a24d92003db702e8e9fae204dcf3eb31a43152..5592aa395dc56576ae40bb375969349987a641ef 100644
+--- a/tests/test_redis_queue_reliability.py
++++ b/tests/test_redis_queue_reliability.py
+@@ -201,9 +201,12 @@ class AtomicFakeRedis:
+                     return [-2, existing]
+                 existing_sha = existing[:separator]
+                 existing_task_id = existing[separator + 1 :]
+-                if existing_sha == request_sha256:
++                if existing_sha != request_sha256:
++                    return [-1, existing_task_id]
++                if existing_task_id != task_id:
++                    return [0, existing_task_id]
++                if task_key in self.hashes:
+                     return [0, existing_task_id]
+-                return [-1, existing_task_id]
+             if task_key in self.hashes:
+                 return [-3, task_id]
+             fields = (
+@@ -259,6 +262,35 @@ def test_idempotent_enqueue_reuses_the_original_task() -> None:
+     assert len(task_queue.redis.lists[task_queue.config.queue_key]) == 1
+
+
++
++def test_idempotent_republish_recreates_task_after_hash_loss() -> None:
++    task_queue = queue()
++    digest = "d" * 64
++    task_id = "job-republish"
++    original = task_queue.enqueue_idempotent(
++        {"batch": "frozen"},
++        user_id="user-1",
++        idempotency_key="republish-key",
++        request_sha256=digest,
++        task_id=task_id,
++    )
++    assert original["task_id"] == task_id
++
++    del task_queue.redis.hashes[task_queue.config.task_key(task_id)]
++
++    recreated = task_queue.enqueue_idempotent(
++        {"batch": "frozen"},
++        user_id="user-1",
++        idempotency_key="republish-key",
++        request_sha256=digest,
++        task_id=task_id,
++    )
++
++    assert recreated["task_id"] == task_id
++    assert recreated["request_sha256"] == digest
++    assert len(task_queue.redis.lists[task_queue.config.queue_key]) == 2
++
++
+ def test_idempotency_key_conflict_fails_closed() -> None:
+     task_queue = queue()
+     original = task_queue.enqueue_idempotent(
+diff --git a/tests/test_refinement_api_integration.py b/tests/test_refinement_api_integration.py
+index 3671f8824d0bd9a5be336822c4d624a12bdd190c..172831c12121bc71f06cc3295eed02cff0fb3ced 100644
+--- a/tests/test_refinement_api_integration.py
++++ b/tests/test_refinement_api_integration.py
+@@ -105,6 +105,44 @@ def _existing_contract(*, mode: str = "rework", prompt: str | None = None) -> di
+     )
+
+
++
++
++def test_production_refinement_routes_to_postgres_transaction_without_redis_publish() -> None:
++    response_payload = {"jobId": "revision-postgres-1", "status": "queued"}
++    with (
++        mock.patch.object(
++            app_module,
++            "generation_request_principal",
++            return_value=_principal(),
++        ),
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=True,
++        ),
++        mock.patch.object(
++            app_module,
++            "submit_postgres_image_refinement",
++            return_value=app_module.jsonify(response_payload),
++        ) as submit,
++        mock.patch.object(
++            app_module,
++            "persisted_revision_record",
++        ) as sqlite_lookup,
++        mock.patch.object(app_module, "product_redis_queue") as redis_queue,
++    ):
++        response = app_module.app.test_client().post(
++            "/api/image-refinements",
++            json=_post_payload(),
++        )
++
++    assert response.status_code == 200
++    assert response.get_json() == response_payload
++    submit.assert_called_once()
++    sqlite_lookup.assert_not_called()
++    redis_queue.assert_not_called()
++
++
+ def test_revision_create_fails_before_debit_when_provider_is_not_ready() -> None:
+     with (
+         mock.patch.object(
+diff --git a/tests/test_render_blueprint.py b/tests/test_render_blueprint.py
+index 8627f8f856399f8a316480a29d0c1ad4b38ed10b..81484a126e90338784ca35af21bdf74f0c2efc93 100644
+--- a/tests/test_render_blueprint.py
++++ b/tests/test_render_blueprint.py
+@@ -54,6 +54,15 @@ def test_blueprint_parses_and_preserves_customer_web_entrypoint() -> None:
+     assert customer["startCommand"].startswith("gunicorn app:app ")
+     assert "--chdir api-server" not in customer["startCommand"]
+     assert customer["healthCheckPath"] == "/"
++    assert customer["preDeployCommand"] == (
++        "python -m shared.postgres_migrations"
++    )
++
++    migration_source = (
++        ROOT / "shared/postgres_migrations.py"
++    ).read_text(encoding="utf-8")
++    assert 'if __name__ == "__main__":' in migration_source
++    assert "raise SystemExit(main())" in migration_source
+
+     assert (ROOT / "app.py").is_file()
+     assert "app = Flask(__name__)" in (ROOT / "app.py").read_text(
+diff --git a/tests/test_transaction_boundary_security.py b/tests/test_transaction_boundary_security.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..124b0ead3a8f6f35ed6152add52d63ec9a191245
+--- /dev/null
++++ b/tests/test_transaction_boundary_security.py
+@@ -0,0 +1,176 @@
++from __future__ import annotations
++
++from unittest import mock
++
++import pytest
++
++import app as app_module
++
++
++def _principal() -> tuple[dict[str, object], None]:
++    return ({"userId": "customer-1", "localDemo": False}, None)
++
++
++def test_session_token_query_parameter_is_not_an_authentication_source() -> None:
++    with app_module.app.test_request_context("/?sessionToken=leaked-token"):
++        assert app_module.session_token_from_request() == ""
++
++
++def test_live_runtime_disables_all_local_demo_identity_and_write_paths() -> None:
++    with (
++        mock.patch.dict(
++            app_module.os.environ,
++            {
++                "APP_ENV": "production",
++                "ENABLE_LOCAL_DEMO_AUTH": "true",
++                "ENABLE_LOCAL_DEMO_BILLING": "true",
++                "ENABLE_LOCAL_DEMO_GENERATION": "true",
++            },
++            clear=False,
++        ),
++        app_module.app.test_request_context(
++            "/",
++            environ_base={"REMOTE_ADDR": "127.0.0.1"},
++        ),
++    ):
++        assert app_module.local_demo_auth_allowed() is False
++        assert app_module.local_demo_billing_allowed("default") is False
++        assert app_module.local_demo_generation_allowed() is False
++
++
++def test_payment_order_rejects_browser_authoritative_owner_amount_and_points() -> None:
++    with (
++        mock.patch.object(
++            app_module,
++            "customer_request_principal",
++            return_value=_principal(),
++        ),
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=False,
++        ),
++        mock.patch.object(app_module, "product_db_conn") as product_db_conn,
++    ):
++        response = app_module.app.test_client().post(
++            "/api/payments/orders",
++            json={
++                "packageId": "starter-500",
++                "userId": "victim",
++                "amountCents": 1,
++                "points": 999999,
++            },
++        )
++
++    assert response.status_code == 400
++    product_db_conn.assert_not_called()
++
++
++def test_live_payment_order_fails_closed_before_sqlite_access() -> None:
++    with (
++        mock.patch.object(
++            app_module,
++            "customer_request_principal",
++            return_value=_principal(),
++        ),
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=True,
++        ),
++        mock.patch.object(app_module, "product_db_conn") as product_db_conn,
++    ):
++        response = app_module.app.test_client().post(
++            "/api/payments/orders",
++            json={"packageId": "starter-500"},
++        )
++
++    assert response.status_code == 503
++    assert response.get_json()["code"] == "payment_postgres_store_required"
++    product_db_conn.assert_not_called()
++
++
++def test_live_customer_cannot_mint_arbitrary_object_key_token() -> None:
++    with (
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=True,
++        ),
++        mock.patch.object(
++            app_module,
++            "configured_request_token",
++            return_value=False,
++        ),
++        mock.patch.object(
++            app_module,
++            "customer_request_principal",
++            return_value=_principal(),
++        ),
++        mock.patch.object(
++            app_module.object_storage_service,
++            "create_signed_access",
++        ) as create_access,
++    ):
++        response = app_module.app.test_client().post(
++            "/api/objects/sign",
++            json={"objectKey": "generated/other-user/private.png"},
++        )
++
++    assert response.status_code == 403
++    assert response.get_json()["code"] == "object_write_forbidden"
++    create_access.assert_not_called()
++
++
++@pytest.mark.parametrize(
++    ("path", "expected_status"),
++    (("/api/debit", 403), ("/api/generate-final", 409)),
++)
++def test_live_legacy_transaction_bypasses_are_disabled(
++    path: str,
++    expected_status: int,
++) -> None:
++    with (
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=True,
++        ),
++        mock.patch.object(
++            app_module,
++            "customer_request_principal",
++            return_value=_principal(),
++        ),
++        mock.patch.object(
++            app_module,
++            "billing_write_authorized",
++            return_value=False,
++        ),
++    ):
++        response = app_module.app.test_client().post(path, json={})
++
++    assert response.status_code == expected_status
++    assert response.get_json()["code"] == "product_transaction_required"
++
++
++def test_live_export_never_falls_back_to_local_download() -> None:
++    with (
++        mock.patch.object(
++            app_module,
++            "postgres_product_runtime_enabled",
++            return_value=True,
++        ),
++        mock.patch.object(
++            app_module,
++            "object_access_signing_secret",
++            return_value="",
++        ),
++    ):
++        with pytest.raises(RuntimeError, match="object signing secret"):
++            app_module.object_storage_export_payload(
++                {"download": "/download/export.zip"},
++                scope="all",
++                platforms=["meituan"],
++                user_id="customer-1",
++                generation_job_id="job-1",
++            )

@@ -45,10 +45,30 @@ class MenuParserTests(unittest.TestCase):
         self.assertEqual(menu["store"], "测试店")
         self.assertEqual(menu["count"], 3)
         self.assertEqual(menu["kindCounts"], {"single": 1, "combo": 1, "snack": 1, "total": 3})
+        self.assertEqual(menu["taxonomyVersion"], "2026-07-30.v2")
+        self.assertEqual(sum(menu["taxonomyCounts"].values()), menu["count"])
+        self.assertEqual(
+            menu["taxonomyCounts"],
+            {"bottled_drinks": 1, "combo": 1, "topped_rice": 1},
+        )
         self.assertEqual(menu["sheets"][0]["sheet"], "调研结果")
         self.assertEqual(menu["sheets"][0]["headerRow"], 3)
         for item in menu["items"]:
-            self.assertGreaterEqual(item.keys(), {"row", "category", "name", "price", "kind", "norm", "components"})
+            self.assertGreaterEqual(
+                item.keys(),
+                {
+                    "row",
+                    "category",
+                    "name",
+                    "price",
+                    "kind",
+                    "norm",
+                    "taxonomy",
+                    "taxonomyLabel",
+                    "taxonomyVersion",
+                    "components",
+                },
+            )
 
     def test_parse_prefers_menu_sheet_over_noise_and_cost_sheets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +121,8 @@ class MenuParserTests(unittest.TestCase):
         self.assertEqual(audit["parsed"], 2)
         self.assertEqual(audit["failed"], 0)
         self.assertEqual(audit["totalItems"], 2)
+        self.assertTrue(all(menu["taxonomyVersion"] == "2026-07-30.v2" for menu in audit["menus"]))
+        self.assertTrue(all(sum(menu["taxonomyCounts"].values()) == menu["count"] for menu in audit["menus"]))
 
 
 if __name__ == "__main__":

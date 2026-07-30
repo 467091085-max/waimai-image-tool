@@ -16,10 +16,11 @@ POINTS_PER_YUAN: Final = 10
 CENTS_PER_YUAN: Final = 100
 MAX_AGENT_COMMISSION_DEPTH: Final = 1
 MAX_CONSUMER_REFERRAL_DEPTH: Final = 1
+GROWTH_RULE_VERSION: Final = "growth-direct-v2-2026-07-30"
 
 _AGENT_RULE: Final = {
     "first_order_bps": 2000,
-    "repeat_order_bps": 2000,
+    "repeat_order_bps": 1000,
     "instant_points": 200,
 }
 
@@ -39,8 +40,8 @@ _EVENT_ALIASES: Final = {
 }
 
 _PAYMENT_REWARD_MIN_CENTS: Final = 1
-CONSUMER_REFERRER_REGISTRATION_POINTS: Final = 50
-CONSUMER_INVITEE_REGISTRATION_POINTS: Final = 50
+CONSUMER_REFERRER_REGISTRATION_POINTS: Final = 100
+CONSUMER_INVITEE_REGISTRATION_POINTS: Final = 20
 CONSUMER_REFERRER_FIRST_IMAGE_POINTS: Final = 30
 CONSUMER_FIRST_RECHARGE_REBATE_PERCENT: Final = 10
 CONSUMER_REGISTRATION_DEVICE_LIMIT_24H: Final = 2
@@ -72,8 +73,16 @@ def agent_commission(level: str, paid_cents: int, is_first_order: bool = True) -
     if not isinstance(is_first_order, bool):
         raise TypeError("is_first_order must be a bool")
 
+    return cents * agent_commission_rate_bps(level, is_first_order=is_first_order) // 10000
+
+
+def agent_commission_rate_bps(level: str, *, is_first_order: bool = True) -> int:
+    """Return the frozen direct-agent commission rate in basis points."""
+    rules = _agent_rules(level)
+    if not isinstance(is_first_order, bool):
+        raise TypeError("is_first_order must be a bool")
     rate_key = "first_order_bps" if is_first_order else "repeat_order_bps"
-    return cents * rules[rate_key] // 10000
+    return rules[rate_key]
 
 
 def agent_instant_points(level: str) -> int:

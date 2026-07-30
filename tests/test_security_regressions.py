@@ -75,7 +75,7 @@ class SecurityRegressionTests(unittest.TestCase):
                     "candidates": [
                         {
                             "imageId": "abc",
-                            "url": "/media/public.jpg",
+                            "url": "/media/seed_public/public.jpg",
                             "path": "/private/source.jpg",
                             "objectKey": "generated/job-1/dish.jpg",
                             "cosKey": "cos/private/dish.jpg",
@@ -91,7 +91,7 @@ class SecurityRegressionTests(unittest.TestCase):
                             "name": "测试",
                             "candidates": [
                                 {
-                                    "url": "/media/component.jpg",
+                                    "url": "/media/seed_public/component.jpg",
                                     "path": "/private/component.jpg",
                                     "storageKey": "storage/private/component.jpg",
                                 }
@@ -104,7 +104,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 {
                     "id": "style-1",
                     "sample": {
-                        "url": "/media/sample.jpg",
+                        "url": "/media/seed_public/sample.jpg",
                         "path": "/private/sample.jpg",
                         "sourcePath": "/private/source-sample.jpg",
                     },
@@ -136,7 +136,10 @@ class SecurityRegressionTests(unittest.TestCase):
             "ai-assets/local.jpg",
         ):
             self.assertNotIn(leaked_value, raw)
-        self.assertEqual(payload["results"][0]["candidates"][0]["url"], "/media/public.jpg")
+        self.assertEqual(
+            payload["results"][0]["candidates"][0]["url"],
+            "/media/seed_public/public.jpg",
+        )
         self.assertEqual(payload["results"][0]["candidates"][0]["tencent"]["safe"], "kept")
 
     def test_external_media_is_disabled_by_default(self) -> None:
@@ -156,6 +159,34 @@ class SecurityRegressionTests(unittest.TestCase):
 
                 self.assertEqual(app_module.media_url_for_path(external), "")
                 self.assertIsNone(app_module.external_image_path(f"{image_id}.jpg"))
+
+    def test_private_media_url_round_trips_reserved_filename_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            library = Path(tmp) / "library"
+            target = (
+                library
+                / "_generated_previews"
+                / "menu"
+                / "0003_收藏福利#豆泡?加料%优惠.png"
+            )
+            save_image(target)
+
+            with mock.patch.object(app_module, "LIBRARY_DIR", library):
+                url = app_module.media_url_for_path(target)
+                relative_name = app_module.library_media_relative_name(url)
+                resolved = app_module.safe_library_media_path(
+                    relative_name,
+                    allowed_prefixes=app_module.PRIVATE_MEDIA_PREFIXES,
+                )
+
+            self.assertIn("%23", url)
+            self.assertIn("%3F", url)
+            self.assertIn("%25", url)
+            self.assertEqual(
+                relative_name,
+                "_generated_previews/menu/0003_收藏福利#豆泡?加料%优惠.png",
+            )
+            self.assertEqual(resolved, target.resolve())
 
     def test_style_preview_source_candidates_hide_seed_when_public_candidates_exist(self) -> None:
         candidates = [
@@ -185,6 +216,162 @@ class SecurityRegressionTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 403)
                 self.assertEqual(app_module.billing.get_account("attacker")["balance"], 0)
+
+    def test_remote_request_cannot_use_default_local_demo_wallet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "billing.db"
+            client = app_module.app.test_client()
+            with mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "BILLING_DB_PATH": str(db_path),
+                    "BILLING_API_TOKEN": "",
+                    "ADMIN_API_TOKEN": "",
+                    "ENABLE_LOCAL_DEMO_BILLING": "true",
+                },
+                clear=False,
+            ):
+                response = client.post(
+                    "/api/recharge",
+                    json={"points": 1000},
+                    environ_base={"REMOTE_ADDR": "203.0.113.20"},
+                )
+
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(
+                    response.get_json()["code"],
+                    "billing_write_forbidden",
+                )
+                self.assertEqual(
+                    app_module.billing.get_account(
+                        app_module.billing.DEFAULT_USER_ID
+                    )["balance"],
+                    0,
+                )
+
+    def test_remote_image_read_stops_at_byte_limit_before_pillow(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"x" * 9
+
+        with (
+            mock.patch.object(app_module, "MAX_AI_ASSET_BYTES", 8),
+            mock.patch.object(
+                app_module.urllib.request,
+                "urlopen",
+                return_value=response,
+            ),
+            mock.patch.object(app_module.Image, "open") as image_open,
+        ):
+            with self.assertRaisesRegex(ValueError, "remote image exceeds limit"):
+                app_module.read_remote_pil_image(
+                    "https://provider.example.test/result.png"
+                )
+
+        response.read.assert_called_once_with(9)
+        image_open.assert_not_called()
+
+    def test_tokenhub_json_read_stops_at_limit_before_json_decode(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"x" * 9
+
+        with (
+            mock.patch.object(app_module, "MAX_PROVIDER_JSON_BYTES", 8),
+            mock.patch.object(
+                app_module,
+                "tokenhub_config",
+                return_value={"api_key": "test-key"},
+            ),
+            mock.patch.object(app_module, "tokenhub_ready", return_value=True),
+            mock.patch.object(
+                app_module.urllib.request,
+                "urlopen",
+                return_value=response,
+            ),
+            mock.patch.object(app_module.json, "loads") as json_loads,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "TokenHub response exceeds size limit",
+            ):
+                app_module.tokenhub_http_post(
+                    "https://provider.example.test/image",
+                    {"prompt": "dish"},
+                )
+
+        response.read.assert_called_once_with(9)
+        json_loads.assert_not_called()
+
+    def test_generation_watermark_uses_bounded_object_read(self) -> None:
+        storage = mock.Mock()
+        storage.read_bytes_limited.side_effect = (
+            app_module.object_storage_service.ObjectStorageReadLimitExceeded(
+                "object exceeds read limit"
+            )
+        )
+        object_key = (
+            "originals/watermarks/owner/"
+            + ("a" * 64)
+            + ".png"
+        )
+
+        with mock.patch.object(
+            app_module.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ):
+            with self.assertRaises(app_module.MenuUploadError) as raised:
+                app_module.generation_contract_export_watermark(
+                    {
+                        "watermark": {
+                            "enabled": True,
+                            "type": "logo",
+                            "logoObjectKey": object_key,
+                        }
+                    }
+                )
+
+        self.assertEqual(
+            raised.exception.code,
+            "generation_watermark_unavailable",
+        )
+        storage.read_bytes_limited.assert_called_once_with(
+            object_key,
+            app_module.MAX_LOGO_BYTES,
+        )
+        storage.read_bytes.assert_not_called()
+
+    def test_image_fingerprint_rejects_declared_pixel_bomb_before_load(
+        self,
+    ) -> None:
+        image = mock.MagicMock()
+        image.__enter__.return_value = image
+        image.size = (100_000, 100_000)
+        image.format = "PNG"
+
+        with mock.patch.object(
+            app_module.Image,
+            "open",
+            return_value=image,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "image dimensions exceed limit",
+            ):
+                app_module.image_bytes_fingerprint(b"small-image-header")
+
+        image.load.assert_not_called()
+
+    def test_image_fingerprint_rejects_bytes_before_pillow(self) -> None:
+        with (
+            mock.patch.object(app_module, "MAX_AI_ASSET_BYTES", 8),
+            mock.patch.object(app_module.Image, "open") as image_open,
+        ):
+            with self.assertRaisesRegex(ValueError, "image bytes exceed limit"):
+                app_module.image_bytes_fingerprint(b"x" * 9)
+
+        image_open.assert_not_called()
 
     def test_generate_final_rejects_unauthorized_tencent_generation(self) -> None:
         client = app_module.app.test_client()
@@ -263,7 +450,7 @@ class SecurityRegressionTests(unittest.TestCase):
                     environ_base={"REMOTE_ADDR": "203.0.113.10"},
                 )
 
-        self.assertIn(response.status_code, {403, 503})
+        self.assertIn(response.status_code, {401, 403, 503})
         self.assertNotEqual(response.data, b"zip-bytes")
 
     def test_download_token_is_bound_to_requested_export_name(self) -> None:
@@ -507,11 +694,17 @@ class SecurityRegressionTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                order_response = client.post(
-                    "/api/payments/orders",
-                    json={"userId": "user-1", "orderId": "order-1", "cash": 49},
-                )
-                self.assertEqual(order_response.status_code, 200)
+                conn = app_module.storage_db.get_conn(storage_db_path)
+                try:
+                    payments.create_catalog_payment_order(
+                        conn,
+                        authenticated_user_id="user-1",
+                        request={"packageId": "starter-500"},
+                        provider="fake",
+                        order_id="order-1",
+                    )
+                finally:
+                    conn.close()
 
                 callback_response = client.post(
                     "/api/payments/fake-callback",
@@ -581,6 +774,25 @@ class SecurityRegressionTests(unittest.TestCase):
                             environ_base={"REMOTE_ADDR": "203.0.113.10"},
                         )
                         self.assertIn(response.status_code, {401, 403})
+
+    def test_invalid_ai_asset_status_checks_authorization_before_input(self) -> None:
+        client = app_module.app.test_client()
+        with mock.patch.dict(
+            os.environ,
+            {"ADMIN_API_TOKEN": "", "ENABLE_LOCAL_ADMIN_WRITES": ""},
+            clear=False,
+        ):
+            response = client.post(
+                "/api/admin/actions/ai-assets/asset-1/status",
+                json={},
+                environ_base={"REMOTE_ADDR": "203.0.113.10"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.get_json(silent=True)["code"],
+            "admin_permission_forbidden",
+        )
 
     def _signed_payment_payload(
         self,

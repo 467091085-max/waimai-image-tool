@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
+from shared import payment_catalog
+
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "data" / "app.db"
 DEFAULT_USER_ID = "default"
@@ -21,11 +23,7 @@ QUALITY_POINTS = {
 WATERMARK_POINTS = 50
 EXTRA_PLATFORM_POINTS = 100
 
-RECHARGE_PACKAGES = {
-    49: 500,
-    99: 1040,
-    299: 3190,
-}
+RECHARGE_PACKAGES = payment_catalog.legacy_cash_packages()
 CUSTOM_RECHARGE_MIN_CASH = 100
 
 
@@ -108,8 +106,21 @@ CREATE TABLE IF NOT EXISTS ledger (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS refund_allocations (
+    refund_order_id TEXT PRIMARY KEY,
+    source_order_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    points INTEGER NOT NULL CHECK (points > 0),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (refund_order_id) REFERENCES orders(order_id),
+    FOREIGN KEY (source_order_id) REFERENCES orders(order_id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_user_created ON ledger(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_refund_allocations_source
+ON refund_allocations(source_order_id, user_id);
 """
 
 
@@ -266,6 +277,60 @@ def debit_image_charge(
     )
 
 
+def refund_debit(
+    user_id: str,
+    source_order_id: str,
+    *,
+    points: int | None = None,
+    refund_order_id: str | None = None,
+    db_path: str | os.PathLike[str] | None = None,
+    description: str = "generation-refund",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_source_order_id = _clean_id(source_order_id, "source_order_id")
+    return _apply_refund(
+        user_id=_clean_id(user_id, "user_id"),
+        source_order_id=clean_source_order_id,
+        refund_order_id=_clean_id(
+            refund_order_id or f"refund:{clean_source_order_id}",
+            "refund_order_id",
+        ),
+        points=None if points is None else _positive_int(points, "points"),
+        target_total_points=None,
+        db_path=db_path,
+        description=description,
+        metadata=metadata,
+    )
+
+
+def refund_debit_to_total(
+    user_id: str,
+    source_order_id: str,
+    *,
+    target_points: int,
+    refund_order_prefix: str | None = None,
+    db_path: str | os.PathLike[str] | None = None,
+    description: str = "generation-refund",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_source_order_id = _clean_id(source_order_id, "source_order_id")
+    clean_target = _positive_int(target_points, "target_points")
+    prefix = _clean_id(
+        refund_order_prefix or f"refund:{clean_source_order_id}",
+        "refund_order_prefix",
+    )
+    return _apply_refund(
+        user_id=_clean_id(user_id, "user_id"),
+        source_order_id=clean_source_order_id,
+        refund_order_id=f"{prefix}:{clean_target}",
+        points=None,
+        target_total_points=clean_target,
+        db_path=db_path,
+        description=description,
+        metadata=metadata,
+    )
+
+
 def points_for_recharge(cash_amount: int | str | Decimal) -> int:
     cash = _cash_to_int(cash_amount)
     if cash in RECHARGE_PACKAGES:
@@ -304,29 +369,33 @@ def quality_point_value(quality: str | int) -> int:
 
 
 def recharge_packages_payload() -> list[dict[str, Any]]:
-    names = {
-        49: "Starter",
-        99: "Store",
-        299: "Team",
-    }
     return [
         {
-            "name": names[cash],
-            "cash": cash,
-            "points": points,
+            "packageId": package["packageId"],
+            "name": package["name"],
+            "cash": package["amountCents"] // 100,
+            "amountCents": package["amountCents"],
+            "points": package["points"],
             "bonus": 0,
+            "currency": package["currency"],
+            "catalogVersion": package["catalogVersion"],
+            "snapshotDigest": package["snapshotDigest"],
         }
-        for cash, points in RECHARGE_PACKAGES.items()
+        for package in payment_catalog.catalog_snapshot()["packages"]
     ]
 
 
 def pricing_payload() -> dict[str, Any]:
+    catalog = payment_catalog.catalog_snapshot()
     return {
         "rate": f"1 yuan = {POINT_RATE} points",
         "qualityPoints": dict(QUALITY_POINTS),
         "watermarkPoints": WATERMARK_POINTS,
         "extraPlatformPoints": EXTRA_PLATFORM_POINTS,
         "customRechargeMinCash": CUSTOM_RECHARGE_MIN_CASH,
+        "catalogVersion": catalog["catalogVersion"],
+        "catalogCurrency": catalog["currency"],
+        "catalogDigest": catalog["catalogDigest"],
     }
 
 
@@ -409,54 +478,311 @@ def _apply_entry(
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         try:
+            result = _apply_entry_on_connection(
+                conn,
+                user_id=user_id,
+                order_id=order_id,
+                kind=kind,
+                points=points,
+                description=description,
+                metadata=metadata,
+            )
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _apply_entry_on_connection(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    order_id: str,
+    kind: str,
+    points: int,
+    description: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    _ensure_account(conn, user_id)
+    existing = _order_row(conn, order_id)
+    if existing:
+        return _idempotent_result(conn, existing, user_id, kind, points)
+
+    balance = int(_account_row(conn, user_id)["balance"])
+    if kind == "debit" and balance < points:
+        raise InsufficientBalance(required=points, available=balance)
+
+    balance_after = balance + points if kind == "credit" else balance - points
+    now = _now()
+    meta_json = _json(metadata or {})
+    conn.execute(
+        "UPDATE accounts SET balance = ?, updated_at = ? WHERE user_id = ?",
+        (balance_after, now, user_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO orders (order_id, user_id, kind, points, status, created_at, metadata)
+        VALUES (?, ?, ?, ?, 'succeeded', ?, ?)
+        """,
+        (order_id, user_id, kind, points, now, meta_json),
+    )
+    cursor = conn.execute(
+        """
+        INSERT INTO ledger (order_id, user_id, direction, points, balance_after, description, created_at, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (order_id, user_id, kind, points, balance_after, str(description or ""), now, meta_json),
+    )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "userId": user_id,
+        "orderId": order_id,
+        "direction": kind,
+        "points": points,
+        "balance": balance_after,
+        "balanceAfter": balance_after,
+        "ledgerId": cursor.lastrowid,
+        "createdAt": now,
+    }
+
+
+def _apply_refund(
+    *,
+    user_id: str,
+    source_order_id: str,
+    refund_order_id: str,
+    points: int | None,
+    target_total_points: int | None,
+    db_path: str | os.PathLike[str] | None,
+    description: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    with open_db(db_path) as conn:
+        _ensure_schema(conn)
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             _ensure_account(conn, user_id)
-            existing = _order_row(conn, order_id)
-            if existing:
-                result = _idempotent_result(conn, existing, user_id, kind, points)
+            source = _order_row(conn, source_order_id)
+            if source is None:
+                raise InvalidBillingInput(
+                    "Source debit order does not exist",
+                    sourceOrderId=source_order_id,
+                )
+            if source["user_id"] != user_id or source["kind"] != "debit":
+                raise InvalidBillingInput(
+                    "Source order is not a debit owned by this user",
+                    sourceOrderId=source_order_id,
+                )
+            source_points = int(source["points"])
+            _sync_legacy_refund_allocations(
+                conn,
+                user_id=user_id,
+                source_order_id=source_order_id,
+            )
+            refunded_total = int(
+                conn.execute(
+                    """
+                    SELECT COALESCE(SUM(points), 0)
+                    FROM refund_allocations
+                    WHERE source_order_id = ? AND user_id = ?
+                    """,
+                    (source_order_id, user_id),
+                ).fetchone()[0]
+            )
+            existing_allocation = conn.execute(
+                """
+                SELECT * FROM refund_allocations WHERE refund_order_id = ?
+                """,
+                (refund_order_id,),
+            ).fetchone()
+            if existing_allocation is not None and target_total_points is None:
+                expected_points = source_points if points is None else int(points)
+                if (
+                    existing_allocation["source_order_id"] != source_order_id
+                    or existing_allocation["user_id"] != user_id
+                    or int(existing_allocation["points"]) != expected_points
+                ):
+                    raise OrderConflict(
+                        "Refund order id belongs to a different source allocation",
+                        orderId=refund_order_id,
+                    )
+                order = _order_row(conn, refund_order_id)
+                if order is None:
+                    raise OrderConflict(
+                        "Refund allocation exists without a billing order",
+                        orderId=refund_order_id,
+                    )
+                result = _idempotent_result(
+                    conn,
+                    order,
+                    user_id,
+                    "credit",
+                    expected_points,
+                )
                 conn.commit()
-                return result
+                return {
+                    **result,
+                    "sourceOrderId": source_order_id,
+                    "sourcePoints": source_points,
+                    "refundedTotal": refunded_total,
+                    "targetPoints": None,
+                }
+            if target_total_points is not None:
+                if target_total_points > source_points:
+                    raise InvalidBillingInput(
+                        "Refund exceeds source debit",
+                        sourceOrderId=source_order_id,
+                        requested=target_total_points,
+                        maximum=source_points,
+                    )
+                if refunded_total >= target_total_points:
+                    account = _account_row(conn, user_id)
+                    conn.commit()
+                    return {
+                        "ok": True,
+                        "idempotent": True,
+                        "userId": user_id,
+                        "orderId": refund_order_id,
+                        "direction": "credit",
+                        "points": 0,
+                        "balance": int(account["balance"]),
+                        "balanceAfter": int(account["balance"]),
+                        "sourceOrderId": source_order_id,
+                        "sourcePoints": source_points,
+                        "refundedTotal": refunded_total,
+                        "targetPoints": target_total_points,
+                    }
+                refund_points = target_total_points - refunded_total
+            else:
+                refund_points = source_points if points is None else int(points)
+                if refunded_total + refund_points > source_points:
+                    raise InvalidBillingInput(
+                        "Refund exceeds remaining source debit",
+                        sourceOrderId=source_order_id,
+                        requested=refund_points,
+                        refunded=refunded_total,
+                        maximum=max(0, source_points - refunded_total),
+                    )
 
-            balance = int(_account_row(conn, user_id)["balance"])
-            if kind == "debit" and balance < points:
-                raise InsufficientBalance(required=points, available=balance)
+            if existing_allocation is not None:
+                if (
+                    existing_allocation["source_order_id"] != source_order_id
+                    or existing_allocation["user_id"] != user_id
+                    or int(existing_allocation["points"]) != refund_points
+                ):
+                    raise OrderConflict(
+                        "Refund order id belongs to a different source allocation",
+                        orderId=refund_order_id,
+                    )
+                order = _order_row(conn, refund_order_id)
+                if order is None:
+                    raise OrderConflict(
+                        "Refund allocation exists without a billing order",
+                        orderId=refund_order_id,
+                    )
+                result = _idempotent_result(
+                    conn,
+                    order,
+                    user_id,
+                    "credit",
+                    refund_points,
+                )
+                conn.commit()
+                return {
+                    **result,
+                    "sourceOrderId": source_order_id,
+                    "sourcePoints": source_points,
+                    "refundedTotal": refunded_total,
+                    "targetPoints": target_total_points,
+                }
+            if _order_row(conn, refund_order_id) is not None:
+                raise OrderConflict(
+                    "Refund order exists without a matching source allocation",
+                    orderId=refund_order_id,
+                )
 
-            balance_after = balance + points if kind == "credit" else balance - points
-            now = _now()
-            meta_json = _json(metadata or {})
-            conn.execute(
-                "UPDATE accounts SET balance = ?, updated_at = ? WHERE user_id = ?",
-                (balance_after, now, user_id),
+            result = _apply_entry_on_connection(
+                conn,
+                user_id=user_id,
+                order_id=refund_order_id,
+                kind="credit",
+                points=refund_points,
+                description=description,
+                metadata={
+                    "sourceOrderId": source_order_id,
+                    "sourcePoints": source_points,
+                    **(metadata or {}),
+                },
             )
             conn.execute(
                 """
-                INSERT INTO orders (order_id, user_id, kind, points, status, created_at, metadata)
-                VALUES (?, ?, ?, ?, 'succeeded', ?, ?)
+                INSERT INTO refund_allocations (
+                    refund_order_id, source_order_id, user_id, points, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (order_id, user_id, kind, points, now, meta_json),
-            )
-            cursor = conn.execute(
-                """
-                INSERT INTO ledger (order_id, user_id, direction, points, balance_after, description, created_at, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (order_id, user_id, kind, points, balance_after, str(description or ""), now, meta_json),
+                (
+                    refund_order_id,
+                    source_order_id,
+                    user_id,
+                    refund_points,
+                    result["createdAt"],
+                ),
             )
             conn.commit()
             return {
-                "ok": True,
-                "idempotent": False,
-                "userId": user_id,
-                "orderId": order_id,
-                "direction": kind,
-                "points": points,
-                "balance": balance_after,
-                "balanceAfter": balance_after,
-                "ledgerId": cursor.lastrowid,
-                "createdAt": now,
+                **result,
+                "sourceOrderId": source_order_id,
+                "sourcePoints": source_points,
+                "refundedTotal": refunded_total + refund_points,
+                "targetPoints": target_total_points,
             }
         except Exception:
             conn.rollback()
             raise
+
+
+def _sync_legacy_refund_allocations(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    source_order_id: str,
+) -> None:
+    rows = conn.execute(
+        """
+        SELECT order_id, points, created_at, metadata
+        FROM orders
+        WHERE user_id = ? AND kind = 'credit'
+        """,
+        (user_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            order_metadata = json.loads(row["metadata"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(order_metadata, dict):
+            continue
+        if str(order_metadata.get("sourceOrderId") or "") != source_order_id:
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO refund_allocations (
+                refund_order_id, source_order_id, user_id, points, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                row["order_id"],
+                source_order_id,
+                user_id,
+                int(row["points"]),
+                row["created_at"],
+            ),
+        )
 
 
 def _idempotent_result(

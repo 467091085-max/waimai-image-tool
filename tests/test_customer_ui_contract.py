@@ -50,6 +50,11 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertNotRegex(self.styles, r"\.image-wrap[^{]*\{[^}]*filter\s*:\s*blur")
         self.assertNotIn("blurred", self.script)
 
+    def test_customer_ui_never_replaces_failed_generation_with_color_block_art(self) -> None:
+        self.assertNotIn("styleFallbackImage", self.script)
+        self.assertNotIn("data:image/svg+xml", self.script)
+        self.assertIn("this.hidden=true", self.script)
+
     def test_style_selection_requires_explicit_sample_generation(self) -> None:
         style_handler_start = self.script.index('$$(".style").forEach')
         style_handler_end = self.script.index("function renderStylePreview", style_handler_start)
@@ -66,11 +71,49 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertNotIn("generate=1", style_handler)
         self.assertIn('$("#generateSamplesBtn").onclick', self.script)
         self.assertIn("loadStylePreview(state.pendingStyle)", sample_button_handler)
-        self.assertIn("generate=1", load_preview_body)
-        self.assertEqual(load_preview_body.count("generate=1"), 1)
+        self.assertNotIn("generate=1", load_preview_body)
         self.assertEqual(self.script.count("/api/style-preview?"), 1)
         self.assertEqual(self.script.count("/api/style-background?"), 1)
-        self.assertNotIn("/api/style-preview-sample", self.script)
+        self.assertEqual(self.script.count("/api/style-preview-sample?"), 1)
+        self.assertIn("await loadStylePreviewSample(styleId, index)", load_preview_body)
+        self.assertIn("PREVIEW_SAMPLE_MAX_ATTEMPTS", self.script)
+        self.assertIn("TRANSIENT_HTTP_STATUSES.has(res.status)", self.script)
+        self.assertIn('typeof data.retryable === "boolean"', self.script)
+        self.assertIn("networkFailure || error?.retryable === true", self.script)
+        self.assertIn("state.previewRequestedStyle !== styleId", self.script)
+        self.assertIn("state.stylePreview.samples[index] =", self.script)
+
+    def test_selected_background_identity_is_sent_through_every_generation_stage(self) -> None:
+        for required in [
+            "function backgroundIdentityForStyle",
+            "function selectedBackgroundIdentity",
+            "function backgroundQuery",
+            "function selectedBackgroundPayload",
+            "backgroundAssetId",
+            "backgroundSha256",
+            "selectedBackground?.assetId",
+            "selectedBackground?.sha256",
+        ]:
+            self.assertIn(required, self.script)
+
+        self.assertIn("/api/style-preview?", self.script)
+        self.assertIn("/api/style-preview-sample?", self.script)
+        self.assertIn('api("/api/generation-jobs"', self.script)
+        self.assertGreaterEqual(self.script.count("...selectedBackgroundPayload("), 2)
+        self.assertIn("selectedBackground?.assetId", self.script)
+        self.assertIn("selectedBackground?.sha256", self.script)
+
+    def test_menu_upload_identity_is_retained_for_generation_and_export(self) -> None:
+        self.assertIn('menuUploadId: ""', self.script)
+        self.assertIn(
+            "state.menuUploadId = data.menuUploadId || \"\"",
+            self.script,
+        )
+        self.assertGreaterEqual(
+            self.script.count("menuUploadId: state.menuUploadId"),
+            3,
+        )
+        self.assertNotIn('refundPoints(debitOrderId', self.script)
 
     def test_formal_generation_uses_async_jobs_with_timeout_status(self) -> None:
         confirm_start = self.script.index("async function confirmStyle")
@@ -98,6 +141,103 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertIn("state.generationJob", confirm_body)
         self.assertIn("waitForGenerationJob", confirm_body)
         self.assertNotIn('api("/api/generate-final"', self.script)
+
+    def test_customer_image_refinement_uses_bounded_real_async_jobs(self) -> None:
+        payload_start = self.script.index("function imageRefinementRequestPayload")
+        payload_end = self.script.index("async function createImageRefinement", payload_start)
+        payload_body = self.script[payload_start:payload_end]
+        poll_start = self.script.index("async function waitForImageRefinement")
+        poll_end = self.script.index("function refinementSourceForRow", poll_start)
+        poll_body = self.script[poll_start:poll_end]
+
+        for field in [
+            "parentGenerationJobId",
+            "sourceAssetId",
+            "sourceRevisionJobId",
+            "mode",
+            "prompt",
+            "idempotencyKey",
+        ]:
+            self.assertIn(field, payload_body)
+        for forbidden in ["points", "quality", "userId", "objectKey"]:
+            self.assertNotIn(forbidden, payload_body)
+
+        self.assertIn('api("/api/image-refinements"', self.script)
+        self.assertIn("fetchImageRefinement", poll_body)
+        self.assertIn("REFINEMENT_MAX_POLL_ATTEMPTS", poll_body)
+        self.assertIn("REFINEMENT_POLL_DELAY_MS", poll_body)
+        self.assertIn(
+            "attempt < REFINEMENT_MAX_POLL_ATTEMPTS",
+            poll_body,
+        )
+        self.assertIn('job?.status === "completed"', poll_body)
+        self.assertIn("refinementTerminalStatuses.has", poll_body)
+        self.assertIn("等待超时", poll_body)
+        self.assertNotIn("while (true)", poll_body)
+
+    def test_rework_and_refine_replace_candidate_only_after_server_completion(self) -> None:
+        redraw_start = self.script.index("async function redrawImage")
+        redraw_end = self.script.index("async function exportImages", redraw_start)
+        redraw_body = self.script[redraw_start:redraw_end]
+        submit_start = self.script.index("async function submitRefine")
+        submit_end = self.script.index("async function refreshAccount", submit_start)
+        submit_body = self.script[submit_start:submit_end]
+        apply_start = self.script.index("function applyCompletedImageRefinement")
+        apply_end = self.script.index("async function redrawImage", apply_start)
+        apply_body = self.script[apply_start:apply_end]
+
+        for body, mode in [(redraw_body, '"rework"'), (submit_body, '"refine"')]:
+            self.assertIn("refinementSourceForRow", body)
+            self.assertIn("createImageRefinement", body)
+            self.assertIn("waitForImageRefinement", body)
+            self.assertIn("applyCompletedImageRefinement", body)
+            self.assertIn("source.parentGenerationJobId", body)
+            self.assertIn("source.sourceAssetId", body)
+            self.assertIn(mode, body)
+            self.assertNotIn("debitPoints", body)
+            self.assertNotIn("/api/debit", body)
+
+        self.assertNotIn("state.freeReworkRemaining -=", redraw_body)
+        self.assertIn('job?.status !== "completed"', apply_body)
+        self.assertIn("candidate.url = image.url", apply_body)
+        self.assertIn("candidate.deliveryAssetId = sourceAssetId", apply_body)
+        self.assertIn("candidate.revisionJobId = job.jobId", apply_body)
+        self.assertIn("candidate.revisionAssetId = image.assetId", apply_body)
+        self.assertIn("candidate.revisionSha256 = image.sha256", apply_body)
+        self.assertIn("freeReworkQuotaVerified", apply_body)
+        self.assertIn("state.freeReworkRemaining = Math.max", apply_body)
+        self.assertIn("applyAccount(job)", apply_body)
+        self.assertIn("renderPlan(true)", apply_body)
+        self.assertGreater(
+            submit_body.index("closeRefine()"),
+            submit_body.index("applyCompletedImageRefinement"),
+        )
+
+    def test_legacy_generation_results_fail_closed_before_refinement(self) -> None:
+        source_start = self.script.index("function refinementSourceForRow")
+        source_end = self.script.index("function applyCompletedImageRefinement", source_start)
+        source_body = self.script[source_start:source_end]
+
+        self.assertIn("state.completedGenerationJobId", source_body)
+        self.assertIn("source?.deliveryAssetId", source_body)
+        self.assertIn("source.revisionAssetId || source.deliveryAssetId", source_body)
+        self.assertIn("source.revisionJobId ||", source_body)
+        self.assertIn("请重新正式出图后再修改", source_body)
+
+    def test_refinement_lineage_and_export_use_latest_completed_revision(self) -> None:
+        source_start = self.script.index("function refinementSourceForRow")
+        source_end = self.script.index("function applyCompletedImageRefinement", source_start)
+        source_body = self.script[source_start:source_end]
+        export_start = self.script.index("function revisionJobIdsForExport")
+        export_end = self.script.index("function openRefine", export_start)
+        export_body = self.script[export_start:export_end]
+
+        self.assertIn("revisionAssetId || source.deliveryAssetId", source_body)
+        self.assertIn("sourceRevisionJobId", source_body)
+        self.assertIn("revisionJobId", source_body)
+        self.assertIn("revisionJobIdsForExport", export_body)
+        self.assertIn("revisionJobIds:", export_body)
+        self.assertIn("revisionJobId", export_body)
 
     def test_customer_auth_ui_uses_phone_otp_session_apis(self) -> None:
         customer_copy = "\n".join([self.template, self.script])
@@ -167,6 +307,60 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertIn('authJsonOptions({ challengeId: state.auth.challengeId, code })', verify_otp_body)
         self.assertNotIn("authHeaders", request_otp_body)
         self.assertNotIn("authHeaders", verify_otp_body)
+
+    def test_private_media_urls_are_materialized_recursively_at_api_boundary(self) -> None:
+        helper_start = self.script.index("function privateMediaTarget")
+        helper_end = self.script.index("async function api", helper_start)
+        helpers = self.script[helper_start:helper_end]
+        api_start = self.script.index("async function api")
+        api_end = self.script.index("async function downloadProtectedFile", api_start)
+        api_body = self.script[api_start:api_end]
+
+        for required in [
+            'const privateMediaObjectUrlCache = new Map()',
+            'typeof value !== "string"',
+            "new URL(value, window.location.href)",
+            "target.origin === window.location.origin",
+            'target.pathname.startsWith("/api/private-media/")',
+            "async function materializePrivateMediaUrls",
+            "Array.isArray(value)",
+            "Promise.all(value.map",
+            "Object.entries(value)",
+            "Object.fromEntries(entries)",
+            "return value",
+        ]:
+            self.assertIn(required, self.script if required.startswith("const ") else helpers)
+
+        self.assertIn("return await materializePrivateMediaUrls(data)", api_body)
+        self.assertNotIn('pathname.startsWith("/download/")', helpers)
+
+    def test_private_media_fetch_is_authenticated_cached_and_fail_closed(self) -> None:
+        fetch_start = self.script.index("function privateMediaObjectUrl")
+        fetch_end = self.script.index("async function materializePrivateMediaUrls", fetch_start)
+        fetch_body = self.script[fetch_start:fetch_end]
+
+        for required in [
+            "privateMediaObjectUrlCache.get(signedUrl)",
+            "privateMediaObjectUrlCache.set(signedUrl, pending)",
+            "privateMediaObjectUrlCache.set(signedUrl, objectUrl)",
+            "privateMediaObjectUrlCache.delete(signedUrl)",
+            "state.auth.token",
+            'headers.set("Authorization", `Bearer ${token}`)',
+            'fetch(target.toString(), { headers, redirect: "error" })',
+            "response.ok",
+            'response.headers.get("Content-Type")',
+            'startsWith("image/")',
+            "response.blob()",
+            "URL.createObjectURL(blob)",
+            "登录状态已失效，无法加载私有图片",
+            "私有图片加载失败",
+            "私有图片响应格式错误",
+        ]:
+            self.assertIn(required, fetch_body)
+
+        self.assertNotIn("return signedUrl", fetch_body)
+        self.assertIn("clearPrivateMediaObjectUrlCache()", self.script)
+        self.assertIn("URL.revokeObjectURL(objectUrl)", self.script)
 
     def test_admin_has_productized_dashboard_containers(self) -> None:
         for required in [

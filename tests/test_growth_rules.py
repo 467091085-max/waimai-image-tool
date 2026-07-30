@@ -8,8 +8,13 @@ import growth_rules as rules
 class GrowthRulesTests(unittest.TestCase):
     def test_single_agent_commission_rate(self) -> None:
         self.assertEqual(rules.agent_commission("agent", 10000), 2000)
-        self.assertEqual(rules.agent_commission("agent", 10000, is_first_order=False), 2000)
+        self.assertEqual(rules.agent_commission("agent", 10000, is_first_order=False), 1000)
         self.assertEqual(rules.agent_commission("standard", 10000), 2000)
+        self.assertEqual(rules.agent_commission_rate_bps("standard"), 2000)
+        self.assertEqual(
+            rules.agent_commission_rate_bps("standard", is_first_order=False),
+            1000,
+        )
 
     def test_single_agent_instant_points(self) -> None:
         self.assertEqual(rules.agent_instant_points("agent"), 200)
@@ -19,8 +24,8 @@ class GrowthRulesTests(unittest.TestCase):
         registration = rules.consumer_referral_rewards(rules.EVENT_INVITEE_REGISTERED)
         first_image = rules.consumer_referral_rewards(rules.EVENT_FIRST_IMAGE_COMPLETED)
 
-        self.assertEqual(registration["inviter_points"], 50)
-        self.assertEqual(registration["invitee_points"], 50)
+        self.assertEqual(registration["inviter_points"], 100)
+        self.assertEqual(registration["invitee_points"], 20)
         self.assertEqual(first_image["inviter_points"], 30)
         self.assertEqual(first_image["invitee_points"], 0)
 
@@ -96,8 +101,8 @@ class GrowthRulesTests(unittest.TestCase):
 
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.reasons, ())
-        self.assertEqual(decision.inviter_points, 50)
-        self.assertEqual(decision.invitee_points, 50)
+        self.assertEqual(decision.inviter_points, 100)
+        self.assertEqual(decision.invitee_points, 20)
 
     def test_registration_reward_blocks_obvious_abuse(self) -> None:
         self.assertFalse(rules.registration_reward_allowed(phone_verified=True, human_verified=True, same_phone_registered=True))

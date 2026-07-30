@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Request, Response, jsonify, render_template, request
 
 MENU_EXTS = {".xls", ".xlsx"}
 REQUIRED_SOURCES = ("clean", "watermark", "internal")
@@ -20,6 +21,35 @@ ADMIN_LIST_RESOURCES = {
     "commission-settlements": "list_commission_settlements",
     "withdrawals": "list_withdrawals",
 }
+ADMIN_READ_SCOPE = "admin:read"
+ADMIN_FINANCE_READ_SCOPE = "admin:finance:read"
+ADMIN_RISK_READ_SCOPE = "admin:risk:read"
+ADMIN_AI_ASSETS_READ_SCOPE = "admin:ai-assets:read"
+ADMIN_AI_ASSETS_WRITE_SCOPE = "admin:ai-assets:write"
+ADMIN_LIST_RESOURCE_SCOPES = {
+    "users": ADMIN_READ_SCOPE,
+    "stores": ADMIN_READ_SCOPE,
+    "orders": ADMIN_FINANCE_READ_SCOPE,
+    "generation-tasks": ADMIN_READ_SCOPE,
+    "asset-access": ADMIN_RISK_READ_SCOPE,
+    "risk-events": ADMIN_RISK_READ_SCOPE,
+    "commission-settlements": ADMIN_FINANCE_READ_SCOPE,
+    "withdrawals": ADMIN_FINANCE_READ_SCOPE,
+}
+
+
+@dataclass(frozen=True)
+class AdminAuthorization:
+    authenticated: bool
+    allowed: bool
+
+
+AdminRequestAuthorizer = Callable[[Request, str], AdminAuthorization]
+AdminDashboardProvider = Callable[[], Optional[Mapping[str, Any]]]
+AdminListProvider = Callable[
+    [str, Mapping[str, Any]],
+    Optional[Mapping[str, Any]],
+]
 
 
 @dataclass(frozen=True)
@@ -31,10 +61,52 @@ class AdminDependencies:
     upload_dir: Path
     db_path: Path | str | None = None
     ai_asset_manifest_path: Path | str | None = None
+    request_authorizer: AdminRequestAuthorizer | None = None
+    dashboard_provider: AdminDashboardProvider | None = None
+    list_provider: AdminListProvider | None = None
 
 
 def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
     blueprint = Blueprint("admin", __name__)
+
+    @blueprint.before_request
+    def authorize_admin_request():
+        authorizer = deps.request_authorizer
+        if authorizer is None:
+            return _admin_authorization_error(
+                401,
+                "admin_authentication_required",
+                "Admin authentication required.",
+            )
+
+        try:
+            decision = authorizer(request, _admin_request_scope())
+        except Exception:
+            return _admin_authorization_error(
+                503,
+                "admin_authorization_unavailable",
+                "Admin authorization unavailable.",
+            )
+
+        if not isinstance(decision, AdminAuthorization):
+            return _admin_authorization_error(
+                503,
+                "admin_authorization_unavailable",
+                "Admin authorization unavailable.",
+            )
+        if not decision.authenticated:
+            return _admin_authorization_error(
+                401,
+                "admin_authentication_required",
+                "Admin authentication required.",
+            )
+        if not decision.allowed:
+            return _admin_authorization_error(
+                403,
+                "admin_permission_required",
+                "Admin permission required.",
+            )
+        return None
 
     @blueprint.get("/admin")
     def admin_home() -> Response | str:
@@ -56,7 +128,7 @@ def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
     @blueprint.get("/api/admin/dashboard")
     def admin_dashboard():
         payload = admin_dashboard_payload(deps)
-        return jsonify(payload)
+        return jsonify(payload), 200 if payload.get("ok") else 503
 
     @blueprint.get("/api/admin/ai-assets")
     def admin_ai_assets():
@@ -82,6 +154,32 @@ def create_admin_blueprint(deps: AdminDependencies) -> Blueprint:
         return response
 
     return blueprint
+
+
+def _admin_request_scope() -> str:
+    endpoint = str(request.endpoint or "").rsplit(".", 1)[-1]
+    if endpoint == "admin_list_resource":
+        resource = _normalize_resource((request.view_args or {}).get("resource", ""))
+        return ADMIN_LIST_RESOURCE_SCOPES.get(resource, ADMIN_READ_SCOPE)
+    if endpoint == "admin_ai_assets":
+        return ADMIN_AI_ASSETS_READ_SCOPE
+    if endpoint == "admin_ai_asset_status_action":
+        return ADMIN_AI_ASSETS_WRITE_SCOPE
+    return ADMIN_READ_SCOPE
+
+
+def _admin_authorization_error(status: int, code: str, message: str) -> Response:
+    response = jsonify(
+        {
+            "ok": False,
+            "code": code,
+            "error": message,
+        }
+    )
+    response.status_code = status
+    if status == 401:
+        response.headers["WWW-Authenticate"] = 'Bearer realm="admin"'
+    return response
 
 
 def library_sample_payload(deps: AdminDependencies, limit: int = 18) -> dict[str, Any]:
@@ -136,6 +234,22 @@ def menu_audit_payload(deps: AdminDependencies, limit: int = 40) -> dict[str, An
 
 
 def admin_dashboard_payload(deps: AdminDependencies) -> dict[str, Any]:
+    provider = deps.dashboard_provider
+    if provider is not None:
+        try:
+            provided = provider()
+            if provided is not None:
+                payload = dict(provided)
+                if payload.get("ok") is not True:
+                    raise ValueError("durable admin dashboard is not ready")
+                return payload
+        except Exception:
+            return {
+                "ok": False,
+                "code": "postgres_admin_dashboard_unavailable",
+                "error": "Admin dashboard unavailable.",
+            }
+
     try:
         import admin_data
         import storage_db
@@ -274,6 +388,39 @@ def admin_list_payload(deps: AdminDependencies, resource: str, args: Mapping[str
             "code": "unsupported_admin_list_resource",
             "resource": normalized_resource,
         }, 404
+
+    provider = deps.list_provider
+    if provider is not None:
+        try:
+            page = provider(
+                normalized_resource,
+                _admin_list_args(normalized_resource, args),
+            )
+            if page is not None:
+                return {
+                    "ok": True,
+                    "resource": normalized_resource,
+                    **dict(page),
+                    "generatedAt": _utc_now(),
+                }, 200
+        except ValueError:
+            return {
+                "ok": False,
+                "error": "Invalid admin list request.",
+                "code": "invalid_admin_list_request",
+                "resource": normalized_resource,
+                "items": [],
+                "total": 0,
+            }, 400
+        except Exception:
+            return {
+                "ok": False,
+                "error": "Admin list unavailable.",
+                "code": "postgres_admin_list_unavailable",
+                "resource": normalized_resource,
+                "items": [],
+                "total": 0,
+            }, 503
 
     conn = None
     try:
@@ -584,3 +731,7 @@ def _optional_bool(value: str) -> bool | None:
     if normalized in {"0", "false", "no", "n", "off", "denied"}:
         return False
     return None
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()

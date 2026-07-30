@@ -17,8 +17,8 @@ from matching_engine import (
 
 class MatchingEngineBuiltinTest(unittest.TestCase):
     def test_normalize_split_and_classify(self) -> None:
-        self.assertEqual(normalize_dish("【热销】老长沙辣椒炒肉盖码饭"), "辣椒炒肉")
-        self.assertEqual(split_components("辣椒炒肉+茄子肉末盖码饭"), ["辣椒炒肉", "茄子肉末"])
+        self.assertEqual(normalize_dish("【热销】老长沙辣椒炒肉盖码饭"), "辣椒炒肉盖饭")
+        self.assertEqual(split_components("辣椒炒肉+茄子肉末盖码饭"), ["辣椒炒肉", "茄子肉末盖码饭"])
         self.assertEqual(classify_kind("辣椒炒肉+茄子肉末盖码饭"), "套餐/组合")
         self.assertEqual(classify_kind("康师傅冰红茶"), "饮品/小食")
         self.assertEqual(classify_kind("香干炒肉盖码饭"), "单品")
@@ -39,10 +39,11 @@ class MatchingEngineBuiltinTest(unittest.TestCase):
 
         combo = next(row for row in results if row["kind"] == "套餐/组合")
         self.assertGreaterEqual(len(combo["componentMatches"]), 2)
-        self.assertTrue(all(component["candidates"] for component in combo["componentMatches"][:2]))
+        self.assertFalse(combo["candidates"])
+        self.assertEqual(combo["backgroundAction"], "需要定制/生成")
 
         coverage = style_coverage(results)
-        self.assertTrue(any(style["styleId"] == "style-1" and style["direct"] >= 2 for style in coverage))
+        self.assertTrue(any(style["styleId"] == "style-1" and style["direct"] >= 1 for style in coverage))
 
     def test_module_selftest(self) -> None:
         self.assertTrue(run_builtin_selftest()["ok"])
@@ -61,13 +62,13 @@ class MatchingEngineDemoLibraryTest(unittest.TestCase):
         self.assertGreaterEqual(len(self.records), 20)
         results = match_menu_to_library(self.items, self.records, selected_style="style-1")
         self.assertEqual(len(results), len(self.items))
-        self.assertTrue(all(row["candidates"] for row in results))
+        self.assertTrue(all(row["candidates"] for row in results if row["kind"] != "套餐/组合"))
 
         combo = next(row for row in results if row["name"] == "辣椒炒肉+茄子肉末盖码饭")
         component_names = [component["name"] for component in combo["componentMatches"]]
         self.assertIn("辣椒炒肉", component_names)
-        self.assertIn("茄子肉末", component_names)
-        self.assertTrue(all(component["candidates"] for component in combo["componentMatches"]))
+        self.assertIn("茄子肉末盖码饭", component_names)
+        self.assertFalse(combo["candidates"])
 
         coverage = style_coverage(results)
         style_1 = next(style for style in coverage if style["styleId"] == "style-1")

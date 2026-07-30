@@ -36,13 +36,18 @@ def _alipay_key_env() -> dict[str, str]:
     }
 
 
-def _signed_alipay_payload(env: dict[str, str], provider_order_id: str, status: str = "TRADE_SUCCESS") -> dict[str, str]:
+def _signed_alipay_payload(
+    env: dict[str, str],
+    provider_order_id: str,
+    status: str = "TRADE_SUCCESS",
+    total_amount: str = "49.00",
+) -> dict[str, str]:
     payload = {
         "app_id": env["ALIPAY_APP_ID"],
         "out_trade_no": provider_order_id,
         "trade_no": "2026062922000000000001",
         "trade_status": status,
-        "total_amount": "49.00",
+        "total_amount": total_amount,
         "sign_type": "RSA2",
     }
     payload["sign"] = payments._alipay_rsa2_sign(  # type: ignore[attr-defined]
@@ -81,6 +86,87 @@ class PaymentServiceTests(unittest.TestCase):
             ("order-1",),
         ).fetchone()
         self.assertEqual(row, ("u1", 4900, 500, "pending"))
+
+    def test_catalog_order_uses_authenticated_user_and_server_package_values(self) -> None:
+        order = payments.create_catalog_payment_order(
+            self.conn,
+            authenticated_user_id="session-user",
+            request={"packageId": "store-1040"},
+            order_id="catalog-order-1",
+        )
+
+        self.assertEqual(order["userId"], "session-user")
+        self.assertEqual(order["amountCents"], 9900)
+        self.assertEqual(order["points"], 1040)
+        snapshot = order["providerPayload"]["paymentCatalogSnapshot"]
+        self.assertEqual(snapshot["packageId"], "store-1040")
+        self.assertEqual(snapshot["catalogVersion"], "recharge-cny-v1")
+        self.assertTrue(order["providerPayload"]["callbackAmountRequired"])
+
+    def test_catalog_order_rejects_unknown_package_and_client_authority_fields(self) -> None:
+        with self.assertRaises(payments.InvalidPaymentInput):
+            payments.create_catalog_payment_order(
+                self.conn,
+                authenticated_user_id="session-user",
+                request={"packageId": "unknown"},
+            )
+
+        for field, value in (
+            ("amountCents", 1),
+            ("points", 1000000),
+            ("userId", "victim"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(payments.InvalidPaymentInput):
+                    payments.create_catalog_payment_order(
+                        self.conn,
+                        authenticated_user_id="session-user",
+                        request={"packageId": "starter-500", field: value},
+                    )
+        self.assertEqual(self._count("payment_orders"), 0)
+
+    def test_catalog_order_idempotency_rejects_a_different_package(self) -> None:
+        payments.create_catalog_payment_order(
+            self.conn,
+            authenticated_user_id="u1",
+            request={"packageId": "starter-500"},
+            order_id="catalog-order-1",
+            idempotency_key="catalog-idem-1",
+        )
+
+        with self.assertRaises(payments.PaymentOrderConflict):
+            payments.create_catalog_payment_order(
+                self.conn,
+                authenticated_user_id="u1",
+                request={"packageId": "store-1040"},
+                order_id="catalog-order-2",
+                idempotency_key="catalog-idem-1",
+            )
+
+    def test_provider_payload_cannot_replace_frozen_catalog_snapshot(self) -> None:
+        order = payments.create_catalog_payment_order(
+            self.conn,
+            authenticated_user_id="u1",
+            request={"packageId": "starter-500"},
+            order_id="catalog-order-1",
+        )
+
+        updated = payments.attach_payment_provider_payload(
+            self.conn,
+            order["orderId"],
+            {"paymentUrl": "https://provider.example/checkout"},
+        )
+
+        self.assertEqual(
+            updated["providerPayload"]["paymentCatalogSnapshot"],
+            order["providerPayload"]["paymentCatalogSnapshot"],
+        )
+        with self.assertRaises(payments.PaymentOrderConflict):
+            payments.attach_payment_provider_payload(
+                self.conn,
+                order["orderId"],
+                {"paymentCatalogSnapshot": {"packageId": "forged"}},
+            )
 
     def test_fake_payment_provider_enabled_defaults_to_local_demo(self) -> None:
         self.assertTrue(payments.fake_payment_provider_enabled({}))
@@ -270,6 +356,55 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "paid")
         self.assertEqual(result["points_to_credit"], 490)
 
+    def test_verified_callback_normalization_does_not_write_sqlite(self) -> None:
+        env = _alipay_key_env()
+        payload = _signed_alipay_payload(env, "alipay-order-1")
+
+        event = payments.normalize_verified_payment_event(
+            provider="alipay",
+            provider_order_id="alipay-order-1",
+            event_type=payments.alipay_callback_event_type(payload),
+            payload=payload,
+            secret=env["ALIPAY_PUBLIC_KEY"],
+        )
+
+        self.assertEqual(event["target_status"], "paid")
+        self.assertEqual(event["amount_cents"], 4900)
+        self.assertEqual(event["provider_order_id"], "alipay-order-1")
+        self.assertTrue(event["provider_event_id"].startswith("payment:"))
+        self.assertEqual(self._count("payment_orders"), 0)
+        self.assertEqual(self._count("payment_events"), 0)
+
+    def test_manual_event_normalization_supports_partial_refund_amount(self) -> None:
+        event = payments.normalize_manual_payment_event(
+            provider="alipay",
+            provider_order_id="alipay-order-1",
+            target_status="refunded",
+            payload={"refundCents": 2450, "ticketId": "finance-1"},
+            event_id="manual-refund-1",
+        )
+
+        self.assertEqual(event["provider_event_id"], "manual-refund-1")
+        self.assertEqual(event["event_type"], "manual_refunded")
+        self.assertEqual(event["target_status"], "refunded")
+        self.assertEqual(event["amount_cents"], 2450)
+
+    def test_verified_callback_normalization_rejects_missing_amount(self) -> None:
+        payload = self._signed_payload(
+            "order-1",
+            "pay_success",
+            {"event_id": "evt-no-amount"},
+        )
+
+        with self.assertRaises(payments.PaymentAmountMismatch):
+            payments.normalize_verified_payment_event(
+                provider="fake",
+                provider_order_id="order-1",
+                event_type="pay_success",
+                payload=payload,
+                secret=SECRET,
+            )
+
     def test_alipay_callback_rejects_invalid_signature(self) -> None:
         env = _alipay_key_env()
         order = payments.create_payment_order(
@@ -292,6 +427,37 @@ class PaymentServiceTests(unittest.TestCase):
                 payload,
                 secret=env["ALIPAY_PUBLIC_KEY"],
             )
+
+    def test_alipay_callback_rejects_signed_amount_mismatch(self) -> None:
+        env = _alipay_key_env()
+        order = payments.create_payment_order(
+            self.conn,
+            user_id="u1",
+            amount_cents=4900,
+            points=490,
+            provider="alipay",
+            order_id="alipay-order-1",
+        )
+        payload = _signed_alipay_payload(
+            env,
+            order["provider_order_id"],
+            total_amount="1.00",
+        )
+
+        with self.assertRaises(payments.PaymentAmountMismatch) as context:
+            payments.handle_payment_callback(
+                self.conn,
+                "alipay",
+                order["provider_order_id"],
+                payments.alipay_callback_event_type(payload),
+                payload,
+                secret=env["ALIPAY_PUBLIC_KEY"],
+            )
+
+        self.assertEqual(context.exception.details["expectedAmountCents"], 4900)
+        self.assertEqual(context.exception.details["actualAmountCents"], 100)
+        self.assertEqual(self._order_status(order["order_id"]), "pending")
+        self.assertEqual(self._count("payment_events"), 0)
 
     def test_real_provider_checkout_guard_fails_closed_until_adapter_exists(self) -> None:
         with self.assertRaises(payments.PaymentAdapterNotImplemented) as context:
@@ -380,6 +546,72 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertEqual(result["points_to_credit"], 500)
         self.assertEqual(result["points_to_refund"], 0)
         self.assertEqual(self._order_status(order["order_id"]), "paid")
+
+    def test_catalog_callback_rejects_amount_mismatch_without_writing_event(self) -> None:
+        order = payments.create_catalog_payment_order(
+            self.conn,
+            authenticated_user_id="u1",
+            request={"packageId": "starter-500"},
+            order_id="catalog-order-1",
+        )
+        payload = self._signed_payload(
+            order["provider_order_id"],
+            "pay_success",
+            {"event_id": "evt-catalog-paid-1", "amountCents": 1},
+        )
+
+        with self.assertRaises(payments.PaymentAmountMismatch) as context:
+            payments.handle_payment_callback(
+                self.conn,
+                "fake",
+                order["provider_order_id"],
+                "pay_success",
+                payload,
+                secret=SECRET,
+            )
+
+        self.assertEqual(context.exception.details["expectedAmountCents"], 4900)
+        self.assertEqual(context.exception.details["actualAmountCents"], 1)
+        self.assertEqual(self._order_status(order["order_id"]), "pending")
+        self.assertEqual(self._count("payment_events"), 0)
+
+    def test_catalog_callback_requires_and_accepts_frozen_amount(self) -> None:
+        order = payments.create_catalog_payment_order(
+            self.conn,
+            authenticated_user_id="u1",
+            request={"packageId": "starter-500"},
+            order_id="catalog-order-1",
+        )
+        missing_amount = self._signed_payload(
+            order["provider_order_id"],
+            "pay_success",
+            {"event_id": "evt-catalog-missing-amount"},
+        )
+        with self.assertRaises(payments.PaymentAmountMismatch):
+            payments.handle_payment_callback(
+                self.conn,
+                "fake",
+                order["provider_order_id"],
+                "pay_success",
+                missing_amount,
+                secret=SECRET,
+            )
+
+        valid = self._signed_payload(
+            order["provider_order_id"],
+            "pay_success",
+            {"event_id": "evt-catalog-paid-1", "amountCents": 4900},
+        )
+        result = payments.handle_payment_callback(
+            self.conn,
+            "fake",
+            order["provider_order_id"],
+            "pay_success",
+            valid,
+            secret=SECRET,
+        )
+        self.assertEqual(result["status"], "paid")
+        self.assertEqual(result["pointsToCredit"], 500)
 
     def test_duplicate_success_callback_does_not_return_points_again(self) -> None:
         order = self._create_order()

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
+import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Mapping
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 import asset_security
 
@@ -33,6 +37,8 @@ REASON_ADMIN_REQUIRED = "admin_required"
 REASON_PURPOSE_NOT_ALLOWED = "purpose_not_allowed"
 REASON_VARIANT_NOT_AVAILABLE = "variant_not_available"
 REASON_TOKEN_REPLAYED = "token_replayed"
+REASON_NONCE_CONSUMER_REQUIRED = "nonce_consumer_required"
+REASON_NONCE_CONSUMER_ERROR = "nonce_consumer_error"
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,174 @@ class PurposePolicy:
     allowed_variants: frozenset[str]
     requires_owner: bool = True
     requires_admin: bool = False
+
+
+@dataclass(frozen=True)
+class NonceConsumptionRequest:
+    """Verified one-time token claims bound to one atomic nonce operation."""
+
+    consumption_key: str
+    nonce_key: str
+    purpose: str
+    user_id: str
+    asset_id: str
+    expires_at: float
+
+
+class NonceConsumptionStatus(str, Enum):
+    CONSUMED = "consumed"
+    REPLAYED = "replayed"
+    EXPIRED = "expired"
+    SCOPE_MISMATCH = "scope_mismatch"
+
+
+@dataclass(frozen=True)
+class NonceConsumptionResult:
+    status: NonceConsumptionStatus
+
+    @property
+    def consumed(self) -> bool:
+        return self.status is NonceConsumptionStatus.CONSUMED
+
+
+@runtime_checkable
+class NonceConsumer(Protocol):
+    """Atomic one-time nonce boundary for a shared persistent implementation."""
+
+    def consume_once(
+        self,
+        request: NonceConsumptionRequest,
+        *,
+        now: int | float | datetime | None = None,
+    ) -> NonceConsumptionResult:
+        """Atomically consume the nonce or return a non-success status."""
+
+
+@dataclass(frozen=True)
+class _ConsumedNonce:
+    scope_key: str
+    expires_at: float
+
+
+class InMemoryNonceConsumer:
+    """Thread-safe process-local implementation intended for tests and local use."""
+
+    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+        self._clock = clock or time.time
+        self._lock = threading.Lock()
+        self._consumed: dict[str, _ConsumedNonce] = {}
+
+    def consume_once(
+        self,
+        request: NonceConsumptionRequest,
+        *,
+        now: int | float | datetime | None = None,
+    ) -> NonceConsumptionResult:
+        _validate_nonce_consumption_request(request)
+        scope_key = _nonce_scope_key(request)
+        with self._lock:
+            timestamp = _timestamp(now, clock=self._clock)
+            self._purge_expired(timestamp)
+            if timestamp > request.expires_at:
+                return NonceConsumptionResult(NonceConsumptionStatus.EXPIRED)
+            existing = self._consumed.get(request.nonce_key)
+            if existing is not None:
+                status = (
+                    NonceConsumptionStatus.REPLAYED
+                    if existing.scope_key == scope_key
+                    else NonceConsumptionStatus.SCOPE_MISMATCH
+                )
+                return NonceConsumptionResult(status)
+            self._consumed[request.nonce_key] = _ConsumedNonce(
+                scope_key=scope_key,
+                expires_at=request.expires_at,
+            )
+            return NonceConsumptionResult(NonceConsumptionStatus.CONSUMED)
+
+    def _purge_expired(self, now: float) -> None:
+        expired = [
+            nonce_key
+            for nonce_key, consumed in self._consumed.items()
+            if now > consumed.expires_at
+        ]
+        for nonce_key in expired:
+            self._consumed.pop(nonce_key, None)
+
+
+class RedisNonceConsumer:
+    """Redis-backed atomic consumer for multi-process production runtimes."""
+
+    _CONSUME_SCRIPT = """
+-- WAIMAI_ASSET_NONCE_CONSUME
+local existing = redis.call('GET', KEYS[1])
+if existing then
+    if existing == ARGV[1] then
+        return 0
+    end
+    return -1
+end
+local redis_time = redis.call('TIME')
+local now = tonumber(redis_time[1])
+local expires_at = tonumber(ARGV[2])
+if not expires_at or expires_at <= now then
+    return -2
+end
+local ttl = math.ceil(expires_at - now)
+local stored = redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl, 'NX')
+if stored then
+    return 1
+end
+existing = redis.call('GET', KEYS[1])
+if existing == ARGV[1] then
+    return 0
+end
+return -1
+"""
+
+    def __init__(
+        self,
+        redis_client: Any,
+        *,
+        key_prefix: str = "waimai:asset-nonce",
+    ) -> None:
+        prefix = str(key_prefix or "").strip().strip(":")
+        if redis_client is None:
+            raise ValueError("redis_client is required")
+        if not prefix or any(char.isspace() for char in prefix):
+            raise ValueError("key_prefix must be a non-empty Redis key prefix")
+        self.redis = redis_client
+        self.key_prefix = prefix
+
+    def consume_once(
+        self,
+        request: NonceConsumptionRequest,
+        *,
+        now: int | float | datetime | None = None,
+    ) -> NonceConsumptionResult:
+        del now
+        _validate_nonce_consumption_request(request)
+        key = f"{self.key_prefix}:{request.nonce_key}"
+        scope_key = _nonce_scope_key(request)
+        result = int(
+            self.redis.eval(
+                self._CONSUME_SCRIPT,
+                1,
+                key,
+                scope_key,
+                str(float(request.expires_at)),
+            )
+        )
+        statuses = {
+            1: NonceConsumptionStatus.CONSUMED,
+            0: NonceConsumptionStatus.REPLAYED,
+            -1: NonceConsumptionStatus.SCOPE_MISMATCH,
+            -2: NonceConsumptionStatus.EXPIRED,
+        }
+        if result not in statuses:
+            raise RuntimeError(
+                f"unexpected Redis nonce consumption result: {result}"
+            )
+        return NonceConsumptionResult(statuses[result])
 
 
 PURPOSE_POLICIES: dict[str, PurposePolicy] = {
@@ -77,6 +251,7 @@ def authorize_download(
     now: int | float | datetime | None = None,
     audit_metadata: Mapping[str, Any] | None = None,
     consumed_token_keys: Any = None,
+    nonce_consumer: NonceConsumer | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Return a structured allow/deny decision for protected asset access.
@@ -94,6 +269,8 @@ def authorize_download(
     consumed_token_keys = kwargs.pop("consumed_nonces", consumed_token_keys)
     consumed_token_keys = kwargs.pop("used_nonces", consumed_token_keys)
     consumed_token_keys = kwargs.pop("token_ledger", consumed_token_keys)
+    nonce_consumer = kwargs.pop("nonce_store", nonce_consumer)
+    nonce_consumer = kwargs.pop("atomic_nonce_consumer", nonce_consumer)
 
     action = _action_for_purpose(purpose)
     token_claims = _peek_token_payload(token)
@@ -173,12 +350,6 @@ def authorize_download(
         return verified_deny(REASON_PURPOSE_MISMATCH)
     if variant != claims.get("variant"):
         return verified_deny(REASON_VARIANT_MISMATCH)
-    if (
-        consumption_key
-        and asset_security.requires_one_time_consumption(claims.get("purpose"))
-        and _token_key_consumed(consumed_token_keys, consumption_key)
-    ):
-        return verified_deny(REASON_TOKEN_REPLAYED)
     if asset_record is None:
         return verified_deny(REASON_ASSET_MISSING)
 
@@ -226,6 +397,31 @@ def authorize_download(
 
     if policy.requires_admin and not _has_admin_review_access(user_context, claims):
         return verified_deny(REASON_ADMIN_REQUIRED)
+
+    if asset_security.requires_one_time_consumption(claims.get("purpose")):
+        if consumption_key and _token_key_consumed(consumed_token_keys, consumption_key):
+            audit["token_consumption_status"] = NonceConsumptionStatus.REPLAYED.value
+            return verified_deny(REASON_TOKEN_REPLAYED)
+        if nonce_consumer is None:
+            audit["token_consumption_status"] = "consumer_required"
+            return verified_deny(REASON_NONCE_CONSUMER_REQUIRED)
+        try:
+            consumption_request = nonce_consumption_request_from_claims(claims)
+            consumption_result = nonce_consumer.consume_once(consumption_request, now=now)
+        except Exception:
+            audit["token_consumption_status"] = "consumer_error"
+            return verified_deny(REASON_NONCE_CONSUMER_ERROR)
+        if not isinstance(consumption_result, NonceConsumptionResult):
+            audit["token_consumption_status"] = "consumer_error"
+            return verified_deny(REASON_NONCE_CONSUMER_ERROR)
+        if not isinstance(consumption_result.status, NonceConsumptionStatus):
+            audit["token_consumption_status"] = "consumer_error"
+            return verified_deny(REASON_NONCE_CONSUMER_ERROR)
+        audit["token_consumption_status"] = consumption_result.status.value
+        if consumption_result.status is NonceConsumptionStatus.EXPIRED:
+            return verified_deny(REASON_TOKEN_EXPIRED)
+        if not consumption_result.consumed:
+            return verified_deny(REASON_TOKEN_REPLAYED)
 
     return _decision(
         allowed=True,
@@ -459,9 +655,96 @@ def _token_key_consumed(consumed_token_keys: Any, consumption_key: str) -> bool:
         return False
 
 
+def nonce_consumption_request_from_claims(
+    claims: Mapping[str, Any],
+) -> NonceConsumptionRequest:
+    """Build a scoped nonce request from already verified token claims."""
+    consumption_key = asset_security.asset_token_consumption_key(claims)
+    nonce = _required_claim_text(claims, "nonce")
+    expires_at = _expires_at(claims)
+    if expires_at is None:
+        raise asset_security.InvalidAssetTokenClaimError(
+            "asset token expires_at must be a timestamp"
+        )
+    return NonceConsumptionRequest(
+        consumption_key=consumption_key,
+        nonce_key="asset-nonce:" + hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
+        purpose=_required_claim_text(claims, "purpose"),
+        user_id=_required_claim_text(claims, "user_id"),
+        asset_id=_required_claim_text(claims, "asset_id"),
+        expires_at=float(expires_at),
+    )
+
+
+def _required_claim_text(claims: Mapping[str, Any], name: str) -> str:
+    value = claims.get(name)
+    if value is None or isinstance(value, bool):
+        raise asset_security.InvalidAssetTokenClaimError(
+            f"asset token {name} must be a non-empty string"
+        )
+    text = str(value).strip()
+    if not text:
+        raise asset_security.InvalidAssetTokenClaimError(
+            f"asset token {name} must be a non-empty string"
+        )
+    return text
+
+
+def _validate_nonce_consumption_request(request: NonceConsumptionRequest) -> None:
+    if not isinstance(request, NonceConsumptionRequest):
+        raise TypeError("request must be a NonceConsumptionRequest")
+    for name in (
+        "consumption_key",
+        "nonce_key",
+        "purpose",
+        "user_id",
+        "asset_id",
+    ):
+        value = getattr(request, name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-empty string")
+    if (
+        isinstance(request.expires_at, bool)
+        or not isinstance(request.expires_at, (int, float))
+    ):
+        raise ValueError("expires_at must be a timestamp")
+
+
+def _nonce_scope_key(request: NonceConsumptionRequest) -> str:
+    scope = {
+        "asset_id": request.asset_id,
+        "consumption_key": request.consumption_key,
+        "purpose": request.purpose,
+        "user_id": request.user_id,
+    }
+    return json.dumps(scope, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _timestamp(
+    value: int | float | datetime | None,
+    *,
+    clock: Callable[[], float],
+) -> float:
+    if value is None:
+        return float(clock())
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("now must be a timestamp or datetime")
+    return float(value)
+
+
 __all__ = [
     "ADMIN_REVIEW",
     "EXPORT",
+    "InMemoryNonceConsumer",
+    "NonceConsumer",
+    "NonceConsumptionRequest",
+    "NonceConsumptionResult",
+    "NonceConsumptionStatus",
+    "RedisNonceConsumer",
     "ORIGINAL",
     "PREVIEW",
     "PURPOSE_POLICIES",
@@ -475,6 +758,8 @@ __all__ = [
     "REASON_JOB_MISMATCH",
     "REASON_MISSING_SECRET",
     "REASON_MISSING_TOKEN",
+    "REASON_NONCE_CONSUMER_ERROR",
+    "REASON_NONCE_CONSUMER_REQUIRED",
     "REASON_ORDER_MISMATCH",
     "REASON_PURPOSE_MISMATCH",
     "REASON_PURPOSE_NOT_ALLOWED",
@@ -488,4 +773,5 @@ __all__ = [
     "check_download_access",
     "evaluate_download_request",
     "guard_download",
+    "nonce_consumption_request_from_claims",
 ]

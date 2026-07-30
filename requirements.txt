@@ -8,3 +8,4 @@ numpy==2.0.1
 cos-python-sdk-v5==1.9.44
 cryptography==42.0.8
 redis==5.0.8
+psycopg[binary]==3.3.4

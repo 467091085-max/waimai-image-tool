@@ -11,7 +11,7 @@ from typing import Any
 from flask import Flask
 
 from ai_asset_repository import AIAssetRepository
-from admin_panel import AdminDependencies, create_admin_blueprint
+from admin_panel import AdminAuthorization, AdminDependencies, create_admin_blueprint
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +82,10 @@ def make_app(
                 upload_dir=upload_dir,
                 db_path=db_path or upload_dir / "admin-test.db",
                 ai_asset_manifest_path=ai_asset_manifest_path,
+                request_authorizer=lambda _request, _scope: AdminAuthorization(
+                    authenticated=True,
+                    allowed=True,
+                ),
             )
         )
     )

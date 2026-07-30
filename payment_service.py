@@ -8,11 +8,13 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterator, Mapping
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import payment_rules
+from shared import payment_catalog
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -184,6 +186,10 @@ class PaymentTransitionError(PaymentServiceError, ValueError):
     code = "payment_transition_error"
 
 
+class PaymentAmountMismatch(PaymentServiceError, ValueError):
+    code = "payment_amount_mismatch"
+
+
 def init_payment_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
 
@@ -319,6 +325,8 @@ def create_payment_order(
     provider: str = "fake",
     order_id: str | None = None,
     idempotency_key: str | None = None,
+    *,
+    server_order_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     init_payment_schema(conn)
     provider = _clean_provider(provider)
@@ -327,11 +335,21 @@ def create_payment_order(
     points = _positive_int(points, "points")
     order_id = _clean_text(order_id, "order_id") if order_id is not None else f"pay_{uuid4().hex}"
     idempotency_key = _optional_clean_text(idempotency_key, "idempotency_key")
+    frozen_payload = dict(server_order_snapshot or {})
 
     with _transaction(conn):
         if idempotency_key:
             existing = _fetch_order_by_idempotency_key(conn, idempotency_key)
             if existing:
+                _ensure_same_order_request(
+                    existing,
+                    user_id=user_id,
+                    provider=provider,
+                    amount_cents=amount_cents,
+                    points=points,
+                    idempotency_key=idempotency_key,
+                )
+                _ensure_same_server_order_snapshot(existing, frozen_payload)
                 return _order_payload(existing, idempotent=True)
 
         existing = _fetch_order(conn, order_id)
@@ -344,17 +362,19 @@ def create_payment_order(
                 points=points,
                 idempotency_key=idempotency_key,
             )
+            _ensure_same_server_order_snapshot(existing, frozen_payload)
             return _order_payload(existing, idempotent=True)
 
         now = _now()
         provider_order_id = order_id
+        provider_payload_json = _json(frozen_payload)
         conn.execute(
             """
             INSERT INTO payment_orders (
                 order_id, user_id, provider, provider_order_id, amount_cents, points,
                 status, idempotency_key, provider_payload_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
@@ -365,6 +385,7 @@ def create_payment_order(
                 points,
                 STATUS_PENDING,
                 idempotency_key,
+                provider_payload_json,
                 now,
                 now,
             ),
@@ -375,6 +396,36 @@ def create_payment_order(
         return _order_payload(order, idempotent=False)
 
 
+def create_catalog_payment_order(
+    conn: sqlite3.Connection,
+    *,
+    authenticated_user_id: str,
+    request: Mapping[str, Any],
+    provider: str = "fake",
+    order_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    try:
+        package = payment_catalog.resolve_client_package(request)
+    except payment_catalog.PaymentCatalogError as exc:
+        raise InvalidPaymentInput(str(exc)) from exc
+
+    frozen_snapshot = {
+        "paymentCatalogSnapshot": package,
+        "callbackAmountRequired": True,
+    }
+    return create_payment_order(
+        conn,
+        user_id=authenticated_user_id,
+        amount_cents=int(package["amountCents"]),
+        points=int(package["points"]),
+        provider=provider,
+        order_id=order_id,
+        idempotency_key=idempotency_key,
+        server_order_snapshot=frozen_snapshot,
+    )
+
+
 def attach_payment_provider_payload(
     conn: sqlite3.Connection,
     order_id: str,
@@ -382,8 +433,12 @@ def attach_payment_provider_payload(
 ) -> dict[str, Any]:
     init_payment_schema(conn)
     order_id = _clean_text(order_id, "order_id")
-    payload_json = _json(dict(provider_payload))
     with _transaction(conn):
+        order = _fetch_order(conn, order_id)
+        if order is None:
+            raise PaymentOrderNotFound("Payment order not found", orderId=order_id)
+        existing_payload = _json_loads(str(order.get("provider_payload_json") or "{}"))
+        payload_json = _json(_merge_provider_payload(existing_payload, dict(provider_payload)))
         conn.execute(
             "UPDATE payment_orders SET provider_payload_json = ?, updated_at = ? WHERE order_id = ?",
             (payload_json, _now(), order_id),
@@ -467,6 +522,120 @@ def fake_callback_signature(
     return hmac.new(str(secret).encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def normalize_verified_payment_event(
+    *,
+    provider: str,
+    provider_order_id: str,
+    event_type: str,
+    payload: Mapping[str, Any] | None,
+    secret: str = "",
+) -> dict[str, Any]:
+    """Verify a provider callback without persisting it."""
+
+    clean_provider = _clean_provider(provider)
+    clean_provider_order_id = _clean_text(
+        provider_order_id,
+        "provider_order_id",
+    )
+    clean_event_type = _clean_text(event_type, "event_type")
+    clean_payload = _payload_dict(payload)
+    _verify_callback_signature(
+        clean_provider,
+        clean_provider_order_id,
+        clean_event_type,
+        clean_payload,
+        secret,
+    )
+    target_status = _target_status(clean_event_type, clean_payload)
+    if target_status == STATUS_PENDING:
+        raise PaymentTransitionError(
+            "Pending provider callbacks do not have a durable payment effect",
+            provider=clean_provider,
+            providerOrderId=clean_provider_order_id,
+        )
+    amount_cents = _normalized_event_amount_cents(
+        clean_provider,
+        clean_payload,
+        target_status=target_status,
+    )
+    if target_status in {STATUS_PAID, STATUS_REFUNDED} and amount_cents is None:
+        raise PaymentAmountMismatch(
+            "Payment callback amount is missing",
+            provider=clean_provider,
+            providerOrderId=clean_provider_order_id,
+        )
+    return {
+        "provider": clean_provider,
+        "provider_order_id": clean_provider_order_id,
+        "provider_event_id": _provider_event_id(
+            clean_provider,
+            clean_provider_order_id,
+            clean_event_type,
+            clean_payload,
+        ),
+        "event_type": clean_event_type,
+        "target_status": target_status,
+        "amount_cents": amount_cents,
+        "payload": clean_payload,
+    }
+
+
+def normalize_manual_payment_event(
+    *,
+    provider: str,
+    provider_order_id: str,
+    target_status: str,
+    payload: Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    event_type: str | None = None,
+) -> dict[str, Any]:
+    """Normalize a trusted administrator reconciliation without writing it."""
+
+    clean_provider = _clean_provider(provider)
+    clean_provider_order_id = _clean_text(
+        provider_order_id,
+        "provider_order_id",
+    )
+    clean_target_status = _clean_payment_status(
+        target_status,
+        "target_status",
+    )
+    if clean_target_status == STATUS_PENDING:
+        raise PaymentTransitionError(
+            "Manual reconciliation cannot target a pending payment",
+            provider=clean_provider,
+            providerOrderId=clean_provider_order_id,
+        )
+    clean_event_type = (
+        _optional_clean_text(event_type, "event_type")
+        or f"manual_{clean_target_status}"
+    )
+    clean_payload = _payload_dict(payload)
+    provider_event_id = (
+        _clean_text(event_id, "event_id")
+        if event_id is not None and str(event_id).strip()
+        else _provider_event_id(
+            clean_provider,
+            clean_provider_order_id,
+            clean_event_type,
+            clean_payload,
+        )
+    )
+    return {
+        "provider": clean_provider,
+        "provider_order_id": clean_provider_order_id,
+        "provider_event_id": provider_event_id,
+        "event_type": clean_event_type,
+        "target_status": clean_target_status,
+        "amount_cents": _normalized_event_amount_cents(
+            clean_provider,
+            clean_payload,
+            target_status=clean_target_status,
+        ),
+        "payload": clean_payload,
+    }
+
+
 def handle_payment_callback(
     conn: sqlite3.Connection,
     provider: str,
@@ -493,6 +662,7 @@ def handle_payment_callback(
         payload=payload,
         target_status=target_status,
         provider_event_id=provider_event_id,
+        verify_callback_amount=True,
     )
 
 
@@ -526,6 +696,7 @@ def reconcile_payment_event(
         payload=payload,
         target_status=target_status,
         provider_event_id=provider_event_id,
+        verify_callback_amount=False,
     )
 
 
@@ -538,6 +709,7 @@ def _record_payment_event(
     payload: dict[str, Any],
     target_status: str,
     provider_event_id: str,
+    verify_callback_amount: bool,
 ) -> dict[str, Any]:
     provider = _clean_provider(provider)
     provider_order_id = _clean_text(provider_order_id, "provider_order_id")
@@ -547,16 +719,23 @@ def _record_payment_event(
     payload = _payload_dict(payload)
 
     with _transaction(conn):
+        order = _fetch_order_by_provider_order_id(conn, provider, provider_order_id)
+        if order is None:
+            raise PaymentOrderNotFound(
+                "Payment order not found",
+                provider=provider,
+                providerOrderId=provider_order_id,
+            )
+        if verify_callback_amount:
+            _verify_frozen_callback_amount(
+                order,
+                provider=provider,
+                payload=payload,
+                target_status=target_status,
+            )
+
         existing_event = _fetch_event_by_provider_event_id(conn, provider, provider_event_id)
         if existing_event:
-            order = _fetch_order_by_provider_order_id(conn, provider, provider_order_id)
-            if order is None:
-                raise PaymentOrderNotFound(
-                    "Payment order not found for duplicate event",
-                    provider=provider,
-                    providerOrderId=provider_order_id,
-                    eventId=provider_event_id,
-                )
             return _callback_payload(
                 order,
                 event=existing_event,
@@ -566,14 +745,6 @@ def _record_payment_event(
                 idempotent=True,
                 points_to_credit=0,
                 points_to_refund=0,
-            )
-
-        order = _fetch_order_by_provider_order_id(conn, provider, provider_order_id)
-        if order is None:
-            raise PaymentOrderNotFound(
-                "Payment order not found",
-                provider=provider,
-                providerOrderId=provider_order_id,
             )
 
         previous_status = str(order["status"])
@@ -746,6 +917,125 @@ def _ensure_same_order_request(
         "Payment order already exists for a different request",
         orderId=existing["order_id"],
     )
+
+
+def _ensure_same_server_order_snapshot(
+    existing: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> None:
+    if not expected:
+        return
+    actual = _json_loads(str(existing.get("provider_payload_json") or "{}"))
+    for key, value in expected.items():
+        if actual.get(key) != value:
+            raise PaymentOrderConflict(
+                "Payment order already exists for a different server snapshot",
+                orderId=existing["order_id"],
+            )
+
+
+def _merge_provider_payload(
+    existing: Mapping[str, Any],
+    checkout: Mapping[str, Any],
+) -> dict[str, Any]:
+    protected = {"paymentCatalogSnapshot", "callbackAmountRequired"}
+    for key in protected:
+        if key in checkout and key in existing and checkout[key] != existing[key]:
+            raise PaymentOrderConflict("Provider payload cannot replace frozen payment data", field=key)
+    merged = {**dict(existing), **dict(checkout)}
+    for key in protected:
+        if key in existing:
+            merged[key] = existing[key]
+    return merged
+
+
+def _verify_frozen_callback_amount(
+    order: Mapping[str, Any],
+    *,
+    provider: str,
+    payload: Mapping[str, Any],
+    target_status: str,
+) -> None:
+    if target_status != STATUS_PAID:
+        return
+    provider_payload = _json_loads(str(order.get("provider_payload_json") or "{}"))
+    required = provider == "alipay" or provider_payload.get("callbackAmountRequired") is True
+    actual_cents = _callback_amount_cents(provider, payload)
+    expected_cents = int(order["amount_cents"])
+    if actual_cents is None:
+        if required:
+            raise PaymentAmountMismatch(
+                "Payment callback amount is missing",
+                provider=provider,
+                orderId=order["order_id"],
+                expectedAmountCents=expected_cents,
+            )
+        return
+    if actual_cents != expected_cents:
+        raise PaymentAmountMismatch(
+            "Payment callback amount does not match the frozen order amount",
+            provider=provider,
+            orderId=order["order_id"],
+            expectedAmountCents=expected_cents,
+            actualAmountCents=actual_cents,
+        )
+
+
+def _callback_amount_cents(
+    provider: str,
+    payload: Mapping[str, Any],
+) -> int | None:
+    if provider == "alipay":
+        for key in ("total_amount", "totalAmount"):
+            if key in payload:
+                return _yuan_amount_cents(payload[key], key)
+        return None
+    for key in ("amount_cents", "amountCents"):
+        if key in payload:
+            return _non_negative_int(payload[key], key)
+    for key in ("total_amount", "totalAmount"):
+        if key in payload:
+            return _yuan_amount_cents(payload[key], key)
+    return None
+
+
+def _normalized_event_amount_cents(
+    provider: str,
+    payload: Mapping[str, Any],
+    *,
+    target_status: str,
+) -> int | None:
+    if target_status == STATUS_PAID:
+        return _callback_amount_cents(provider, payload)
+    if target_status != STATUS_REFUNDED:
+        return None
+    for key in (
+        "refund_cents",
+        "refundCents",
+        "refund_amount_cents",
+        "refundAmountCents",
+        "amount_cents",
+        "amountCents",
+    ):
+        if key in payload:
+            return _non_negative_int(payload[key], key)
+    for key in ("refund_fee", "refundFee"):
+        if key in payload:
+            return _yuan_amount_cents(payload[key], key)
+    return None
+
+
+def _yuan_amount_cents(value: Any, field: str) -> int:
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise InvalidPaymentInput("Invalid payment callback amount", field=field) from exc
+    if not amount.is_finite():
+        raise InvalidPaymentInput("Invalid payment callback amount", field=field)
+    cents = amount * 100
+    if amount < 0 or cents != cents.to_integral_value():
+        raise InvalidPaymentInput("Invalid payment callback amount", field=field)
+    return int(cents)
 
 
 def _fetch_order(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | None:

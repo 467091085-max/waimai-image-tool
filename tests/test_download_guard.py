@@ -21,6 +21,7 @@ class DownloadGuardTests(unittest.TestCase):
         self.user_context = {"user_id": "user-1"}
         self.order_context = {"order_id": "order-1"}
         self.job_context = {"job_id": "job-1"}
+        self.nonce_consumer = download_guard.InMemoryNonceConsumer()
 
     def test_allows_original_download_when_token_and_context_match(self) -> None:
         token = self._token(asset_security.ORIGINAL, asset_security.ORIGINAL)
@@ -176,6 +177,7 @@ class DownloadGuardTests(unittest.TestCase):
             token,
             self.secret,
             now=self.now,
+            nonce_consumer=self.nonce_consumer,
         )
 
     def _token(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import job_rules as rules
@@ -157,6 +158,7 @@ class GenerationQueueIntegrationTests(unittest.TestCase):
         with (
             mock.patch.object(app_module, "generation_queue", queue),
             mock.patch.object(app_module, "public_style_ids", return_value={"style-1"}),
+            mock.patch.object(app_module, "local_demo_generation_allowed", return_value=True),
             mock.patch.object(app_module, "build_plan") as build_plan,
         ):
             response = client.post("/api/generation-jobs", json={"style": "missing-style", "quality": "standard"})
@@ -258,9 +260,154 @@ class GenerationQueueIntegrationTests(unittest.TestCase):
         ):
             response = client.post("/api/generation-jobs", json={"style": "style-1", "quality": "standard"})
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()["code"], "auth_required")
         self.assertEqual(queue.list(), [])
         build_plan.assert_not_called()
+
+    def test_authenticated_session_owns_job_and_ignores_spoofed_user_header(self) -> None:
+        queue = self.make_queue()
+        client = app_module.app.test_client()
+        selected_background = app_module.SelectedBackgroundAsset(
+            asset_id="bg_test",
+            menu_key="1" * 12,
+            style_id="style-1",
+            sha256="2" * 64,
+            path=Path("/tmp/bg-test.image"),
+            width=1024,
+            height=768,
+        )
+        menu_snapshot = {
+            "id": "menu_" + ("a" * 32),
+            "objectKey": "menus/menu.xlsx",
+            "sha256": "1" * 64,
+            "parserVersion": 1,
+            "ownerUserId": "server-user",
+            "originalFilename": "menu.xlsx",
+            "summary": {"count": 3},
+        }
+        background_snapshot = {
+            "assetId": selected_background.asset_id,
+            "styleId": selected_background.style_id,
+            "sha256": selected_background.sha256,
+            "objectKey": "generated/selected-backgrounds/bg_test/image",
+            "width": selected_background.width,
+            "height": selected_background.height,
+        }
+
+        with (
+            mock.patch.object(app_module, "generation_queue", queue),
+            mock.patch.object(app_module, "public_style_ids", return_value={"style-1"}),
+            mock.patch.object(app_module, "tencent_ready", return_value=True),
+            mock.patch.object(app_module, "generation_write_authorized", return_value=False),
+            mock.patch.object(app_module, "local_demo_generation_allowed", return_value=False),
+            mock.patch.object(
+                app_module,
+                "require_authenticated_session",
+                return_value=({"user_id": "server-user"}, None),
+            ),
+            mock.patch.object(app_module, "resolve_menu_upload_snapshot", return_value=menu_snapshot),
+            mock.patch.object(app_module, "materialize_menu_upload_snapshot", return_value=Path("/tmp/menu.xlsx")),
+            mock.patch.object(app_module, "requested_selected_background", return_value=selected_background),
+            mock.patch.object(app_module, "selected_background_batch_snapshot", return_value=background_snapshot),
+            mock.patch.object(app_module, "batch_watermark_snapshot", return_value={"enabled": False}),
+            mock.patch.object(
+                app_module.billing,
+                "debit_account",
+                return_value={"idempotent": False, "balance": 970},
+            ) as debit_account,
+            mock.patch.object(
+                app_module,
+                "persist_generation_batch_contract",
+                return_value=({"status": "queued"}, True),
+            ),
+            mock.patch.object(app_module, "run_generation_batch_job", return_value={"generation": {}}),
+            mock.patch.object(app_module, "account_payload", return_value={"balance": 970}),
+        ):
+            response = client.post(
+                "/api/generation-jobs",
+                headers={
+                    "Authorization": "Bearer valid-session",
+                    "X-User-Id": "attacker-user",
+                },
+                json={
+                    "style": "style-1",
+                    "quality": "standard",
+                    "jobId": "browser-idempotency-key",
+                    "menuUploadId": menu_snapshot["id"],
+                    "platforms": ["meituan"],
+                    "watermark": {"enabled": False},
+                    "imageCount": 9999,
+                },
+            )
+            queue.join(timeout=2)
+
+        self.assertEqual(response.status_code, 200)
+        created = response.get_json()
+        self.assertTrue(created["jobId"].startswith("generation-"))
+        self.assertNotEqual(created["jobId"], "browser-idempotency-key")
+        jobs = queue.list()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].metadata["userId"], "server-user")
+        self.assertNotEqual(jobs[0].metadata["userId"], "attacker-user")
+        self.assertEqual(jobs[0].metadata["menuUploadId"], menu_snapshot["id"])
+        self.assertEqual(len(jobs[0].metadata["requestSha256"]), 64)
+        debit_account.assert_called_once()
+        self.assertEqual(debit_account.call_args.args[0], "server-user")
+        self.assertEqual(debit_account.call_args.args[2], 30)
+
+    def test_generation_job_status_and_cancel_hide_other_users_job(self) -> None:
+        queue = self.make_queue()
+        queue.store.reserve(
+            "owned-job",
+            requested=1,
+            metadata={"style": "style-1", "userId": "owner-user"},
+        )
+        client = app_module.app.test_client()
+
+        with (
+            mock.patch.object(app_module, "generation_queue", queue),
+            mock.patch.object(
+                app_module,
+                "generation_request_principal",
+                return_value=(
+                    {
+                        "userId": "other-user",
+                        "internal": False,
+                        "localDemo": False,
+                    },
+                    None,
+                ),
+            ),
+        ):
+            hidden_status = client.get("/api/generation-jobs/owned-job")
+            hidden_cancel = client.post(
+                "/api/generation-jobs/owned-job/cancel"
+            )
+
+        self.assertEqual(hidden_status.status_code, 404)
+        self.assertEqual(hidden_cancel.status_code, 404)
+        self.assertEqual(queue.get("owned-job").status, rules.STATUS_QUEUED)
+
+        with (
+            mock.patch.object(app_module, "generation_queue", queue),
+            mock.patch.object(
+                app_module,
+                "generation_request_principal",
+                return_value=(
+                    {
+                        "userId": "owner-user",
+                        "internal": False,
+                        "localDemo": False,
+                    },
+                    None,
+                ),
+            ),
+        ):
+            visible = client.get("/api/generation-jobs/owned-job")
+
+        self.assertEqual(visible.status_code, 200)
+        self.assertEqual(visible.get_json()["jobId"], "owned-job")
 
 
 if __name__ == "__main__":

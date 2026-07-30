@@ -32,9 +32,9 @@
 
 - 图库策略：新生成的品类背景图、免费样图、正式菜品图都沉淀到服务器目录或生产对象存储；AI asset manifest 打标签，未来按品类、菜名、关键词、风格和质量复用。
 - 前台口径：不宣传“真实图库”，只表达 AI 生成、样图预览、历史生成资产复用；内部参考图只用于匹配、兜底、审核和资产沉淀。
-- 代理/邀请：默认只做一级直推；代理统一按直接订单实付净额 20% 返佣；C 端注册邀请人 50 积分、被邀请人 50 积分，仅直接邀请首充返 10% 积分，不返现金、不提现。
+- 代理/邀请：只做一级直接关系；代理首单按实付净额 20% 返佣、复购按 10% 返佣；C 端注册邀请人 100 积分、被邀请人 20 积分，仅直接邀请首充返 10% 积分，不返现金、不提现。上线前仍需由中国执业律师审核具体页面、合同和运营流程。
 - 当前代理/邀请只完成本地 MVP 闭环；提现、实名/主体认证、真实打款、已打款后的财务追索、月度自动结算和完整后台操作仍未生产化。
-- 短信登录：本地 demo 可继续返回 `mockCode`；生产环境必须关闭本地 demo 并配置 `SMS_PROVIDER=webhook`、`SMS_WEBHOOK_URL`，否则不会静默生成验证码。
+- 短信登录：本地 demo 可继续返回 `mockCode`；生产环境必须关闭本地 demo，配置 `SMS_PROVIDER=webhook`、`SMS_WEBHOOK_URL`、`AUTH_SESSION_HASH_SECRET` 和 `AUTH_OTP_HASH_SECRET`，并共享 `DATABASE_URL`/`REDIS_URL`。生产验证码、用户、session 和门店归属不会回退到本地 SQLite。
 - 支付：本地 demo 可继续使用 fake pay；生产关闭 `ENABLE_LOCAL_DEMO_BILLING` 后，必须配置真实支付。当前支付宝电脑网站支付支持 RSA2 签名下单和异步通知验签入账；后台财务人工支付对账已可推进订单 paid/refunded/closed/failed 并复用积分入账/退款；微信支付仍未接入 adapter，会 fail-closed。
 - 对象存储：本地 demo 可继续使用 local/mock 存储；生产或设置 `ENABLE_LOCAL_DEMO_STORAGE=false` 时，local/mock 会被 readiness 标记为 not production-ready，必须配置私有远程 provider、bucket 和 `OBJECT_SIGNING_SECRET`。
 - 合规边界：多级分销暂不启用，必须法务确认后另开方案。
@@ -82,25 +82,41 @@ PORT=8795 python3 app.py
 
 ## Render 部署
 
-Render 使用本仓库里的 `render.yaml` / `Procfile` 部署。
+Render 拓扑以仓库根目录的 `render.yaml` 为准。蓝图关闭了自动部署和预览环境；同步蓝图会涉及付费 Worker、持久化 Key Value 和 PostgreSQL，必须在人工确认费用、凭据与迁移后进行。
 
-推荐配置：
+当前活动入口：
 
-- Build Command: `pip install -r requirements.txt`
-- Start Command: `gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60`
-- Health Check Path: `/healthz`
-- Worker Command: `python worker/worker.py`
-- Python: Render 自动识别 Python 3
-- 必需环境变量：`REDIS_URL`
+- 客户网站 `waimai-image-tool`：`gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60`，健康检查 `/`。
+- 独立 API `waimai-image-tool-api`：`gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60`；`/healthz` 只有在 Redis 可读且 `prompt-worker` TTL 心跳有效时返回 200。
+- Prompt Worker：`python -m worker.prompt_worker`，独占 `generate` 队列和 TokenHub provider 调用；启动时要求 `AI_IMAGE_PROVIDER=tencent-tokenhub` 与 `TENCENT_TOKENHUB_API_KEY`。
+- Outbox Dispatcher：`python -m worker.outbox_dispatcher`。
+- Product Worker：`python -m worker.worker`，并设置 `WORKER_TASK_MODE=product`。
+- Settlement Reconciler：`python -m worker.product_settlement_reconciler`，独立验证 Redis 终态、PostgreSQL fence、manifest 摘要和退款结算；客户是否轮询不影响最终结算。
+- Redis/Key Value：所有活动进程通过 `fromService` 共用内部 `REDIS_URL`；队列配置为 `noeviction`，PostgreSQL/outbox 才是持久任务事实源。
+- PostgreSQL：客户网站和 Outbox Dispatcher 通过 `fromDatabase` 获取 `DATABASE_URL`；蓝图不会自动执行 `migrations/`。
 
-部署流程：
+部署阻塞：
 
-1. 推送代码到 GitHub。
-2. Render 绑定该 GitHub 仓库。
-3. 创建 Web Service。
-4. 选择 `main` 分支。
-5. 配置 `REDIS_URL`，等待 API Server 自动部署完成。
-6. 独立启动 Worker 进程，使用同一个 `REDIS_URL`。
+- Prompt 队列消费者已在蓝图中声明，但本次只完成代码和无网络测试；同步蓝图、创建付费 Worker、配置 TokenHub 密钥及真实生图仍需单独授权和线上验收。
+- 客户网站仍有部分账号、计费和审计状态使用本地 SQLite；计算服务未挂载持久磁盘，不能把本地文件系统当生产数据源。
+- 首次启用 PostgreSQL 前必须人工执行并验证迁移；本次蓝图不会部署、创建资源或迁移数据库。
+
+独立 Prompt Worker 本地启动需要与 API 共用 `REDIS_URL`，并配置：
+
+```text
+AI_IMAGE_PROVIDER=tencent-tokenhub
+TENCENT_TOKENHUB_API_KEY=<Render secret>
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
+```
+
+独立 API 还必须配置 `PROMPT_API_TOKEN`。`POST /generate` 和
+`GET /status/<task_id>` 都要求 `Authorization: Bearer <token>` 或
+`X-Prompt-API-Token: <token>`；缺少服务端 token 时接口会 fail closed，
+不会把任务写入 Redis。该鉴权不改变固定 JSON 请求/响应字段。
+
+Worker 会把 provider 返回的 HTTPS 图片地址写入 Redis 终态。当前独立
+`/generate` 合同未承诺把该远程地址再次复制到产品对象存储；供应商 URL
+的有效期仍需在真实联调中确认。
 
 当前线上地址：
 
@@ -132,6 +148,48 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q
 ```bash
 PYTHONPATH=.codex_deps:. python3 -m menu_parser /Users/guiguixiaxia/Documents/menus
 ```
+
+### 真实菜单端到端验收
+
+默认模式不会调用腾讯或其他付费 provider。它使用电脑中的真实 Excel
+菜单，替换的只有 provider 边界；上传、菜单快照、6 张背景、所选背景、
+6 张免费样图、异步正式任务、manifest、私有图片读取和导出 ZIP 都走真实
+应用代码：
+
+```bash
+python3 scripts/menu_e2e_acceptance.py \
+  --mode deterministic \
+  --menu "/Users/guiguixiaxia/Documents/menus/运营数据_蔬适圈·中式轻食健康餐（万达店）.xlsx" \
+  --platform meituan \
+  --report scripts/reports/menu-e2e-deterministic-real-menu.json
+```
+
+脚本逐阶段输出 `PASS` / `FAIL` / `SKIP` / `BLOCKED`，报告包含解析行数和
+菜名、6 张背景 SHA-256、样图及正式图的所选背景一致性、生成数量、
+manifest 资产校验和导出 ZIP 校验。`deterministic` 结果始终写入
+`productionProviderVerified=false`，不能作为真实混元或生产部署通过证据。
+省略 `--menu` 时，脚本会读取 `--menu-dir`（默认
+`~/Documents/menus`）中按文件名排序的第一份 Excel。
+
+真实 provider 模式会产生付费调用，必须同时满足精确确认、保守调用预算、
+TokenHub、腾讯云 Mask 和 COS 预检。每次运行使用新的隔离目录，不把旧缓存
+冒充本次 provider 证据；provider 操作预算在每个背景、前景和 Mask 调用
+边界强制执行。预算按 `6 + 2 * 6 + 2 * 菜单行数` 计算，故意不扣除缓存
+（TokenHub 异步状态轮询不计为新的图片生成操作）：
+
+```bash
+export WAIMAI_E2E_REAL_PROVIDER_CONFIRM=I_ACCEPT_REAL_PROVIDER_CHARGES
+export WAIMAI_E2E_REAL_PROVIDER_MAX_CALLS=<不小于报告预估值的整数>
+
+python3 scripts/menu_e2e_acceptance.py \
+  --mode real \
+  --menu "/absolute/path/to/menu.xlsx" \
+  --report /absolute/path/to/real-provider-report.json
+```
+
+未满足任一条件时，`real` 模式在导入应用和调用 provider 前返回退出码 2，
+`preflight=BLOCKED`、后续阶段为 `SKIP`，并记录 `providerCalls=0`。报告只
+记录凭据是否配置，不记录 API Key、SecretId 或 SecretKey。
 
 内部参考图索引扫描：
 

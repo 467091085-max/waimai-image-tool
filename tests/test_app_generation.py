@@ -276,6 +276,10 @@ class AppGenerationTests(unittest.TestCase):
                 "Resolution": "1024:768",
                 "RspImgType": "url",
                 "LogoAdd": 0,
+                "Images": [
+                    "https://cdn.example.test/background.jpg",
+                    "https://cdn.example.test/reference.jpg",
+                ],
             })
 
         self.assertEqual(payload["model"], "hy-image-lite")
@@ -284,6 +288,13 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(payload["resolution"], "1024:768")
         self.assertEqual(payload["rsp_img_type"], "url")
         self.assertEqual(payload["logo_add"], 0)
+        self.assertEqual(
+            payload["images"],
+            [
+                "https://cdn.example.test/background.jpg",
+                "https://cdn.example.test/reference.jpg",
+            ],
+        )
 
     def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
         calls: list[str] = []
@@ -301,7 +312,7 @@ class AppGenerationTests(unittest.TestCase):
 
         self.assertEqual(calls, [app_module.TENCENT_AIART_HOST, app_module.TENCENT_HUNYUAN_HOST])
 
-    def test_preview_requires_provider_when_tencent_fails_without_local_fallback(self) -> None:
+    def test_preview_preserves_configured_provider_failure_without_claiming_unconfigured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.jpg"
@@ -317,8 +328,104 @@ class AppGenerationTests(unittest.TestCase):
                 preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
 
             self.assertIsNone(preview_candidate)
+            self.assertEqual(generation["status"], "failed")
+            self.assertEqual(generation["action"], "ProviderError")
+            self.assertEqual(generation["errorCode"], "provider_quota")
+            self.assertFalse(generation["retryable"])
+            self.assertNotIn("未配置", generation["error"])
+
+    def test_preview_marks_transient_provider_failure_retryable_and_redacts_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = menu_row(1, "牛油果鸡胸沙拉", "单品", [])
+            error = RuntimeError(
+                "TokenHub HTTP 504: gateway timeout "
+                "Authorization: Bearer secret-value "
+                "Credential=secret-id/2026-07-29 Signature=secret-signature"
+            )
+
+            with self.assertLogs(app_module.app.logger, level="WARNING") as captured:
+                with (
+                    mock.patch.object(app_module, "LIBRARY_DIR", root),
+                    mock.patch.object(app_module, "tencent_ready", return_value=True),
+                    mock.patch.object(app_module, "tencent_replace_background", side_effect=error),
+                    mock.patch.object(app_module, "tencent_text_to_image", side_effect=error),
+                ):
+                    preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            self.assertIsNone(preview_candidate)
+            self.assertEqual(generation["status"], "failed")
+            self.assertEqual(generation["action"], "ProviderError")
+            self.assertEqual(generation["errorCode"], "provider_transient")
+            self.assertTrue(generation["retryable"])
+            self.assertNotIn("[redacted]", generation["error"])
+            self.assertNotIn("secret-value", generation["error"])
+            log_output = "\n".join(captured.output)
+            self.assertIn("[redacted]", log_output)
+            self.assertNotIn("secret-value", log_output)
+            self.assertNotIn("secret-id", log_output)
+            self.assertNotIn("secret-signature", log_output)
+
+    def test_preview_provider_failure_classifies_documented_error_codes(self) -> None:
+        cases = (
+            ("FailedOperation.RequestTimeout", "provider_transient", True),
+            ("FailedOperation.RpcFail", "provider_transient", True),
+            ("FailedOperation.InnerError", "provider_transient", True),
+            ("RequestLimitExceeded.JobNumExceed", "provider_transient", True),
+            ("ResourceUnavailable.LowBalance", "provider_quota", False),
+            ("ResourceUnavailable.InArrears", "provider_quota", False),
+            ("AuthFailure.UnauthorizedOperation", "provider_auth", False),
+            ("InvalidParameterValue.ParameterValueError", "provider_error", False),
+        )
+
+        for raw_error, error_code, retryable in cases:
+            with self.subTest(raw_error=raw_error):
+                failure = app_module.preview_provider_failure(RuntimeError(raw_error))
+                self.assertEqual(failure["errorCode"], error_code)
+                self.assertEqual(failure["retryable"], retryable)
+
+    def test_preview_retry_reuses_cached_generation_without_provider_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = menu_row(1, "牛油果鸡胸沙拉", "单品", [])
+            target = root / "_generated_previews" / "menu-cache" / "style-1" / "0001_牛油果鸡胸沙拉.jpg"
+            save_image(target)
+            app_module.write_ai_output_metadata(
+                target,
+                {"status": "succeeded", "provider": "tencent-hunyuan", "action": "TokenHubImageV3"},
+            )
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "current_menu_cache_key", return_value="menu-cache"),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(app_module, "tencent_text_to_image") as text_to_image,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            text_to_image.assert_not_called()
+            self.assertIsNotNone(preview_candidate)
+            self.assertEqual(generation["status"], "cached")
+
+    def test_preview_waits_for_configuration_only_when_provider_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = menu_row(1, "牛油果鸡胸沙拉", "单品", [])
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "tencent_ready", return_value=False),
+                mock.patch.object(app_module, "local_preview_fallback_enabled", return_value=False),
+                mock.patch.object(app_module, "tencent_replace_background") as replace,
+                mock.patch.object(app_module, "tencent_text_to_image") as text_to_image,
+            ):
+                preview_candidate, generation = app_module.materialize_preview_candidate(row, "style-1", "standard")
+
+            self.assertIsNone(preview_candidate)
             self.assertEqual(generation["status"], "pending")
             self.assertEqual(generation["action"], "WaitingForModelConfig")
+            replace.assert_not_called()
+            text_to_image.assert_not_called()
 
     def test_preview_reuses_same_style_candidate_without_tencent_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -437,7 +544,7 @@ class AppGenerationTests(unittest.TestCase):
             calls.append((style_id, generate))
             return {
                 "imageId": f"{style_id}-done",
-                "url": f"/media/{style_id}.jpg",
+                "url": f"/media/demo_store/{style_id}/background.jpg",
                 "styleId": style_id,
                 "dishName": "背景风格样图",
                 "generationProvider": "tencent-hunyuan",
@@ -451,7 +558,10 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(calls, [("style-1", True)])
-        self.assertEqual(payload["sample"]["url"], "/media/style-1.jpg")
+        self.assertEqual(
+            payload["sample"]["url"],
+            "/media/demo_store/style-1/background.jpg",
+        )
         self.assertEqual(payload["sample"]["generationAction"], "TextToImageLite")
 
     def test_persist_hunyuan_product_asset_writes_matchable_manifest(self) -> None:
@@ -572,7 +682,8 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(detail["action"], "TextToImageLite")
             self.assertEqual(payloads[0][0], "TextToImageLite")
             self.assertNotIn("ProductUrl", payloads[0][1])
-            self.assertIn("背景风格样图", str(payloads[0][1]["Prompt"]))
+            self.assertIn("纯背景场景", str(payloads[0][1]["Prompt"]))
+            self.assertIn("不要出现菜品", str(payloads[0][1]["Prompt"]))
             seed_candidate.assert_not_called()
             public_url.assert_not_called()
 
@@ -610,6 +721,84 @@ class AppGenerationTests(unittest.TestCase):
         materialize.assert_not_called()
         self.assertEqual(manifest["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
         self.assertEqual(manifest["samples"][0]["generation"]["status"], "pending")
+
+    def test_style_preview_batch_preserves_successes_when_one_sample_raises(self) -> None:
+        entries = [
+            {"item": menu_row(index + 1, f"菜品{index + 1}", "单品", []), "candidates": []}
+            for index in range(app_module.PREVIEW_SAMPLE_COUNT)
+        ]
+
+        def generate_sample(style: str, entry: dict[str, object], generate: bool = True) -> dict[str, object]:
+            row = int(entry["item"]["row"])
+            if row == 3:
+                raise RuntimeError("TokenHub HTTP 504: gateway timeout")
+            return {
+                **entry["item"],
+                "candidate": {"url": f"/media/sample-{row}.jpg"},
+                "generation": {"status": "succeeded", "provider": "tencent-hunyuan", "action": "TextToImage"},
+                "points": 0,
+                "publicStatus": "免费样图",
+            }
+
+        with (
+            mock.patch.object(app_module, "preview_sample_entries", return_value=entries),
+            mock.patch.object(app_module, "preview_sample_payload_from_entry", side_effect=generate_sample),
+            mock.patch.object(app_module, "FINAL_GENERATION_WORKERS", 3),
+        ):
+            preview = app_module.preview_samples("style-1", generate=True)
+
+        self.assertEqual(len(preview["samples"]), app_module.PREVIEW_SAMPLE_COUNT)
+        self.assertEqual([sample["row"] for sample in preview["samples"]], list(range(1, 7)))
+        self.assertEqual(preview["samples"][2]["generation"]["status"], "failed")
+        self.assertEqual(preview["samples"][2]["generation"]["action"], "ProviderError")
+        self.assertTrue(preview["samples"][2]["generation"]["retryable"])
+        self.assertEqual(
+            [sample["candidate"]["url"] for sample in preview["samples"] if sample["candidate"]],
+            ["/media/sample-1.jpg", "/media/sample-2.jpg", "/media/sample-4.jpg", "/media/sample-5.jpg", "/media/sample-6.jpg"],
+        )
+
+    def test_style_preview_sample_api_validates_index_and_generates_only_requested_sample(self) -> None:
+        sample = {
+            **menu_row(3, "菜品3", "单品", []),
+            "candidate": {
+                "url": "/media/demo_store/style-1/sample-3.jpg"
+            },
+            "generation": {"status": "succeeded", "provider": "tencent-hunyuan", "action": "TextToImage"},
+            "points": 0,
+            "publicStatus": "免费样图",
+        }
+        client = app_module.app.test_client()
+
+        with mock.patch.object(app_module, "preview_sample_payload") as generate:
+            invalid_urls = (
+                "/api/style-preview-sample?style=style-1",
+                "/api/style-preview-sample?style=style-1&index=",
+                "/api/style-preview-sample?style=style-1&index=abc",
+                "/api/style-preview-sample?style=style-1&index=1.5",
+            )
+            for url in invalid_urls:
+                with self.subTest(url=url):
+                    self.assertEqual(client.get(url).status_code, 400)
+            generate.assert_not_called()
+
+        entries = [
+            {"item": menu_row(index + 1, f"菜品{index + 1}", "单品", []), "candidates": []}
+            for index in range(app_module.PREVIEW_SAMPLE_COUNT)
+        ]
+        with mock.patch.object(app_module, "preview_sample_entries", return_value=entries):
+            self.assertEqual(client.get("/api/style-preview-sample?style=style-1&index=-1").status_code, 404)
+            self.assertEqual(client.get("/api/style-preview-sample?style=style-1&index=6").status_code, 404)
+
+        with mock.patch.object(app_module, "preview_sample_payload", return_value=sample) as generate:
+            response = client.get("/api/style-preview-sample?style=style-1&index=2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["index"], 2)
+        self.assertEqual(
+            response.get_json()["sample"]["candidate"]["url"],
+            "/media/demo_store/style-1/sample-3.jpg",
+        )
+        generate.assert_called_once_with("style-1", 2, generate=True)
 
 
 if __name__ == "__main__":

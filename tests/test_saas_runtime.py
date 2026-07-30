@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import pytest
+
 from shared.redis_queue import RedisQueueConfig, RedisTaskQueue
+from tests.redis_test_double import RedisTestDouble
 from worker.worker import GenerationWorker
 
 
@@ -30,6 +33,147 @@ class FakeRedis:
             return None
         return key, values.pop()
 
+    def rpoplpush(self, source: str, destination: str) -> str | None:
+        values = self.lists.setdefault(source, [])
+        if not values:
+            return None
+        value = values.pop()
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    def brpoplpush(
+        self,
+        source: str,
+        destination: str,
+        timeout: int = 0,
+    ) -> str | None:
+        return self.rpoplpush(source, destination)
+
+    def lrange(self, key: str, start: int, end: int) -> list[str]:
+        values = self.lists.setdefault(key, [])
+        resolved_end = len(values) if end < 0 else end + 1
+        return list(values[start:resolved_end])
+
+    def lrem(self, key: str, count: int, value: str) -> int:
+        values = self.lists.setdefault(key, [])
+        removed = 0
+        index = 0
+        while index < len(values) and (count == 0 or removed < count):
+            if values[index] == value:
+                values.pop(index)
+                removed += 1
+            else:
+                index += 1
+        return removed
+
+    def eval(self, script: str, key_count: int, *values: str) -> Any:
+        keys = values[:key_count]
+        args = values[key_count:]
+        if "WAIMAI_CLAIM_RECEIPT" in script:
+            task = self.hashes.get(keys[0])
+            if task is None:
+                self.lrem(keys[1], 1, args[0])
+                return [-2, 0]
+            if task.get("status") in {"done", "failed"}:
+                self.lrem(keys[1], 1, args[0])
+                return [-1, int(task.get("attempts") or 0)]
+            if task.get("status") != "pending":
+                self.lrem(keys[1], 1, args[0])
+                return [-3, int(task.get("attempts") or 0)]
+            attempts = int(task.get("attempts") or 0) + 1
+            task.update(
+                {
+                    "status": "running",
+                    "attempts": str(attempts),
+                    "worker_id": args[1],
+                    "lease_token": args[2],
+                    "updated_at": args[3],
+                    "lease_expires_at": args[4],
+                }
+            )
+            if not task.get("started_at"):
+                task["started_at"] = args[3]
+            return [1, attempts]
+        if "WAIMAI_HEARTBEAT" in script:
+            task = self.hashes.get(keys[0], {})
+            if (
+                task.get("status") != "running"
+                or task.get("lease_token") != args[0]
+            ):
+                return 0
+            task["updated_at"] = args[1]
+            task["lease_expires_at"] = args[2]
+            if args[3]:
+                task["attempts"] = args[3]
+            if args[4]:
+                task["error"] = args[4]
+            return 1
+        if "WAIMAI_FINISH_CLAIM" in script:
+            task = self.hashes.get(keys[0], {})
+            if (
+                task.get("status") != "running"
+                or task.get("lease_token") != args[1]
+            ):
+                return 0
+            task.update(
+                {
+                    "status": args[2],
+                    "image_url": args[3],
+                    "error": args[4],
+                    "result_json": args[5],
+                    "updated_at": args[7],
+                    "finished_at": args[7],
+                    "worker_id": "",
+                    "lease_token": "",
+                    "lease_expires_at": "",
+                }
+            )
+            if args[6]:
+                task["attempts"] = args[6]
+            self.lrem(keys[1], 1, args[0])
+            return 1
+        if "WAIMAI_RECOVER_RECEIPT" in script:
+            task = self.hashes.get(keys[0])
+            if task is None:
+                self.lrem(keys[1], 1, args[0])
+                return 4
+            if task.get("status") in {"done", "failed"}:
+                self.lrem(keys[1], 1, args[0])
+                return 3
+            lease_expires_at = int(task.get("lease_expires_at") or 0)
+            if task.get("status") == "running" and lease_expires_at > int(
+                args[1]
+            ):
+                return 0
+            if int(task.get("attempts") or 0) >= int(args[2]):
+                task.update(
+                    {
+                        "status": "failed",
+                        "error": "task lease expired after maximum attempts",
+                        "updated_at": args[1],
+                        "finished_at": args[1],
+                        "worker_id": "",
+                        "lease_token": "",
+                        "lease_expires_at": "",
+                    }
+                )
+                self.lrem(keys[1], 1, args[0])
+                return 2
+            task.update(
+                {
+                    "status": "pending",
+                    "error": "recovered expired task lease",
+                    "updated_at": args[1],
+                    "worker_id": "",
+                    "lease_token": "",
+                    "lease_expires_at": "",
+                }
+            )
+            self.lrem(keys[1], 1, args[0])
+            self.rpush(keys[2], args[0])
+            return 1
+        raise AssertionError("unexpected Lua script")
+
     def scan_iter(self, match: str, count: int = 10):
         prefix = match.rstrip("*")
         yielded = 0
@@ -41,20 +185,32 @@ class FakeRedis:
                     return
 
 
+FakeRedis = RedisTestDouble
+
+
 def test_api_server_generate_only_enqueues_and_status_reads_task(monkeypatch) -> None:
     queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
     api_module = _load_api_server_module()
     monkeypatch.setattr(api_module, "task_queue", lambda: queue)
+    monkeypatch.setenv("PROMPT_API_TOKEN", "prompt-api-test-token")
     api_module.app.config.update(TESTING=True)
+    headers = {"Authorization": "Bearer prompt-api-test-token"}
 
-    response = api_module.app.test_client().post("/generate", json={"prompt": "牛肉饭商品图"})
+    response = api_module.app.test_client().post(
+        "/generate",
+        json={"prompt": "牛肉饭商品图"},
+        headers=headers,
+    )
 
     assert response.status_code == 202
     payload = response.get_json()
     assert set(payload.keys()) == {"task_id"}
     UUID(payload["task_id"])
 
-    status_response = api_module.app.test_client().get(f"/status/{payload['task_id']}")
+    status_response = api_module.app.test_client().get(
+        f"/status/{payload['task_id']}",
+        headers=headers,
+    )
     status_payload = status_response.get_json()
     assert status_response.status_code == 200
     assert set(status_payload.keys()) == {"status", "image_url"}
@@ -66,12 +222,105 @@ def test_api_server_generate_requires_prompt_and_ignores_legacy_fields(monkeypat
     queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
     api_module = _load_api_server_module()
     monkeypatch.setattr(api_module, "task_queue", lambda: queue)
+    monkeypatch.setenv("PROMPT_API_TOKEN", "prompt-api-test-token")
     api_module.app.config.update(TESTING=True)
 
-    response = api_module.app.test_client().post("/generate", json={"category": "盖饭", "dishName": "牛肉饭"})
+    response = api_module.app.test_client().post(
+        "/generate",
+        json={"category": "盖饭", "dishName": "牛肉饭"},
+        headers={"X-Prompt-API-Token": "prompt-api-test-token"},
+    )
 
     assert response.status_code == 400
     assert response.get_json()["code"] == "invalid_generation_request"
+    assert queue.redis.lists == {}
+
+
+def test_api_server_rejects_oversized_or_non_string_prompt_before_redis(
+    monkeypatch,
+) -> None:
+    queue = RedisTaskQueue(
+        FakeRedis(),
+        RedisQueueConfig(namespace="test", queue_name="generate"),
+    )
+    api_module = _load_api_server_module()
+    monkeypatch.setattr(api_module, "task_queue", lambda: queue)
+    monkeypatch.setenv("PROMPT_API_TOKEN", "prompt-api-test-token")
+    api_module.app.config.update(TESTING=True)
+    client = api_module.app.test_client()
+    headers = {"Authorization": "Bearer prompt-api-test-token"}
+
+    wrong_type = client.post(
+        "/generate",
+        json={"prompt": ["牛肉饭", "盖饭"]},
+        headers=headers,
+    )
+    oversized_prompt = client.post(
+        "/generate",
+        json={"prompt": "x" * 8_001},
+        headers=headers,
+    )
+    oversized_body = client.post(
+        "/generate",
+        data=b'{"prompt":"' + (b"x" * (64 * 1024)) + b'"}',
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert wrong_type.status_code == 400
+    assert wrong_type.get_json()["code"] == "invalid_generation_request"
+    assert oversized_prompt.status_code == 400
+    assert (
+        oversized_prompt.get_json()["code"]
+        == "invalid_generation_request"
+    )
+    assert oversized_body.status_code == 413
+    assert (
+        oversized_body.get_json()["code"]
+        == "generation_request_too_large"
+    )
+    assert queue.redis.lists == {}
+    assert queue.redis.hashes == {}
+
+
+def test_api_server_generation_routes_fail_closed_without_valid_token(
+    monkeypatch,
+) -> None:
+    queue = RedisTaskQueue(
+        FakeRedis(),
+        RedisQueueConfig(namespace="test", queue_name="generate"),
+    )
+    api_module = _load_api_server_module()
+    monkeypatch.setattr(api_module, "task_queue", lambda: queue)
+    api_module.app.config.update(TESTING=True)
+    client = api_module.app.test_client()
+
+    monkeypatch.delenv("PROMPT_API_TOKEN", raising=False)
+    unavailable = client.post(
+        "/generate",
+        json={"prompt": "牛肉饭商品图"},
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.get_json()["code"] == "prompt_api_auth_unavailable"
+
+    monkeypatch.setenv("PROMPT_API_TOKEN", "prompt-api-test-token")
+    missing = client.post(
+        "/generate",
+        json={"prompt": "牛肉饭商品图"},
+    )
+    forbidden = client.post(
+        "/generate",
+        json={"prompt": "牛肉饭商品图"},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    hidden_status = client.get("/status/unknown-task")
+
+    assert missing.status_code == 401
+    assert missing.get_json()["code"] == "prompt_api_auth_required"
+    assert forbidden.status_code == 403
+    assert forbidden.get_json()["code"] == "prompt_api_auth_forbidden"
+    assert hidden_status.status_code == 401
+    assert hidden_status.get_json()["code"] == "prompt_api_auth_required"
     assert queue.redis.lists == {}
 
 
@@ -118,7 +367,7 @@ def test_worker_retries_twice_then_marks_failed(monkeypatch) -> None:
     assert "provider unavailable" in result["error"]
 
 
-def test_worker_times_out_handler_and_marks_failed() -> None:
+def test_worker_deadline_keeps_lease_until_handler_completes() -> None:
     queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
     queue.enqueue({"prompt": "超时任务"}, task_id="task-timeout")
     worker = GenerationWorker(
@@ -130,9 +379,59 @@ def test_worker_times_out_handler_and_marks_failed() -> None:
 
     assert worker.process_one(timeout_seconds=0) is True
     result = queue.get("task-timeout")
-    assert result["status"] == "failed"
+    assert result["status"] == "done"
     assert result["attempts"] == 1
-    assert "timed out" in result["error"]
+    assert result["image_url"] == "https://cdn.example/slow.jpg"
+    assert result["error"] == ""
+
+
+def test_worker_timeout_does_not_start_a_second_provider_call() -> None:
+    queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
+    queue.enqueue({"prompt": "只调用一次"}, task_id="task-timeout-once")
+    calls = {"count": 0}
+
+    def slow_handler(_payload: dict[str, Any]) -> dict[str, Any]:
+        calls["count"] += 1
+        time.sleep(0.05)
+        return {"image_url": "https://cdn.example/late.jpg"}
+
+    worker = GenerationWorker(
+        queue,
+        handler=slow_handler,
+        max_retries=2,
+        task_timeout_seconds=0.01,
+    )
+
+    assert worker.process_one(timeout_seconds=0) is True
+    assert calls["count"] == 1
+    assert queue.get("task-timeout-once")["status"] == "done"
+
+
+def test_worker_heartbeats_during_provider_execution(monkeypatch) -> None:
+    queue = RedisTaskQueue(FakeRedis(), RedisQueueConfig(namespace="test", queue_name="generate"))
+    queue.enqueue({"prompt": "持续心跳"}, task_id="task-heartbeat")
+    heartbeat_count = {"value": 0}
+    original_heartbeat = queue.heartbeat
+
+    def counted_heartbeat(*args, **kwargs):
+        heartbeat_count["value"] += 1
+        return original_heartbeat(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "heartbeat", counted_heartbeat)
+    worker = GenerationWorker(
+        queue,
+        handler=lambda _payload: (
+            time.sleep(0.35)
+            or {"image_url": "https://cdn.example/heartbeat.jpg"}
+        ),
+        max_retries=0,
+        task_timeout_seconds=1,
+    )
+    worker.lease_seconds = 0.15
+
+    assert worker.process_one(timeout_seconds=0) is True
+    assert heartbeat_count["value"] >= 2
+    assert queue.get("task-heartbeat")["status"] == "done"
 
 
 def test_worker_recovers_stale_running_task_before_dequeue() -> None:
@@ -155,6 +454,36 @@ def test_worker_recovers_stale_running_task_before_dequeue() -> None:
     assert result["status"] == "done"
     assert result["image_url"] == "https://cdn.example/recovered.jpg"
     assert result["attempts"] == 2
+
+
+def test_worker_run_loop_publishes_service_liveness(monkeypatch) -> None:
+    queue = RedisTaskQueue(
+        RedisTestDouble(),
+        RedisQueueConfig(namespace="test", queue_name="product-generate"),
+    )
+    worker = GenerationWorker(
+        queue,
+        service_id="product-worker",
+        service_heartbeat_ttl_seconds=9,
+    )
+
+    def stop_after_heartbeat(*, timeout_seconds: int) -> bool:
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if queue.service_liveness("product-worker") is not None:
+                raise KeyboardInterrupt
+            time.sleep(0.01)
+        raise AssertionError("worker service heartbeat was not published")
+
+    monkeypatch.setattr(worker, "process_one", stop_after_heartbeat)
+
+    with pytest.raises(KeyboardInterrupt):
+        worker.run_forever(timeout_seconds=0)
+
+    live = queue.service_liveness("product-worker")
+    assert live is not None
+    assert live["instanceId"] == worker.worker_id
+    assert live["ttlSeconds"] == 9
 
 
 def _load_api_server_module():

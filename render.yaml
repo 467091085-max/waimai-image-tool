@@ -1,75 +1,68 @@
-services:
-  - type: web
-    name: waimai-image-tool
-    runtime: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
-    healthCheckPath: /healthz
-    autoDeployTrigger: commit
+previews:
+  generation: "off"
+
+envVarGroups:
+  - name: waimai-image-tool-core
     envVars:
       - key: APP_ENV
         value: staging
-      - key: REDIS_URL
-        sync: false
+      - key: LOG_LEVEL
+        value: INFO
       - key: REDIS_NAMESPACE
         value: waimai:saas
       - key: REDIS_GENERATION_QUEUE
         value: generate
+      - key: REDIS_PRODUCT_QUEUE
+        value: product-generate
+      - key: REDIS_TERMINAL_TASK_TTL_SECONDS
+        value: "604800"
+      - key: REDIS_IDEMPOTENCY_TTL_SECONDS
+        value: "604800"
+
+  - name: waimai-image-tool-product-runtime
+    envVars:
+      - key: PRODUCT_POSTGRES_ENABLED
+        value: "true"
+      - key: PRODUCT_WORKER_ENABLED
+        value: "true"
+      - key: PRODUCT_OUTBOX_DISPATCHER_ENABLED
+        value: "true"
+      - key: PRODUCT_SETTLEMENT_RECONCILER_ENABLED
+        value: "true"
+      - key: GROWTH_EVENT_WORKER_ENABLED
+        value: "true"
+      - key: GROWTH_EVENT_WORKER_SERVICE_ID
+        value: growth-event-worker
+      - key: PRODUCT_GROWTH_TENANT_ID
+        value: waimai
+      - key: PRODUCT_WORKER_SERVICE_ID
+        value: product-worker
       - key: ENABLE_LOCAL_DEMO_BILLING
         value: "false"
+      - key: ENABLE_LOCAL_DEMO_AUTH
+        value: "false"
       - key: ENABLE_LOCAL_DEMO_STORAGE
-        value: "true"
-      - key: OBJECT_SIGNING_SECRET
-        generateValue: true
-      - key: DOWNLOAD_SIGNING_SECRET
-        generateValue: true
+        value: "false"
       - key: OBJECT_STORAGE_PROVIDER
         value: cos
       - key: OBJECT_STORAGE_PRIVATE
         value: "true"
-      - key: OBJECT_STORAGE_BUCKET
-        value: waimai-image-tool-inputs-1311836560
       - key: OBJECT_STORAGE_REGION
         value: ap-guangzhou
       - key: OBJECT_STORAGE_PREFIX
         value: app-objects
-      - key: PAYMENT_PROVIDER
-        value: alipay
-      - key: PAYMENT_WEBHOOK_SECRET
-        generateValue: true
-      - key: PAYMENT_NOTIFY_URL
-        value: https://waimai-image-tool-1.onrender.com/api/payments/alipay/notify
-      - key: PAYMENT_RETURN_URL
-        value: https://waimai-image-tool-1.onrender.com/
-      - key: ALIPAY_APP_ID
-        sync: false
-      - key: ALIPAY_PRIVATE_KEY
-        sync: false
-      - key: ALIPAY_PUBLIC_KEY
-        sync: false
-      - key: ADMIN_API_TOKEN
-        sync: false
       - key: TENCENT_HUNYUAN_ENABLED
         value: "true"
       - key: TENCENT_HUNYUAN_MODE
         value: auto
       - key: TENCENT_HUNYUAN_SYNC_LIMIT
         value: "6"
-      - key: TENCENT_TOKENHUB_API_KEY
-        sync: false
       - key: TENCENT_TOKENHUB_IMAGE_MODEL
         value: hy-image-v3.0
       - key: TENCENT_TOKENHUB_POLL_TIMEOUT
         value: "120"
-      - key: TENCENTCLOUD_SECRET_ID
-        sync: false
-      - key: TENCENTCLOUD_SECRET_KEY
-        sync: false
       - key: TENCENTCLOUD_REGION
         value: ap-guangzhou
-      - key: TENCENT_COS_BUCKET
-        value: waimai-image-tool-inputs-1311836560
       - key: TENCENT_COS_REGION
         value: ap-guangzhou
       - key: TENCENT_COS_PREFIX
@@ -78,3 +71,303 @@ services:
         value: ai-assets
       - key: AI_ASSET_UPLOAD_TO_COS
         value: "true"
+
+services:
+  # Preserve the existing public customer website and its current service name.
+  - type: web
+    name: waimai-image-tool
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
+    healthCheckPath: /
+    autoDeployTrigger: "off"
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - fromGroup: waimai-image-tool-product-runtime
+      - key: PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
+          property: connectionString
+      - key: OBJECT_STORAGE_BUCKET
+        sync: false
+      - key: TENCENT_COS_BUCKET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: OBJECT_STORAGE_BUCKET
+      - key: OBJECT_SIGNING_SECRET
+        generateValue: true
+      - key: DOWNLOAD_SIGNING_SECRET
+        generateValue: true
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: SMS_PROVIDER
+        value: webhook
+      - key: SMS_WEBHOOK_URL
+        sync: false
+      - key: SMS_WEBHOOK_TOKEN
+        sync: false
+      - key: AUTH_SESSION_HASH_SECRET
+        generateValue: true
+      - key: AUTH_OTP_HASH_SECRET
+        generateValue: true
+      - key: GROWTH_INVITE_CODE_SECRET
+        generateValue: true
+      - key: AUTH_OTP_REDIS_NAMESPACE
+        value: waimai:auth
+      - key: AUTH_EXPOSE_MOCK_OTP
+        value: "false"
+      - key: PAYMENT_PROVIDER
+        value: alipay
+      - key: PAYMENT_NOTIFY_URL
+        sync: false
+      - key: PAYMENT_RETURN_URL
+        sync: false
+      - key: PAYMENT_WEBHOOK_SECRET
+        generateValue: true
+      - key: ALIPAY_APP_ID
+        sync: false
+      - key: ALIPAY_PRIVATE_KEY
+        sync: false
+      - key: ALIPAY_PUBLIC_KEY
+        sync: false
+      - key: TENCENT_TOKENHUB_API_KEY
+        sync: false
+      - key: TENCENTCLOUD_SECRET_ID
+        sync: false
+      - key: TENCENTCLOUD_SECRET_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+  # The queue-only API is independent from the customer website.
+  - type: web
+    name: waimai-image-tool-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --chdir api-server app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: PROMPT_WORKER_SERVICE_ID
+        value: prompt-worker
+      - key: PROMPT_API_TOKEN
+        generateValue: true
+
+  - type: worker
+    name: waimai-image-tool-prompt-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.prompt_worker
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: AI_IMAGE_PROVIDER
+        value: tencent-tokenhub
+      - key: TENCENT_TOKENHUB_ENABLED
+        value: "true"
+      - key: TENCENT_TOKENHUB_IMAGE_MODEL
+        value: hy-image-v3.0
+      - key: TENCENT_REQUEST_TIMEOUT
+        value: "55"
+      - key: TENCENT_TOKENHUB_POLL_TIMEOUT
+        value: "120"
+      - key: TENCENT_TOKENHUB_POLL_INTERVAL
+        value: "3"
+      - key: TENCENT_TOKENHUB_API_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENT_TOKENHUB_API_KEY
+      - key: WORKER_MAX_RETRIES
+        value: "2"
+      - key: WORKER_TASK_TIMEOUT
+        value: "180"
+      - key: WORKER_RECOVERY_STALE_SECONDS
+        value: "180"
+      - key: WORKER_SERVICE_HEARTBEAT_TTL_SECONDS
+        value: "30"
+      - key: PROMPT_WORKER_SERVICE_ID
+        value: prompt-worker
+
+  - type: worker
+    name: waimai-image-tool-outbox-dispatcher
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.outbox_dispatcher
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
+          property: connectionString
+      - key: PRODUCT_OUTBOX_DISPATCHER_ID
+        value: product-outbox-dispatcher
+
+  - type: worker
+    name: waimai-image-tool-product-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.worker
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - fromGroup: waimai-image-tool-product-runtime
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: WORKER_TASK_MODE
+        value: product
+      - key: WORKER_PRODUCT_BATCH_TIMEOUT
+        value: "3600"
+      - key: WORKER_SERVICE_HEARTBEAT_TTL_SECONDS
+        value: "30"
+      - key: PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: PUBLIC_BASE_URL
+      - key: OBJECT_STORAGE_BUCKET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: OBJECT_STORAGE_BUCKET
+      - key: TENCENT_COS_BUCKET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENT_COS_BUCKET
+      - key: OBJECT_SIGNING_SECRET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: OBJECT_SIGNING_SECRET
+      - key: TENCENT_TOKENHUB_API_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENT_TOKENHUB_API_KEY
+      - key: TENCENTCLOUD_SECRET_ID
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENTCLOUD_SECRET_ID
+      - key: TENCENTCLOUD_SECRET_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENTCLOUD_SECRET_KEY
+      - key: GEMINI_API_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: GEMINI_API_KEY
+
+  - type: worker
+    name: waimai-image-tool-growth-event-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.growth_worker
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - fromGroup: waimai-image-tool-product-runtime
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
+          property: connectionString
+      - key: GROWTH_WORKER_ID
+        value: growth-event-worker
+      - key: GROWTH_WORKER_BATCH_SIZE
+        value: "10"
+      - key: GROWTH_WORKER_LEASE_SECONDS
+        value: "60"
+      - key: GROWTH_WORKER_RETRY_SECONDS
+        value: "30"
+      - key: GROWTH_WORKER_HEARTBEAT_TTL_SECONDS
+        value: "30"
+
+  - type: worker
+    name: waimai-image-tool-settlement-reconciler
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.product_settlement_reconciler
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - fromGroup: waimai-image-tool-product-runtime
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
+          property: connectionString
+      - key: PRODUCT_SETTLEMENT_RECONCILER_ID
+        value: product-settlement-reconciler
+
+  # Redis is a queue/cache boundary. PostgreSQL/outbox remains the durable
+  # system of record, while noeviction prevents silent queue-key eviction.
+  - type: keyvalue
+    name: waimai-image-tool-redis
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+
+databases:
+  - name: waimai-image-tool-postgres
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+    databaseName: waimai_image_tool
+    user: waimai_image_tool
+    connectionPool: none
+    ipAllowList: []

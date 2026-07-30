@@ -217,6 +217,7 @@ def accept_consumer_invite(
     record_id = relation_id or new_id("invite")
     metadata_payload = {
         **dict(metadata or {}),
+        "ruleVersion": growth_rules.GROWTH_RULE_VERSION,
         "registrationRewardAllowed": reward_allowed,
         "registrationRewards": rewards,
     }
@@ -319,24 +320,31 @@ def record_payment_refund(
     customer_id: str,
     paid_cents: int,
     refund_cents: int,
+    cumulative_refunded_cents: int | None = None,
     source: str = "payment_refund",
     request_id: str = "",
 ) -> dict[str, Any]:
     order_id = _required_text(order_id, "order_id")
     customer_id = _required_text(customer_id, "customer_id")
     paid_cents = _non_negative_int(paid_cents, "paid_cents")
-    refund_cents = min(_non_negative_int(refund_cents, "refund_cents"), paid_cents)
+    refund_cents = _non_negative_int(refund_cents, "refund_cents")
+    if cumulative_refunded_cents is not None:
+        cumulative_refunded_cents = _non_negative_int(
+            cumulative_refunded_cents,
+            "cumulative_refunded_cents",
+        )
     request_id = str(request_id or order_id)
     return {
         "ok": True,
         "orderId": order_id,
         "customerId": customer_id,
-        "refundCents": refund_cents,
+        "refundCents": min(refund_cents, paid_cents),
         "agentCommissionRefund": _apply_agent_commission_refund(
             conn,
             order_id=order_id,
             paid_cents=paid_cents,
             refund_cents=refund_cents,
+            cumulative_refunded_cents=cumulative_refunded_cents,
             source=source,
             request_id=request_id,
         ),
@@ -346,6 +354,7 @@ def record_payment_refund(
             customer_id=customer_id,
             paid_cents=paid_cents,
             refund_cents=refund_cents,
+            cumulative_refunded_cents=cumulative_refunded_cents,
             source=source,
             request_id=request_id,
         ),
@@ -379,7 +388,17 @@ def _create_agent_commission(
     agent = _one_dict(conn, "SELECT * FROM agent_profiles WHERE id = ?", (relation["agent_id"],))
     if agent is None:
         return None
-    commission_cents = growth_rules.agent_commission(str(agent["level"] or growth_rules.LEVEL_STANDARD), paid_cents)
+    level = str(agent["level"] or growth_rules.LEVEL_STANDARD)
+    is_first_order = _is_first_paid_order(conn, customer_id, order_id)
+    commission_rate_bps = growth_rules.agent_commission_rate_bps(
+        level,
+        is_first_order=is_first_order,
+    )
+    commission_cents = growth_rules.agent_commission(
+        level,
+        paid_cents,
+        is_first_order=is_first_order,
+    )
     if commission_cents <= 0:
         return None
 
@@ -393,7 +412,7 @@ def _create_agent_commission(
                 commission_amount, commission_rate_bps, currency, status, source,
                 metadata_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 2000, 'CNY', 'pending', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CNY', 'pending', ?, ?, ?, ?)
             """,
             (
                 commission_id,
@@ -403,8 +422,17 @@ def _create_agent_commission(
                 relation["id"],
                 paid_cents,
                 commission_cents,
+                commission_rate_bps,
                 source,
-                json_dumps({"rule": "direct_agent_20_percent", "depth": 1}),
+                json_dumps(
+                    {
+                        "ruleVersion": growth_rules.GROWTH_RULE_VERSION,
+                        "rule": "direct_agent_first_20_repeat_10",
+                        "depth": 1,
+                        "paidCents": paid_cents,
+                        "isFirstOrder": is_first_order,
+                    }
+                ),
                 now,
                 now,
             ),
@@ -420,6 +448,7 @@ def _apply_agent_commission_refund(
     order_id: str,
     paid_cents: int,
     refund_cents: int,
+    cumulative_refunded_cents: int | None,
     source: str,
     request_id: str,
 ) -> dict[str, Any] | None:
@@ -444,7 +473,40 @@ def _apply_agent_commission_refund(
         current["idempotent"] = True
         return current
 
-    net_paid_cents = max(paid_cents - refund_cents, 0)
+    frozen_paid_cents = _stored_non_negative_int(metadata.get("paidCents"))
+    if frozen_paid_cents is None:
+        for item in refunds:
+            if not isinstance(item, Mapping):
+                continue
+            frozen_paid_cents = _stored_non_negative_int(item.get("paidCents"))
+            if frozen_paid_cents is not None:
+                break
+    if frozen_paid_cents is None:
+        frozen_paid_cents = paid_cents
+
+    previous_cumulative_refunded_cents = 0
+    for item in refunds:
+        if not isinstance(item, Mapping):
+            continue
+        cumulative_value = item.get("cumulativeRefundedCents", item.get("refundCents"))
+        stored_cumulative = _stored_non_negative_int(cumulative_value)
+        if stored_cumulative is not None:
+            previous_cumulative_refunded_cents = max(
+                previous_cumulative_refunded_cents,
+                min(stored_cumulative, frozen_paid_cents),
+            )
+    requested_refund_cents = min(refund_cents, frozen_paid_cents)
+    if cumulative_refunded_cents is None:
+        next_cumulative_refunded_cents = min(
+            previous_cumulative_refunded_cents + requested_refund_cents,
+            frozen_paid_cents,
+        )
+    else:
+        next_cumulative_refunded_cents = max(
+            previous_cumulative_refunded_cents,
+            min(cumulative_refunded_cents, frozen_paid_cents),
+        )
+    net_paid_cents = frozen_paid_cents - next_cumulative_refunded_cents
     agent = _one_dict(conn, "SELECT * FROM agent_profiles WHERE id = ?", (current["agentId"],))
     level = str(agent.get("level") if agent else growth_rules.LEVEL_STANDARD)
     adjusted_commission = growth_rules.agent_commission(level, net_paid_cents) if net_paid_cents > 0 else 0
@@ -464,8 +526,11 @@ def _apply_agent_commission_refund(
         {
             "requestId": request_id,
             "source": source,
-            "paidCents": paid_cents,
-            "refundCents": refund_cents,
+            "paidCents": frozen_paid_cents,
+            "refundCents": requested_refund_cents,
+            "requestedRefundCents": requested_refund_cents,
+            "previousCumulativeRefundedCents": previous_cumulative_refunded_cents,
+            "cumulativeRefundedCents": next_cumulative_refunded_cents,
             "netPaidCents": net_paid_cents,
             "previousCommissionAmount": current["commissionAmount"],
             "adjustedCommissionAmount": adjusted_commission,
@@ -474,6 +539,8 @@ def _apply_agent_commission_refund(
         }
     )
     metadata["refundAdjustments"] = refunds
+    metadata["paidCents"] = frozen_paid_cents
+    metadata["cumulativeRefundedCents"] = next_cumulative_refunded_cents
     if clawback_needed:
         metadata["clawbackNeeded"] = True
 
@@ -565,7 +632,15 @@ def _create_first_payment_reward(
                 event_type,
                 str(invite["invite_code"] or ""),
                 order_id,
-                json_dumps({"inviteId": invite["id"], "rewards": rewards, "depth": 1}),
+                json_dumps(
+                    {
+                        "ruleVersion": growth_rules.GROWTH_RULE_VERSION,
+                        "inviteId": invite["id"],
+                        "rewards": rewards,
+                        "depth": 1,
+                        "paidCents": paid_cents,
+                    }
+                ),
                 now,
             ),
         )
@@ -587,6 +662,7 @@ def _apply_first_payment_referral_refund(
     customer_id: str,
     paid_cents: int,
     refund_cents: int,
+    cumulative_refunded_cents: int | None,
     source: str,
     request_id: str,
 ) -> dict[str, Any] | None:
@@ -608,7 +684,7 @@ def _apply_first_payment_referral_refund(
         WHERE user_id = ? AND event_type = 'consumer_first_payment_refund' AND request_id = ?
         LIMIT 1
         """,
-        (customer_id, order_id),
+        (customer_id, request_id),
     )
     event_metadata = json_loads(event.get("metadata_json"), {})
     if not isinstance(event_metadata, dict):
@@ -620,6 +696,9 @@ def _apply_first_payment_referral_refund(
     if invite is None:
         return None
     if existing_refund is not None:
+        existing_metadata = json_loads(existing_refund.get("metadata_json"), {})
+        if not isinstance(existing_metadata, dict):
+            existing_metadata = {}
         return {
             "id": existing_refund["id"],
             "idempotent": True,
@@ -627,17 +706,83 @@ def _apply_first_payment_referral_refund(
             "inviterUserId": invite["inviter_user_id"],
             "inviteeUserId": customer_id,
             "inviterPointsToDebit": 0,
+            "cumulativeRefundedCents": int(existing_metadata.get("cumulativeRefundedCents") or 0),
+            "cumulativeInviterPointsDebited": int(
+                existing_metadata.get("cumulativeInviterPointsDebited") or 0
+            ),
             "eventType": "consumer_first_payment_refund",
         }
 
-    net_paid_cents = max(paid_cents - refund_cents, 0)
+    prior_refund_rows = conn.execute(
+        """
+        SELECT * FROM promotion_event_logs
+        WHERE user_id = ? AND event_type = 'consumer_first_payment_refund'
+        ORDER BY created_at ASC, id ASC
+        """,
+        (customer_id,),
+    ).fetchall()
+    prior_cumulative_refunded_cents = 0
+    prior_inviter_points_debited = 0
+    frozen_paid_cents = _stored_non_negative_int(event_metadata.get("paidCents"))
+    for prior_row in prior_refund_rows:
+        prior_metadata = json_loads(dict(prior_row).get("metadata_json"), {})
+        if not isinstance(prior_metadata, dict):
+            continue
+        if str(prior_metadata.get("originalEventId") or "") != str(event["id"]):
+            continue
+        if frozen_paid_cents is None:
+            frozen_paid_cents = _stored_non_negative_int(prior_metadata.get("paidCents"))
+        stored_cumulative = _stored_non_negative_int(
+            prior_metadata.get("cumulativeRefundedCents", prior_metadata.get("refundCents"))
+        )
+        if stored_cumulative is not None:
+            prior_cumulative_refunded_cents = max(
+                prior_cumulative_refunded_cents,
+                stored_cumulative,
+            )
+        stored_debit = _stored_non_negative_int(prior_metadata.get("inviterPointsToDebit"))
+        if stored_debit is not None:
+            prior_inviter_points_debited += stored_debit
+
+    if frozen_paid_cents is None:
+        frozen_paid_cents = paid_cents
+    prior_cumulative_refunded_cents = min(
+        prior_cumulative_refunded_cents,
+        frozen_paid_cents,
+    )
+    prior_inviter_points_debited = min(prior_inviter_points_debited, original_points)
+    requested_refund_cents = min(refund_cents, frozen_paid_cents)
+    if cumulative_refunded_cents is None:
+        next_cumulative_refunded_cents = min(
+            prior_cumulative_refunded_cents + requested_refund_cents,
+            frozen_paid_cents,
+        )
+    else:
+        next_cumulative_refunded_cents = max(
+            prior_cumulative_refunded_cents,
+            min(cumulative_refunded_cents, frozen_paid_cents),
+        )
+    net_paid_cents = frozen_paid_cents - next_cumulative_refunded_cents
     adjusted_rewards = growth_rules.consumer_referral_rewards(
         growth_rules.EVENT_FIRST_PAYMENT,
         paid_cents=net_paid_cents,
     )
     adjusted_points = int(adjusted_rewards["inviter_points"])
-    points_to_debit = max(original_points - adjusted_points, 0)
-    refund_event_id = _deterministic_id("promo", order_id, invite_id, "consumer_first_payment_refund")
+    cumulative_points_to_debit = min(
+        max(original_points - adjusted_points, 0),
+        original_points,
+    )
+    points_to_debit = min(
+        max(cumulative_points_to_debit - prior_inviter_points_debited, 0),
+        original_points - prior_inviter_points_debited,
+    )
+    refund_event_id = _deterministic_id(
+        "promo",
+        order_id,
+        invite_id,
+        "consumer_first_payment_refund",
+        request_id,
+    )
     with conn:
         conn.execute(
             """
@@ -653,18 +798,26 @@ def _apply_first_payment_referral_refund(
                 customer_id,
                 customer_id,
                 str(event["campaign_id"] or ""),
-                order_id,
+                request_id,
                 json_dumps(
                     {
                         "source": source,
                         "originalEventId": event["id"],
                         "inviteId": invite_id,
-                        "paidCents": paid_cents,
-                        "refundCents": refund_cents,
+                        "paidCents": frozen_paid_cents,
+                        "refundCents": requested_refund_cents,
+                        "requestedRefundCents": requested_refund_cents,
+                        "previousCumulativeRefundedCents": prior_cumulative_refunded_cents,
+                        "cumulativeRefundedCents": next_cumulative_refunded_cents,
                         "netPaidCents": net_paid_cents,
                         "originalInviterPoints": original_points,
                         "adjustedInviterPoints": adjusted_points,
                         "inviterPointsToDebit": points_to_debit,
+                        "previousInviterPointsDebited": prior_inviter_points_debited,
+                        "cumulativeInviterPointsDebited": min(
+                            prior_inviter_points_debited + points_to_debit,
+                            original_points,
+                        ),
                     }
                 ),
                 utc_now(),
@@ -677,6 +830,11 @@ def _apply_first_payment_referral_refund(
         "inviterUserId": invite["inviter_user_id"],
         "inviteeUserId": customer_id,
         "inviterPointsToDebit": points_to_debit,
+        "cumulativeRefundedCents": next_cumulative_refunded_cents,
+        "cumulativeInviterPointsDebited": min(
+            prior_inviter_points_debited + points_to_debit,
+            original_points,
+        ),
         "eventType": "consumer_first_payment_refund",
     }
 
@@ -889,6 +1047,16 @@ def _non_negative_int(value: Any, name: str) -> int:
     if number < 0:
         raise InvalidGrowthInput(f"{name} must be non-negative")
     return number
+
+
+def _stored_non_negative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
 
 
 def _deterministic_id(prefix: str, *parts: str) -> str:

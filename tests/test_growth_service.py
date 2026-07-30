@@ -65,7 +65,7 @@ class GrowthServiceTests(unittest.TestCase):
 
         self.assertEqual(invite["status"], "accepted")
         self.assertEqual(invite["rewardStatus"], "pending")
-        self.assertEqual(invite["registrationRewards"], {"inviterPoints": 50, "inviteePoints": 50})
+        self.assertEqual(invite["registrationRewards"], {"inviterPoints": 100, "inviteePoints": 20})
 
         granted = growth_service.mark_invite_reward_granted(self.conn, invite["id"])
         self.assertEqual(granted["status"], "rewarded")
@@ -145,7 +145,8 @@ class GrowthServiceTests(unittest.TestCase):
             request_id="evt-2",
         )
 
-        self.assertEqual(result["agentCommission"]["commissionAmount"], 1980)
+        self.assertEqual(result["agentCommission"]["commissionAmount"], 990)
+        self.assertEqual(result["agentCommission"]["commissionRateBps"], 1000)
         self.assertIsNone(result["consumerReferralReward"])
 
     def test_full_refund_cancels_unsettled_commission_and_first_payment_reward(self) -> None:
@@ -196,7 +197,7 @@ class GrowthServiceTests(unittest.TestCase):
         self.assertTrue(repeat["agentCommissionRefund"]["idempotent"])
         self.assertEqual(repeat["consumerReferralRefund"]["inviterPointsToDebit"], 0)
 
-    def test_partial_refund_recalculates_unsettled_commission_and_referral_delta(self) -> None:
+    def test_partial_then_full_refund_uses_cumulative_amount_and_request_idempotency(self) -> None:
         agent = growth_service.create_agent_profile(self.conn, "agent-user")
         growth_service.bind_agent_customer(self.conn, agent_id=agent["id"], customer_id="customer-1")
         invite = growth_service.accept_consumer_invite(
@@ -221,14 +222,200 @@ class GrowthServiceTests(unittest.TestCase):
             order_id=order["order_id"],
             customer_id="customer-1",
             paid_cents=10000,
-            refund_cents=2500,
+            refund_cents=5000,
             request_id="evt-refund-1",
         )
 
         self.assertEqual(result["agentCommissionRefund"]["status"], "pending")
-        self.assertEqual(result["agentCommissionRefund"]["orderAmount"], 7500)
-        self.assertEqual(result["agentCommissionRefund"]["commissionAmount"], 1500)
-        self.assertEqual(result["consumerReferralRefund"]["inviterPointsToDebit"], 25)
+        self.assertEqual(result["agentCommissionRefund"]["orderAmount"], 5000)
+        self.assertEqual(result["agentCommissionRefund"]["commissionAmount"], 1000)
+        self.assertEqual(result["consumerReferralRefund"]["inviterPointsToDebit"], 50)
+
+        repeat_partial = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=5000,
+            request_id="evt-refund-1",
+        )
+        self.assertTrue(repeat_partial["agentCommissionRefund"]["idempotent"])
+        self.assertTrue(repeat_partial["consumerReferralRefund"]["idempotent"])
+        self.assertEqual(repeat_partial["consumerReferralRefund"]["inviterPointsToDebit"], 0)
+
+        full = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=10000,
+            request_id="evt-refund-2",
+        )
+        self.assertEqual(full["agentCommissionRefund"]["status"], "refunded")
+        self.assertEqual(full["agentCommissionRefund"]["orderAmount"], 0)
+        self.assertEqual(full["agentCommissionRefund"]["commissionAmount"], 0)
+        self.assertEqual(full["consumerReferralRefund"]["inviterPointsToDebit"], 50)
+        self.assertEqual(full["consumerReferralRefund"]["cumulativeInviterPointsDebited"], 100)
+
+        repeat_full = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=10000,
+            request_id="evt-refund-2",
+        )
+        self.assertTrue(repeat_full["agentCommissionRefund"]["idempotent"])
+        self.assertEqual(repeat_full["consumerReferralRefund"]["inviterPointsToDebit"], 0)
+        self.assertEqual(
+            self.conn.execute(
+                """
+                SELECT COUNT(*) FROM promotion_event_logs
+                WHERE event_type = 'consumer_first_payment_refund'
+                """
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_refund_cumulative_watermark_ignores_out_of_order_and_caps_over_refund(self) -> None:
+        agent = growth_service.create_agent_profile(self.conn, "agent-user")
+        growth_service.bind_agent_customer(self.conn, agent_id=agent["id"], customer_id="customer-1")
+        invite = growth_service.accept_consumer_invite(
+            self.conn,
+            inviter_user_id="inviter-1",
+            invitee_user_id="customer-1",
+            phone_verified=True,
+            human_verified=True,
+        )
+        growth_service.mark_invite_reward_granted(self.conn, invite["id"])
+        order = self._paid_order("order-1", "customer-1", amount_cents=10000, points=1000)
+        growth_service.record_payment_growth(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            request_id="evt-paid-1",
+        )
+
+        first = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=7500,
+            cumulative_refunded_cents=7500,
+            request_id="evt-refund-75",
+        )
+        self.assertEqual(first["agentCommissionRefund"]["orderAmount"], 2500)
+        self.assertEqual(first["agentCommissionRefund"]["commissionAmount"], 500)
+        self.assertEqual(first["consumerReferralRefund"]["inviterPointsToDebit"], 75)
+
+        out_of_order = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=5000,
+            cumulative_refunded_cents=5000,
+            request_id="evt-refund-50-late",
+        )
+        self.assertEqual(out_of_order["agentCommissionRefund"]["orderAmount"], 2500)
+        self.assertEqual(out_of_order["agentCommissionRefund"]["commissionAmount"], 500)
+        self.assertEqual(out_of_order["consumerReferralRefund"]["inviterPointsToDebit"], 0)
+        self.assertEqual(out_of_order["consumerReferralRefund"]["cumulativeRefundedCents"], 7500)
+
+        over_refund = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=20000,
+            refund_cents=15000,
+            cumulative_refunded_cents=15000,
+            request_id="evt-refund-over",
+        )
+        self.assertEqual(over_refund["agentCommissionRefund"]["orderAmount"], 0)
+        self.assertEqual(over_refund["agentCommissionRefund"]["commissionAmount"], 0)
+        self.assertEqual(over_refund["consumerReferralRefund"]["inviterPointsToDebit"], 25)
+        self.assertEqual(over_refund["consumerReferralRefund"]["cumulativeRefundedCents"], 10000)
+        self.assertEqual(over_refund["consumerReferralRefund"]["cumulativeInviterPointsDebited"], 100)
+
+        replay = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=20000,
+            refund_cents=15000,
+            cumulative_refunded_cents=15000,
+            request_id="evt-refund-over",
+        )
+        self.assertEqual(replay["consumerReferralRefund"]["inviterPointsToDebit"], 0)
+        self.assertEqual(
+            replay["agentCommissionRefund"]["metadata"]["cumulativeRefundedCents"],
+            10000,
+        )
+
+    def test_separate_refund_deltas_accumulate_without_cumulative_hint(self) -> None:
+        agent = growth_service.create_agent_profile(self.conn, "agent-user")
+        growth_service.bind_agent_customer(
+            self.conn,
+            agent_id=agent["id"],
+            customer_id="customer-1",
+        )
+        invite = growth_service.accept_consumer_invite(
+            self.conn,
+            inviter_user_id="inviter-1",
+            invitee_user_id="customer-1",
+            phone_verified=True,
+            human_verified=True,
+        )
+        growth_service.mark_invite_reward_granted(self.conn, invite["id"])
+        order = self._paid_order(
+            "order-1",
+            "customer-1",
+            amount_cents=10000,
+            points=1000,
+        )
+        growth_service.record_payment_growth(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            request_id="evt-paid-1",
+        )
+
+        first = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=2500,
+            request_id="evt-refund-delta-1",
+        )
+        second = growth_service.record_payment_refund(
+            self.conn,
+            order_id=order["order_id"],
+            customer_id="customer-1",
+            paid_cents=10000,
+            refund_cents=2500,
+            request_id="evt-refund-delta-2",
+        )
+
+        self.assertEqual(first["agentCommissionRefund"]["orderAmount"], 7500)
+        self.assertEqual(second["agentCommissionRefund"]["orderAmount"], 5000)
+        self.assertEqual(
+            second["agentCommissionRefund"]["metadata"][
+                "cumulativeRefundedCents"
+            ],
+            5000,
+        )
+        self.assertEqual(
+            first["consumerReferralRefund"]["inviterPointsToDebit"],
+            25,
+        )
+        self.assertEqual(
+            second["consumerReferralRefund"]["inviterPointsToDebit"],
+            25,
+        )
 
     def _paid_order(self, order_id: str, user_id: str, *, amount_cents: int, points: int) -> dict[str, object]:
         order = payment_service.create_payment_order(

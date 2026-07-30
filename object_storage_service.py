@@ -4,6 +4,8 @@ import hashlib
 import mimetypes
 import os
 import secrets
+import shutil
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -20,6 +22,7 @@ ORIGINALS_PREFIX = "originals/"
 GENERATED_PREFIX = "generated/"
 EXPORTS_PREFIX = "exports/"
 AI_ASSETS_PREFIX = "ai-assets/"
+PRIVATE_PREVIEWS_PREFIX = f"{GENERATED_PREFIX}customer-previews/"
 
 BUCKET_PREFIXES = (
     MENUS_PREFIX,
@@ -69,6 +72,10 @@ OBJECT_STORAGE_SIGNING_SECRET_ENV_NAMES = (
     "DOWNLOAD_SIGNING_SECRET",
 )
 COS_RUNTIME_ADAPTER_PROVIDER = "cos"
+
+
+class ObjectStorageReadLimitExceeded(ValueError):
+    pass
 
 
 class ObjectStorageService:
@@ -133,14 +140,102 @@ class ObjectStorageService:
             source_path = Path(source_or_object_key).expanduser()
 
         if object_key is not None:
-            return self.put_bytes(source_path.read_bytes(), object_key=object_key)
+            object_key = validate_object_key(object_key)
+            target = self.path_for_key(object_key)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target)
+            return object_key
 
         return validate_object_key(
             self._local.put_file(source_path, prefix=_normalize_prefix(prefix), filename=filename or source_path.name)
         )
 
+    def put_file_limited(
+        self,
+        source: str | os.PathLike[str],
+        *,
+        object_key: str,
+        max_bytes: int,
+    ) -> str:
+        limit = _positive_byte_limit(max_bytes)
+        source_path = Path(source).expanduser()
+        if source_path.stat().st_size > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds upload limit"
+            )
+        logical_key = validate_object_key(object_key)
+        target = self.path_for_key(logical_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(
+            f".{target.name}.{secrets.token_hex(8)}.upload"
+        )
+        try:
+            with (
+                source_path.open("rb") as input_file,
+                temporary.open("xb") as output,
+            ):
+                _copy_stream_limited(input_file, output, limit)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return logical_key
+
     def read_bytes(self, object_key: str) -> bytes:
         return self.path_for_key(object_key).read_bytes()
+
+    def read_bytes_limited(self, object_key: str, max_bytes: int) -> bytes:
+        limit = _positive_byte_limit(max_bytes)
+        target = self.path_for_key(object_key)
+        if target.stat().st_size > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds read limit"
+            )
+        with target.open("rb") as source:
+            payload = source.read(limit + 1)
+        if len(payload) > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds read limit"
+            )
+        return payload
+
+    def read_bytes_if_exists(self, object_key: str) -> bytes | None:
+        try:
+            return self.read_bytes(object_key)
+        except FileNotFoundError:
+            return None
+
+    def download_file(
+        self,
+        object_key: str,
+        destination: str | os.PathLike[str],
+    ) -> Path:
+        source = self.path_for_key(object_key)
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target
+
+    def download_file_limited(
+        self,
+        object_key: str,
+        destination: str | os.PathLike[str],
+        max_bytes: int,
+    ) -> Path:
+        limit = _positive_byte_limit(max_bytes)
+        source = self.path_for_key(object_key)
+        if source.stat().st_size > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds download limit"
+            )
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with source.open("rb") as input_file, target.open("wb") as output:
+                _copy_stream_limited(input_file, output, limit)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
 
     def exists(self, object_key: str) -> bool:
         return self.path_for_key(object_key).is_file()
@@ -262,7 +357,53 @@ class TencentCOSObjectStorageService:
             source_path = Path(source).expanduser()
         else:
             source_path = Path(source_or_object_key).expanduser()
-        return self.put_bytes(source_path.read_bytes(), object_key=object_key, prefix=prefix, filename=filename or source_path.name)
+        if object_key is None:
+            return self.put_bytes(
+                source_path.read_bytes(),
+                prefix=prefix,
+                filename=filename or source_path.name,
+            )
+        logical_key = validate_object_key(object_key)
+        with source_path.open("rb") as body:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Body=body,
+                Key=self.remote_key(logical_key),
+                ContentType=content_type_for_key(logical_key),
+            )
+        return logical_key
+
+    def put_file_limited(
+        self,
+        source: str | os.PathLike[str],
+        *,
+        object_key: str,
+        max_bytes: int,
+    ) -> str:
+        limit = _positive_byte_limit(max_bytes)
+        source_path = Path(source).expanduser()
+        if source_path.stat().st_size > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds upload limit"
+            )
+        logical_key = validate_object_key(object_key)
+        with tempfile.TemporaryDirectory(
+            prefix="bounded-object-upload-"
+        ) as folder:
+            snapshot = Path(folder) / "object.bin"
+            with (
+                source_path.open("rb") as input_file,
+                snapshot.open("xb") as output,
+            ):
+                _copy_stream_limited(input_file, output, limit)
+            with snapshot.open("rb") as body:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Body=body,
+                    Key=self.remote_key(logical_key),
+                    ContentType=content_type_for_key(logical_key),
+                )
+        return logical_key
 
     def read_bytes(self, object_key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=self.remote_key(object_key))
@@ -270,6 +411,89 @@ class TencentCOSObjectStorageService:
         if body is None or not hasattr(body, "get_raw_stream"):
             raise FileNotFoundError(validate_object_key(object_key))
         return body.get_raw_stream().read()
+
+    def read_bytes_limited(self, object_key: str, max_bytes: int) -> bytes:
+        limit = _positive_byte_limit(max_bytes)
+        logical_key = validate_object_key(object_key)
+        metadata = self.stat(logical_key)
+        if int(metadata.get("size") or 0) > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds read limit"
+            )
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=self.remote_key(logical_key),
+        )
+        body = response.get("Body")
+        if body is None or not hasattr(body, "get_raw_stream"):
+            raise FileNotFoundError(logical_key)
+        payload = body.get_raw_stream().read(limit + 1)
+        if len(payload) > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds read limit"
+            )
+        return payload
+
+    def read_bytes_if_exists(self, object_key: str) -> bytes | None:
+        try:
+            return self.read_bytes(object_key)
+        except Exception as exc:
+            if _cos_object_not_found(exc):
+                return None
+            raise
+
+    def download_file(
+        self,
+        object_key: str,
+        destination: str | os.PathLike[str],
+    ) -> Path:
+        logical_key = validate_object_key(object_key)
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=self.remote_key(logical_key),
+        )
+        body = response.get("Body")
+        if body is None or not hasattr(body, "get_raw_stream"):
+            raise FileNotFoundError(logical_key)
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as output:
+            shutil.copyfileobj(body.get_raw_stream(), output)
+        return target
+
+    def download_file_limited(
+        self,
+        object_key: str,
+        destination: str | os.PathLike[str],
+        max_bytes: int,
+    ) -> Path:
+        limit = _positive_byte_limit(max_bytes)
+        logical_key = validate_object_key(object_key)
+        metadata = self.stat(logical_key)
+        if int(metadata.get("size") or 0) > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds download limit"
+            )
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=self.remote_key(logical_key),
+        )
+        body = response.get("Body")
+        if body is None or not hasattr(body, "get_raw_stream"):
+            raise FileNotFoundError(logical_key)
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("wb") as output:
+                _copy_stream_limited(
+                    body.get_raw_stream(),
+                    output,
+                    limit,
+                )
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
 
     def exists(self, object_key: str) -> bool:
         try:
@@ -350,6 +574,7 @@ def create_signed_access(
     *,
     base_url: str = DEFAULT_SIGNED_ACCESS_BASE_URL,
     now: int | float | datetime | None = None,
+    extra_claims: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return signed access metadata for an object key."""
     object_key = validate_object_key(object_key)
@@ -366,12 +591,24 @@ def create_signed_access(
         "asset_id": object_key,
         "object_key": object_key,
         "user_id": str(user_id),
-        "order_id": "",
+        "order_id": (
+            "object:"
+            + hashlib.sha256(object_key.encode("utf-8")).hexdigest()[:32]
+        ),
         "variant": variant,
         "purpose": purpose,
         "expires_at": expires_at,
         "nonce": secrets.token_urlsafe(16),
     }
+    if extra_claims is not None:
+        if not isinstance(extra_claims, Mapping):
+            raise TypeError("extra_claims must be a mapping")
+        overlap = set(payload).intersection(extra_claims)
+        if overlap:
+            raise ValueError(
+                "extra_claims must not override signed access claims"
+            )
+        payload.update(dict(extra_claims))
     token = asset_security.sign_asset_url(payload, secret, now=now)
     url = _signed_url(base_url, object_key, token)
     return {
@@ -544,9 +781,31 @@ def generated_object_key(data: bytes, *, prefix: str = GENERATED_PREFIX, filenam
     return validate_object_key(f"{_normalize_prefix(prefix)}/{day}/{stored_name}")
 
 
+def private_preview_object_key(
+    user_id: str,
+    menu_upload_id: str,
+    relative_name: str,
+) -> str:
+    """Build an opaque owner/menu-scoped key for a private preview asset."""
+    owner = _require_non_empty(user_id, "user_id")
+    menu_upload = _require_non_empty(menu_upload_id, "menu_upload_id")
+    relative = validate_object_key(relative_name)
+    owner_scope = hashlib.sha256(f"owner:{owner}".encode("utf-8")).hexdigest()[:32]
+    menu_scope = hashlib.sha256(
+        f"menu:{menu_upload}".encode("utf-8")
+    ).hexdigest()[:32]
+    return validate_object_key(
+        f"{PRIVATE_PREVIEWS_PREFIX}v1/{owner_scope}/{menu_scope}/{relative}"
+    )
+
+
 def content_type_for_key(object_key: str) -> str:
     guessed, _encoding = mimetypes.guess_type(validate_object_key(object_key))
     return guessed or "application/octet-stream"
+
+
+def is_object_not_found_error(exc: BaseException) -> bool:
+    return isinstance(exc, FileNotFoundError) or _cos_object_not_found(exc)
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -619,6 +878,25 @@ def _coerce_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
     raise TypeError("data must be bytes-like")
 
 
+def _cos_object_not_found(exc: Exception) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return True
+    code = ""
+    getter = getattr(exc, "get_error_code", None)
+    if callable(getter):
+        try:
+            code = str(getter() or "")
+        except Exception:
+            code = ""
+    if not code:
+        code = str(getattr(exc, "error_code", "") or "")
+    return code.strip().lower() in {
+        "nosuchkey",
+        "objectnotfound",
+        "resource_not_found",
+    }
+
+
 def _require_string(value: str | os.PathLike[str] | bytes | bytearray | memoryview, name: str) -> str:
     if isinstance(value, os.PathLike):
         return os.fspath(value)
@@ -632,6 +910,134 @@ def _require_non_empty(value: str, name: str) -> str:
     if not text:
         raise ValueError(f"{name} must not be empty")
     return text
+
+
+def _positive_byte_limit(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    return value
+
+
+def _copy_stream_limited(source: Any, target: Any, max_bytes: int) -> int:
+    limit = _positive_byte_limit(max_bytes)
+    copied = 0
+    while True:
+        remaining_with_probe = limit - copied + 1
+        chunk = source.read(min(1024 * 1024, remaining_with_probe))
+        if not chunk:
+            return copied
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("object stream must return bytes")
+        copied += len(chunk)
+        if copied > limit:
+            raise ObjectStorageReadLimitExceeded(
+                "object exceeds download limit"
+            )
+        target.write(chunk)
+
+
+def read_file_bytes_limited(
+    source: str | os.PathLike[str],
+    max_bytes: int,
+) -> bytes:
+    """Read at most max_bytes from a local file despite concurrent growth."""
+
+    limit = _positive_byte_limit(max_bytes)
+    source_path = Path(source).expanduser()
+    if source_path.stat().st_size > limit:
+        raise ObjectStorageReadLimitExceeded(
+            "file exceeds read limit"
+        )
+    with source_path.open("rb") as input_file:
+        payload = input_file.read(limit + 1)
+    if len(payload) > limit:
+        raise ObjectStorageReadLimitExceeded(
+            "file exceeds read limit"
+        )
+    return payload
+
+
+def read_object_bytes_limited(
+    storage: Any,
+    object_key: str,
+    max_bytes: int,
+) -> bytes:
+    logical_key = validate_object_key(object_key)
+    limit = _positive_byte_limit(max_bytes)
+    bounded_reader = getattr(storage, "read_bytes_limited", None)
+    if callable(bounded_reader):
+        return bytes(bounded_reader(logical_key, limit))
+
+    metadata = storage.stat(logical_key)
+    size = int(metadata.get("size") or metadata.get("file_size") or 0)
+    if size > limit:
+        raise ObjectStorageReadLimitExceeded("object exceeds read limit")
+    payload = bytes(storage.read_bytes(logical_key))
+    if len(payload) > limit:
+        raise ObjectStorageReadLimitExceeded("object exceeds read limit")
+    return payload
+
+
+def read_object_bytes_limited_if_exists(
+    storage: Any,
+    object_key: str,
+    max_bytes: int,
+) -> bytes | None:
+    try:
+        return read_object_bytes_limited(
+            storage,
+            object_key,
+            max_bytes,
+        )
+    except Exception as exc:
+        if is_object_not_found_error(exc):
+            return None
+        raise
+
+
+def download_object_file_limited(
+    storage: Any,
+    object_key: str,
+    destination: str | os.PathLike[str],
+    max_bytes: int,
+) -> Path:
+    logical_key = validate_object_key(object_key)
+    limit = _positive_byte_limit(max_bytes)
+    bounded_downloader = getattr(storage, "download_file_limited", None)
+    if not callable(bounded_downloader):
+        raise RuntimeError(
+            "object storage bounded streaming download is unavailable"
+        )
+    return Path(
+        bounded_downloader(
+            logical_key,
+            destination,
+            limit,
+        )
+    )
+
+
+def put_object_file_limited(
+    storage: Any,
+    source: str | os.PathLike[str],
+    *,
+    object_key: str,
+    max_bytes: int,
+) -> str:
+    logical_key = validate_object_key(object_key)
+    limit = _positive_byte_limit(max_bytes)
+    bounded_uploader = getattr(storage, "put_file_limited", None)
+    if not callable(bounded_uploader):
+        raise RuntimeError(
+            "object storage bounded streaming upload is unavailable"
+        )
+    return validate_object_key(
+        bounded_uploader(
+            source,
+            object_key=logical_key,
+            max_bytes=limit,
+        )
+    )
 
 
 def _timestamp(value: int | float | datetime | None) -> float:
@@ -660,14 +1066,22 @@ __all__ = [
     "GENERATED_PREFIX",
     "MENUS_PREFIX",
     "ORIGINALS_PREFIX",
+    "PRIVATE_PREVIEWS_PREFIX",
+    "ObjectStorageReadLimitExceeded",
     "ObjectStorageService",
     "TencentCOSObjectStorageService",
     "assess_object_storage_readiness",
     "bucket_for_key",
     "content_type_for_key",
     "create_signed_access",
+    "download_object_file_limited",
     "generated_object_key",
     "get_object_storage_service",
+    "private_preview_object_key",
+    "put_object_file_limited",
+    "read_file_bytes_limited",
+    "read_object_bytes_limited",
+    "read_object_bytes_limited_if_exists",
     "validate_object_key",
     "validate_object_prefix",
     "verify_signed_access",

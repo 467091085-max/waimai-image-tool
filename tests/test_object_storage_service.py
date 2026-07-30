@@ -4,6 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import asset_security
 from object_storage_service import (
@@ -11,10 +12,15 @@ from object_storage_service import (
     GENERATED_PREFIX,
     MENUS_PREFIX,
     ORIGINALS_PREFIX,
+    ObjectStorageReadLimitExceeded,
     ObjectStorageService,
     TencentCOSObjectStorageService,
     assess_object_storage_readiness,
     create_signed_access,
+    download_object_file_limited,
+    private_preview_object_key,
+    put_object_file_limited,
+    read_file_bytes_limited,
     verify_signed_access,
 )
 
@@ -32,8 +38,10 @@ class FakeCOSClient:
         self.objects: dict[str, bytes] = {}
         self.content_types: dict[str, str] = {}
 
-    def put_object(self, *, Bucket: str, Body: bytes, Key: str, ContentType: str) -> None:
-        self.objects[Key] = Body
+    def put_object(self, *, Bucket: str, Body: object, Key: str, ContentType: str) -> None:
+        payload = Body.read() if hasattr(Body, "read") else Body
+        assert isinstance(payload, bytes)
+        self.objects[Key] = payload
         self.content_types[Key] = ContentType
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
@@ -87,6 +95,170 @@ class ObjectStorageServiceTests(unittest.TestCase):
             self.assertEqual(service.stat(key)["bucket"], ORIGINALS_PREFIX)
             self.assertIn(GENERATED_PREFIX, BUCKET_PREFIXES)
 
+    def test_local_limited_upload_rejects_before_replacing_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "dish.png"
+            source.write_bytes(b"new-oversized-image")
+            service = ObjectStorageService(Path(tmp) / "objects")
+            key = service.put_bytes(
+                b"existing-image",
+                object_key="ai-assets/tenant/asset/original.png",
+            )
+
+            with self.assertRaises(ObjectStorageReadLimitExceeded):
+                put_object_file_limited(
+                    service,
+                    source,
+                    object_key=key,
+                    max_bytes=len(b"new-oversized-image") - 1,
+                )
+
+            self.assertEqual(service.read_bytes(key), b"existing-image")
+            stored = put_object_file_limited(
+                service,
+                source,
+                object_key=key,
+                max_bytes=len(b"new-oversized-image"),
+            )
+            self.assertEqual(stored, key)
+            self.assertEqual(
+                service.read_bytes(key),
+                b"new-oversized-image",
+            )
+
+    def test_local_limited_read_rejects_oversized_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ObjectStorageService(Path(tmp) / "objects")
+            key = service.put_bytes(
+                b"nine-byte",
+                object_key="generated/job/image.png",
+            )
+
+            with self.assertRaises(ObjectStorageReadLimitExceeded):
+                service.read_bytes_limited(key, 8)
+
+            self.assertEqual(service.read_bytes_limited(key, 9), b"nine-byte")
+
+    def test_local_file_read_is_bounded_by_actual_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "growing-image.bin"
+            source.write_bytes(b"123456789")
+
+            real_stat = Path.stat
+
+            def stale_stat(
+                path: Path,
+                *args: object,
+                **kwargs: object,
+            ) -> object:
+                if path == source:
+                    return mock.Mock(st_size=8)
+                return real_stat(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(Path, "stat", stale_stat),
+                self.assertRaises(ObjectStorageReadLimitExceeded),
+            ):
+                read_file_bytes_limited(source, 8)
+
+            self.assertEqual(
+                read_file_bytes_limited(source, 9),
+                b"123456789",
+            )
+
+    def test_explicit_file_upload_and_download_stream_through_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "package.zip"
+            destination = Path(tmp) / "downloaded.zip"
+            source.write_bytes(b"streamed-export-package")
+            service = ObjectStorageService(Path(tmp) / "objects")
+
+            key = service.put_file(
+                source,
+                object_key="exports/job-1/package.zip",
+            )
+            returned = service.download_file(key, destination)
+
+            self.assertEqual(returned, destination)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+    def test_local_limited_download_rejects_before_copying_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ObjectStorageService(Path(tmp) / "objects")
+            key = service.put_bytes(
+                b"oversized-object",
+                object_key="generated/job/image.png",
+            )
+            destination = Path(tmp) / "limited.png"
+
+            with self.assertRaises(ObjectStorageReadLimitExceeded):
+                download_object_file_limited(
+                    service,
+                    key,
+                    destination,
+                    len(b"oversized-object") - 1,
+                )
+
+            self.assertFalse(destination.exists())
+            returned = download_object_file_limited(
+                service,
+                key,
+                destination,
+                len(b"oversized-object"),
+            )
+            self.assertEqual(returned, destination)
+            self.assertEqual(destination.read_bytes(), b"oversized-object")
+
+    def test_limited_download_fails_closed_without_bounded_adapter(self) -> None:
+        storage = mock.Mock()
+        storage.download_file_limited = None
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "bounded streaming download is unavailable",
+        ):
+            download_object_file_limited(
+                storage,
+                "generated/job/image.png",
+                "/tmp/must-not-be-written.png",
+                8,
+            )
+
+        storage.download_file.assert_not_called()
+
+    def test_private_preview_key_is_owner_and_menu_scoped(self) -> None:
+        relative_name = (
+            "_generated_previews/menu-key/style-1/0001_dish.png"
+        )
+
+        first = private_preview_object_key(
+            "user-1",
+            "menu-upload-1",
+            relative_name,
+        )
+        replay = private_preview_object_key(
+            "user-1",
+            "menu-upload-1",
+            relative_name,
+        )
+        other_owner = private_preview_object_key(
+            "user-2",
+            "menu-upload-1",
+            relative_name,
+        )
+        other_menu = private_preview_object_key(
+            "user-1",
+            "menu-upload-2",
+            relative_name,
+        )
+
+        self.assertEqual(first, replay)
+        self.assertNotEqual(first, other_owner)
+        self.assertNotEqual(first, other_menu)
+        self.assertNotIn("user-1", first)
+        self.assertNotIn("menu-upload-1", first)
+        self.assertTrue(first.startswith("generated/customer-previews/v1/"))
+
     def test_rejects_path_traversal_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = ObjectStorageService(Path(tmp) / "objects")
@@ -130,6 +302,34 @@ class ObjectStorageServiceTests(unittest.TestCase):
         self.assertEqual(payload["purpose"], asset_security.PREVIEW)
         self.assertEqual(payload["variant"], asset_security.PREVIEW)
         self.assertEqual(payload["expires_at"], now + 60)
+
+    def test_signed_access_preserves_non_overriding_extra_claims(self) -> None:
+        now = 1_800_000_000
+        secret = "test-secret"
+        access = create_signed_access(
+            "exports/job-1/package.zip",
+            "user-1",
+            asset_security.EXPORT,
+            asset_security.EXPORT,
+            secret,
+            now=now,
+            extra_claims={"export_id": "export-1"},
+        )
+
+        payload = verify_signed_access(access["token"], secret, now=now)
+
+        self.assertEqual(payload["export_id"], "export-1")
+
+    def test_signed_access_rejects_extra_claim_override(self) -> None:
+        with self.assertRaises(ValueError):
+            create_signed_access(
+                "exports/job-1/package.zip",
+                "user-1",
+                asset_security.EXPORT,
+                asset_security.EXPORT,
+                "test-secret",
+                extra_claims={"user_id": "attacker"},
+            )
 
     def test_expired_signed_access_token_fails(self) -> None:
         now = 1_800_000_000
@@ -271,10 +471,95 @@ class ObjectStorageServiceTests(unittest.TestCase):
         self.assertEqual(client.content_types["tenant-a/generated/job-1/dish.jpg"], "image/jpeg")
         self.assertTrue(service.exists(key))
         self.assertEqual(service.read_bytes(key), b"image-bytes")
+        with self.assertRaises(ObjectStorageReadLimitExceeded):
+            service.read_bytes_limited(key, len(b"image-bytes") - 1)
+        self.assertEqual(
+            service.read_bytes_limited(key, len(b"image-bytes")),
+            b"image-bytes",
+        )
         self.assertEqual(service.stat(key)["remote_key"], "tenant-a/generated/job-1/dish.jpg")
         self.assertEqual(service.list_prefix("generated/job-1"), [key])
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "package.zip"
+            destination = Path(tmp) / "downloaded.zip"
+            source.write_bytes(b"cos-streamed-export")
+            export_key = service.put_file(
+                source,
+                object_key="exports/job-1/package.zip",
+            )
+            service.download_file(export_key, destination)
+            self.assertEqual(
+                destination.read_bytes(),
+                b"cos-streamed-export",
+            )
+            limited_destination = Path(tmp) / "limited.zip"
+            with self.assertRaises(ObjectStorageReadLimitExceeded):
+                service.download_file_limited(
+                    export_key,
+                    limited_destination,
+                    len(b"cos-streamed-export") - 1,
+                )
+            self.assertFalse(limited_destination.exists())
+            service.download_file_limited(
+                export_key,
+                limited_destination,
+                len(b"cos-streamed-export"),
+            )
+            self.assertEqual(
+                limited_destination.read_bytes(),
+                b"cos-streamed-export",
+            )
+            oversized_source = Path(tmp) / "oversized.png"
+            oversized_source.write_bytes(b"cos-bounded-upload")
+            bounded_key = "ai-assets/tenant/asset/original.png"
+            with self.assertRaises(ObjectStorageReadLimitExceeded):
+                service.put_file_limited(
+                    oversized_source,
+                    object_key=bounded_key,
+                    max_bytes=len(b"cos-bounded-upload") - 1,
+                )
+            self.assertNotIn(
+                "tenant-a/" + bounded_key,
+                client.objects,
+            )
+            service.put_file_limited(
+                oversized_source,
+                object_key=bounded_key,
+                max_bytes=len(b"cos-bounded-upload"),
+            )
+            self.assertEqual(
+                client.objects["tenant-a/" + bounded_key],
+                b"cos-bounded-upload",
+            )
         self.assertTrue(service.delete(key))
         self.assertFalse(service.exists(key))
+
+    def test_optional_cos_read_distinguishes_missing_from_outage(self) -> None:
+        client = FakeCOSClient()
+        service = TencentCOSObjectStorageService(
+            bucket="waimai-assets-prod",
+            region="ap-guangzhou",
+            secret_id="sid",
+            secret_key="skey",
+            client=client,
+        )
+
+        self.assertIsNone(
+            service.read_bytes_if_exists(
+                "generated/customer-previews/v1/missing.jpg"
+            )
+        )
+
+        client.get_object = mock.Mock(
+            side_effect=RuntimeError("cos network unavailable")
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "cos network unavailable",
+        ):
+            service.read_bytes_if_exists(
+                "generated/customer-previews/v1/outage.jpg"
+            )
 
     def test_remote_provider_rejects_public_read_storage(self) -> None:
         readiness = assess_object_storage_readiness(

@@ -10,6 +10,16 @@ from typing import Any
 
 import pandas as pd
 
+from matching_engine import (
+    TAXONOMY_COMBO,
+    TAXONOMY_VERSION,
+    classify_kind as classify_menu_kind,
+    classify_taxonomy,
+    normalize_dish,
+    split_components as split_menu_components,
+    taxonomy_label,
+)
+
 MENU_EXTS = {".xls", ".xlsx"}
 DEFAULT_MENU_DIR = Path.home() / "Documents" / "menus"
 
@@ -144,27 +154,7 @@ def clean_header(value: Any) -> str:
 
 
 def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", str(text or "")).lower()
-    text = re.sub(r"[【\[].*?[】\]]", "", text)
-    text = re.sub(r"[（(][^）)]{0,30}[）)]", "", text)
-    text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|克|g|斤|个|只|份|瓶|罐|串|枚|盒|杯|碗)", "", text)
-    for word in [
-        "招牌",
-        "爆款",
-        "热销",
-        "福利",
-        "收藏",
-        "现炒",
-        "现煎",
-        "盖码饭",
-        "盖浇饭",
-        "木桶饭",
-        "套餐",
-        "单人餐",
-        "米饭",
-    ]:
-        text = text.replace(word, "")
-    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text).strip()
+    return normalize_dish(text)
 
 
 def grams(text: str) -> set[str]:
@@ -343,83 +333,12 @@ def _collect_columns(row: list[str], columns: list[int]) -> list[str]:
     return values
 
 
-def split_components(name: str, attrs: str) -> list[str]:
-    source = unicodedata.normalize("NFKC", f"{name} {attrs}")
-    source = re.sub(r"#{2,}", "#", source)
-    source = re.sub(r"(口味|份量|规格|主食|基底|自选一|自选二|赠品三选一|味由您定)[:：]?", "#", source)
-    parts = re.split(r"[+#/／、,，|丨;；\n]+", source)
-    out = []
-    seen = set()
-    for part in parts:
-        clean = re.sub(r"[【\[].*?[】\]]", "", part)
-        clean = re.sub(r"[（(].*?[）)]", "", clean)
-        clean = re.sub(r"^[#\s:：-]+|[#\s:：-]+$", "", clean).strip()
-        norm = normalize(clean)
-        if len(norm) < 2 or norm in seen:
-            continue
-        seen.add(norm)
-        out.append(clean)
-    return out[:8]
+def split_components(name: str, attrs: str = "", category: str = "") -> list[str]:
+    return split_menu_components(name, attrs, category)
 
 
 def detect_kind(name: str, attrs: str = "", category: str = "") -> str:
-    text = unicodedata.normalize("NFKC", f"{category} {name} {attrs}")
-    name_text = unicodedata.normalize("NFKC", f"{category} {name}")
-    combo_words = [
-        "套餐",
-        "组合",
-        "双拼",
-        "三拼",
-        "四拼",
-        "多拼",
-        "自选",
-        "任选",
-        "多人餐",
-        "单人餐",
-        "大礼包",
-        "全家桶",
-        "+",
-    ]
-    if any(word in text for word in combo_words):
-        return KIND_COMBO
-
-    snack_words = [
-        "可乐",
-        "雪碧",
-        "芬达",
-        "王老吉",
-        "冰红茶",
-        "矿泉水",
-        "椰子水",
-        "豆浆",
-        "果汁",
-        "柠檬茶",
-        "酸梅汤",
-        "饮品",
-        "饮料",
-        "小食",
-        "小吃",
-        "甜品",
-        "冰沙",
-        "酸奶",
-        "茶叶蛋",
-        "溏心蛋",
-        "煎蛋",
-        "荷包蛋",
-        "泡菜",
-        "蘸水",
-        "沙拉汁",
-    ]
-    if any(word in name_text for word in snack_words):
-        return KIND_SNACK
-    norm = normalize(name)
-    if re.search(r"(米饭|白饭|珍珠饭|杂粮饭|糙米饭)$", norm) and len(norm) <= 8:
-        return KIND_SNACK
-    if re.search(r"(酱|汁|蘸料)$", norm) and len(norm) <= 8:
-        return KIND_SNACK
-    if "汤" in text and not any(word in text for word in ["汤饭", "汤面", "汤粉", "汤锅", "汤包"]):
-        return KIND_SNACK
-    return KIND_SINGLE
+    return classify_menu_kind(name, attrs, category)
 
 
 def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -427,6 +346,14 @@ def kind_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     combo = sum(1 for item in items if item.get("kind") == KIND_COMBO)
     snack = max(0, len(items) - single - combo)
     return {"single": single, "combo": combo, "snack": snack, "total": len(items)}
+
+
+def taxonomy_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        taxonomy = str(item.get("taxonomy") or "unknown")
+        counts[taxonomy] = counts.get(taxonomy, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[str, Any]]:
@@ -454,15 +381,21 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             price = _price_number(row[candidate.price_col])
 
         attrs = " ".join(_collect_columns(row, candidate.name_extra_cols + candidate.attribute_cols))
+        components = split_components(name, attrs, category)
+        kind = detect_kind(name, " ".join(components))
+        taxonomy = TAXONOMY_COMBO if kind == KIND_COMBO else classify_taxonomy(name, "", category)
         item = {
             "row": row_index + 1,
             "sheet": candidate.sheet_name,
             "category": category,
             "name": name,
             "price": price,
-            "kind": detect_kind(name, attrs, category),
+            "kind": kind,
             "norm": norm,
-            "components": split_components(name, attrs),
+            "taxonomy": taxonomy,
+            "taxonomyLabel": taxonomy_label(taxonomy),
+            "taxonomyVersion": TAXONOMY_VERSION,
+            "components": components,
         }
         items.append(item)
     return items
@@ -562,6 +495,8 @@ def parse_menu(path: str | Path) -> dict[str, Any]:
         "file": source.name,
         "count": len(items),
         "kindCounts": kind_counts(items),
+        "taxonomyVersion": TAXONOMY_VERSION,
+        "taxonomyCounts": taxonomy_counts(items),
         "items": items,
         "sheets": parsed_sheets,
         "errors": errors,
@@ -592,6 +527,8 @@ def audit_menus(directory: str | Path) -> dict[str, Any]:
                 "file": menu["file"],
                 "count": menu["count"],
                 "kindCounts": menu["kindCounts"],
+                "taxonomyVersion": menu["taxonomyVersion"],
+                "taxonomyCounts": menu["taxonomyCounts"],
                 "sheets": menu.get("sheets", []),
                 "errors": menu.get("errors", []),
             }

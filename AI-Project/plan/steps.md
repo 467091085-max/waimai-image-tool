@@ -9,6 +9,9 @@
 - [x] Push to GitHub.
 - [x] Wait for Render deployment.
 - [x] Verify Render `/api/plan`.
+- [x] Deploy ResourceInsufficient UI copy.
+- [x] Verify Render static UI copy updated.
+- [x] Verify Render `/api/style-background` fails fast with ProviderError while Tencent resource is unavailable.
 - [ ] Enable Tencent Cloud Hunyuan resources / postpaid billing.
 - [ ] Verify Render `/api/style-background` returns a real image URL after Tencent resource is available.
 
@@ -16,3 +19,4 @@
 - [x] Reproduced Render background generation timeout.
 - [x] Identified synchronous Hunyuan calls inside `/api/plan`.
 - [x] Started minimal patch to split style background generation into a separate endpoint.
+- [x] Confirmed remaining blocker is Tencent Cloud `ResourceInsufficient`, not app timeout.

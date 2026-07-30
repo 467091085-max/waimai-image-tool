@@ -22,6 +22,8 @@ def test_growth_api_connects_invite_agent_and_payment_rewards(tmp_path: Path, mo
     app_module = importlib.import_module("app")
     app_module = importlib.reload(app_module)
     client = app_module.app.test_client()
+    auth = _login(client)
+    customer_user_id = auth["user"]["id"]
 
     agent_response = client.post("/api/growth/agents", json={"userId": "agent-user", "agentCode": "A001"})
     agent_payload = _json_for_status(agent_response, 200)
@@ -30,32 +32,36 @@ def test_growth_api_connects_invite_agent_and_payment_rewards(tmp_path: Path, mo
 
     bind_response = client.post(
         "/api/growth/agent-customers",
-        json={"agentId": agent["id"], "customerId": "customer-user", "source": "invite-code"},
+        json={"agentId": agent["id"], "customerId": customer_user_id, "source": "invite-code"},
     )
     relation = _json_for_status(bind_response, 200)["relation"]
     assert relation["agentId"] == agent["id"]
-    assert relation["customerId"] == "customer-user"
+    assert relation["customerId"] == customer_user_id
 
     invite_response = client.post(
         "/api/growth/invites/accept",
         json={
             "inviterUserId": "inviter-user",
-            "inviteeUserId": "customer-user",
+            "inviteeUserId": customer_user_id,
             "phoneVerified": True,
             "humanVerified": True,
         },
     )
     invite_payload = _json_for_status(invite_response, 200)
     assert invite_payload["invite"]["rewardStatus"] == "granted"
-    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 50
-    assert billing.get_account("customer-user", db_path=billing_db_path)["balance"] == 50
+    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 100
+    assert billing.get_account(customer_user_id, db_path=billing_db_path)["balance"] == 20
 
     order_response = client.post(
         "/api/payments/orders",
-        json={"userId": "customer-user", "cash": 49, "idempotencyKey": "growth-pay-49"},
+        json={"packageId": "starter-500"},
+        headers={
+            "Authorization": f"Bearer {auth['token']}",
+            "Idempotency-Key": "growth-pay-49",
+        },
     )
     order = _json_for_status(order_response, 200)["order"]
-    event_payload = {"eventId": "evt-growth-pay"}
+    event_payload = {"eventId": "evt-growth-pay", "amountCents": 4900}
     event_payload["signature"] = payment_service.fake_callback_signature(
         "fake",
         order["providerOrderId"],
@@ -78,8 +84,8 @@ def test_growth_api_connects_invite_agent_and_payment_rewards(tmp_path: Path, mo
     assert growth["agentCommission"]["commissionAmount"] == 980
     assert growth["consumerReferralReward"]["inviterUserId"] == "inviter-user"
     assert growth["consumerReferralReward"]["inviterPoints"] == 49
-    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 99
-    assert billing.get_account("customer-user", db_path=billing_db_path)["balance"] == 550
+    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 149
+    assert billing.get_account(customer_user_id, db_path=billing_db_path)["balance"] == 520
 
     duplicate_response = client.post(
         "/api/payments/fake-callback",
@@ -92,9 +98,9 @@ def test_growth_api_connects_invite_agent_and_payment_rewards(tmp_path: Path, mo
     duplicate_payload = _json_for_status(duplicate_response, 200)
     assert duplicate_payload["growth"]["agentCommission"]["idempotent"] is True
     assert duplicate_payload["growth"]["consumerReferralReward"]["inviterPoints"] == 0
-    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 99
+    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 149
 
-    refund_payload = {"eventId": "evt-growth-refund"}
+    refund_payload = {"eventId": "evt-growth-refund", "amountCents": 4900}
     refund_payload["signature"] = payment_service.fake_callback_signature(
         "fake",
         order["providerOrderId"],
@@ -115,8 +121,8 @@ def test_growth_api_connects_invite_agent_and_payment_rewards(tmp_path: Path, mo
     assert refund_growth["agentCommissionRefund"]["status"] == "refunded"
     assert refund_growth["agentCommissionRefund"]["commissionAmount"] == 0
     assert refund_growth["consumerReferralRefund"]["inviterPointsToDebit"] == 49
-    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 50
-    assert billing.get_account("customer-user", db_path=billing_db_path)["balance"] == 50
+    assert billing.get_account("inviter-user", db_path=billing_db_path)["balance"] == 100
+    assert billing.get_account(customer_user_id, db_path=billing_db_path)["balance"] == 20
 
     conn = storage_db.get_conn(storage_db_path)
     try:
@@ -132,3 +138,21 @@ def _json_for_status(response: Any, expected_status: int) -> dict[str, Any]:
     assert response.status_code == expected_status, response.get_data(as_text=True)
     assert isinstance(data, dict), response.get_data(as_text=True)
     return data
+
+
+def _login(client: Any) -> dict[str, Any]:
+    requested = _json_for_status(
+        client.post("/api/auth/request-otp", json={"phone": "13800138000"}),
+        200,
+    )
+    verified = _json_for_status(
+        client.post(
+            "/api/auth/verify-otp",
+            json={"challengeId": requested["challengeId"], "code": requested["mockCode"]},
+        ),
+        200,
+    )
+    return {
+        "user": verified["user"],
+        "token": verified["session"]["token"],
+    }

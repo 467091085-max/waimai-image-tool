@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 import time
 import unittest
@@ -238,7 +239,7 @@ class DownloadRouteTests(unittest.TestCase):
                 "variant": asset_security.EXPORT,
                 "purpose": asset_security.EXPORT,
                 "expires_at": int(time.time()) + 60,
-                "nonce": "nonce-1",
+                "nonce": secrets.token_urlsafe(16),
             },
             secret,
         )

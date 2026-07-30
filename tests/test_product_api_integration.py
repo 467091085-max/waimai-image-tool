@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
 
 import ai_asset_repository
+import asset_security
+import auth_rules
 import auth_service
 import billing
 import object_storage_service
@@ -30,6 +32,7 @@ PAYMENT_WEBHOOK_SECRET = "test-payment-webhook-secret"
 OBJECT_SIGNING_SECRET = "test-object-signing-secret"
 PHONE = "13800138000"
 NORMALIZED_PHONE = "+8613800138000"
+OTHER_PHONE = "13900139000"
 
 
 @dataclass
@@ -157,6 +160,82 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
     assert missing == [], "Missing product API endpoints: " + ", ".join(missing)
 
 
+def test_admin_actor_identity_cannot_be_spoofed_in_product_runtime(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("app")
+    monkeypatch.setattr(
+        app_module,
+        "postgres_product_runtime_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "current_authenticated_user_id",
+        lambda: "real-admin-user",
+    )
+
+    with app_module.app.test_request_context(
+        headers={"X-Admin-User-Id": "spoofed-admin-user"}
+    ):
+        assert app_module.admin_actor_user_id() == "real-admin-user"
+
+
+def test_admin_actor_uses_trusted_service_identity_for_admin_token(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("app")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "test-admin-token")
+
+    with app_module.app.test_request_context(
+        headers={
+            "X-Admin-Token": "test-admin-token",
+            "X-Admin-User-Id": "spoofed-admin-user",
+        }
+    ):
+        assert app_module.admin_actor_user_id() == "service:admin-api-token"
+
+
+def test_postgres_payment_requires_idempotency_key_before_store_access(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    login = _login(product_api.client)
+    app_module = importlib.import_module("app")
+    monkeypatch.setattr(
+        app_module,
+        "postgres_payment_runtime_enabled",
+        lambda _provider: True,
+    )
+    monkeypatch.setattr(
+        app_module.payment_service,
+        "ensure_payment_checkout_available",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "postgres_connection",
+        lambda: pytest.fail(
+            "missing idempotency key must fail before PostgreSQL access"
+        ),
+    )
+
+    response = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_auth_header(login["token"]),
+    )
+    payload = _json_for_status(
+        response,
+        400,
+        "POST /api/payments/orders without idempotency key",
+    )
+
+    assert payload["code"] == "idempotency_key_required"
+
+
 def _alipay_env() -> dict[str, str]:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = private_key.private_bytes(
@@ -170,6 +249,7 @@ def _alipay_env() -> dict[str, str]:
     ).decode("utf-8")
     return {
         "APP_ENV": "staging",
+        "ALLOW_SQLITE_PRODUCT_RUNTIME_FOR_TESTS": "true",
         "ENABLE_LOCAL_DEMO_BILLING": "false",
         "PAYMENT_PROVIDER": "alipay",
         "ALIPAY_APP_ID": "2021000000000000",
@@ -233,9 +313,124 @@ def test_upload_menu_persists_original_file_to_object_storage_and_db(
     assert row["object_key"].startswith("menus/")
     assert row["status"] == "parsed"
     assert row["file_size"] == len(b"fake-xlsx-bytes")
+    summary = storage_db.json_loads(row["parsed_summary_json"], {})
+    assert summary["_server"] == {
+        "ownerUserId": billing.DEFAULT_USER_ID,
+        "parserVersion": 1,
+    }
 
     storage = object_storage_service.ObjectStorageService(product_api.object_store_dir)
     assert storage.read_bytes(row["object_key"]) == b"fake-xlsx-bytes"
+
+
+def test_authenticated_menu_upload_is_session_owned_and_hidden_from_other_users(
+    product_api: ProductApiFixture,
+) -> None:
+    app_module = importlib.import_module("app")
+    owner_auth = _login(product_api.client)
+    menu_summary = {
+        "file": "menu.xlsx",
+        "store": "认证门店",
+        "count": 1,
+        "kindCounts": {"single": 1, "combo": 0, "snack": 0, "total": 1},
+        "items": [{"row": 1, "name": "辣椒炒肉盖码饭"}],
+    }
+
+    with mock.patch.object(app_module, "parse_menu", return_value=menu_summary):
+        response = product_api.client.post(
+            "/api/upload-menu",
+            data={"file": (io.BytesIO(b"owned-menu"), "menu.xlsx")},
+            content_type="multipart/form-data",
+            headers={
+                **_auth_header(owner_auth["token"]),
+                "X-User-Id": "forged-browser-user",
+            },
+            environ_base={"REMOTE_ADDR": "203.0.113.10"},
+        )
+
+    payload = _json_for_status(response, 200, "authenticated POST /api/upload-menu")
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        row = conn.execute(
+            "SELECT parsed_summary_json FROM menu_uploads WHERE id = ?",
+            (payload["menuUploadId"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    stored_summary = storage_db.json_loads(row["parsed_summary_json"], {})
+    assert stored_summary["_server"]["ownerUserId"] == owner_auth["user"]["id"]
+    assert "forged-browser-user" not in json.dumps(stored_summary)
+
+    owner_status = product_api.client.get(
+        f"/api/menu-status?menuUploadId={payload['menuUploadId']}",
+        headers=_auth_header(owner_auth["token"]),
+        environ_base={"REMOTE_ADDR": "203.0.113.10"},
+    )
+    owner_payload = _json_for_status(owner_status, 200, "owner GET /api/menu-status")
+    assert owner_payload["menuUploadId"] == payload["menuUploadId"]
+    assert owner_payload["menu"]["store"] == "认证门店"
+    assert "_server" not in json.dumps(owner_payload)
+    assert "objectKey" not in json.dumps(owner_payload)
+
+    other_auth = _login(product_api.client, phone=OTHER_PHONE)
+    other_status = product_api.client.get(
+        f"/api/menu-status?menuUploadId={payload['menuUploadId']}",
+        headers=_auth_header(other_auth["token"]),
+        environ_base={"REMOTE_ADDR": "203.0.113.11"},
+    )
+    other_payload = _json_for_status(other_status, 404, "other user GET /api/menu-status")
+    assert other_payload["code"] == "menu_upload_not_found"
+
+
+def test_menu_status_rejects_tampered_menu_object(
+    product_api: ProductApiFixture,
+) -> None:
+    app_module = importlib.import_module("app")
+    menu_summary = {
+        "file": "menu.xlsx",
+        "store": "完整性门店",
+        "count": 1,
+        "items": [{"row": 1, "name": "宫保鸡丁"}],
+    }
+    with mock.patch.object(app_module, "parse_menu", return_value=menu_summary):
+        response = product_api.client.post(
+            "/api/upload-menu",
+            data={"file": (io.BytesIO(b"original-menu"), "menu.xlsx")},
+            content_type="multipart/form-data",
+        )
+    upload_payload = _json_for_status(response, 200, "POST /api/upload-menu for tamper")
+
+    conn = storage_db.get_conn(product_api.storage_db_path)
+    try:
+        row = conn.execute(
+            "SELECT object_key FROM menu_uploads WHERE id = ?",
+            (upload_payload["menuUploadId"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    storage = object_storage_service.ObjectStorageService(product_api.object_store_dir)
+    storage.put_bytes(b"tampered-menu", object_key=row["object_key"])
+
+    status_response = product_api.client.get(
+        f"/api/menu-status?menuUploadId={upload_payload['menuUploadId']}"
+    )
+    status_payload = _json_for_status(status_response, 409, "tampered GET /api/menu-status")
+    assert status_payload["code"] == "menu_upload_integrity_mismatch"
+
+
+def test_live_style_anonymous_menu_upload_requires_login(
+    product_api: ProductApiFixture,
+) -> None:
+    response = product_api.client.post(
+        "/api/upload-menu",
+        data={"file": (io.BytesIO(b"anonymous-menu"), "menu.xlsx")},
+        content_type="multipart/form-data",
+        environ_base={"REMOTE_ADDR": "203.0.113.12"},
+    )
+    payload = _json_for_status(response, 401, "anonymous POST /api/upload-menu")
+    assert payload["code"] == "auth_required"
 
 
 def test_upload_library_persists_images_to_object_storage_and_db(
@@ -323,6 +518,9 @@ def test_ops_readiness_reports_storage_and_generation_queue(
     assert payload["generationQueue"]["countsByStatus"]["queued"] == 1
     assert payload["generationQueue"]["limits"]["maxPendingJobs"] == 3
     assert payload["generationQueue"]["closed"] is False
+    assert payload["productGeneration"]["ready"] is True
+    assert payload["productGeneration"]["mode"] == "in_process_demo"
+    assert "sqlite_product_job_store_is_for_local_demo_only" in payload["productGeneration"]["warnings"]
 
 
 def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_staging(
@@ -362,6 +560,21 @@ def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_sta
     assert "live_generation_provider_required" in generation["blockingIssues"]
     assert "tokenhub_image_provider_required" in generation["blockingIssues"]
     assert "TENCENT_TOKENHUB_API_KEY" in generation["missingConfig"]
+    product_generation = payload["productGeneration"]
+    assert product_generation["ready"] is False
+    assert product_generation["durableJobStoreIntegrated"] is True
+    assert product_generation["transactionalOutboxIntegrated"] is True
+    assert product_generation["settlementReconcilerIntegrated"] is True
+    assert "postgres_product_job_store_required" in product_generation["blockingIssues"]
+    assert "product_outbox_dispatcher_service_required" in product_generation["blockingIssues"]
+    assert "product_settlement_reconciler_service_required" in product_generation["blockingIssues"]
+    assert "product_worker_not_live" in product_generation["blockingIssues"]
+    assert "product_outbox_dispatcher_not_live" in product_generation["blockingIssues"]
+    assert "product_settlement_reconciler_not_live" in product_generation["blockingIssues"]
+    assert product_generation["workerLivenessIntegrated"] is True
+    assert product_generation["workerLiveness"]["ready"] is False
+    assert "DATABASE_URL" in product_generation["missingConfig"]
+    assert "PRODUCT_WORKER_ENABLED" in product_generation["missingConfig"]
 
 
 def test_ops_readiness_treats_render_runtime_as_live_generation_environment(
@@ -433,6 +646,72 @@ def test_ops_readiness_accepts_tokenhub_generation_provider_in_staging(
     assert payments["ready"] is False
     assert "real_payment_provider_required" in payments["blockingIssues"]
     assert "fake_payment_provider_forbidden_in_live_environment" in payments["blockingIssues"]
+
+
+def test_ops_readiness_reports_a_live_product_worker_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        REDIS_URL="redis://example.invalid/0",
+        DATABASE_URL="postgresql://example.invalid/app",
+        PRODUCT_WORKER_ENABLED="true",
+        PRODUCT_OUTBOX_DISPATCHER_ENABLED="true",
+        PRODUCT_SETTLEMENT_RECONCILER_ENABLED="true",
+    )
+    app_module = importlib.import_module("app")
+
+    class LiveProductQueue:
+        @staticmethod
+        def service_liveness(service_id: str) -> dict[str, Any]:
+            assert service_id in {
+                "product-worker",
+                "product-outbox-dispatcher",
+                "product-settlement-reconciler",
+            }
+            return {
+                "serviceId": service_id,
+                "queueName": "product-generate",
+                "ageMs": 150,
+                "ttlSeconds": 28,
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "redis_product_queue_from_env",
+        lambda: LiveProductQueue(),
+    )
+
+    response = fixture.client.get("/api/ops/readiness")
+
+    payload = _json_for_status(
+        response,
+        200,
+        "GET /api/ops/readiness live product worker",
+    )
+    product_generation = payload["productGeneration"]
+    assert product_generation["workerLivenessIntegrated"] is True
+    assert product_generation["workerLiveness"] == {
+        "ready": True,
+        "serviceId": "product-worker",
+        "queueName": "product-generate",
+        "lastSeenAgeMs": 150,
+        "heartbeatTtlSeconds": 28,
+    }
+    assert "product_worker_not_live" not in product_generation["blockingIssues"]
+    assert product_generation["outboxDispatcherLiveness"]["ready"] is True
+    assert product_generation["settlementReconcilerLiveness"]["ready"] is True
+    assert (
+        "product_outbox_dispatcher_not_live"
+        not in product_generation["blockingIssues"]
+    )
+    assert (
+        "product_settlement_reconciler_not_live"
+        not in product_generation["blockingIssues"]
+    )
 
 
 def test_ops_readiness_is_false_when_storage_or_queue_is_not_ready(
@@ -626,6 +905,18 @@ def test_generation_job_status_payload_keeps_frontend_timing_contract(
 
         monkeypatch.setattr(app_module, "generation_queue", queue)
         monkeypatch.setattr(app_module, "tencent_ready", lambda: False)
+        monkeypatch.setattr(
+            app_module,
+            "generation_request_principal",
+            lambda: (
+                {
+                    "userId": "demo",
+                    "internal": False,
+                    "localDemo": True,
+                },
+                None,
+            ),
+        )
 
         response = product_api.client.get("/api/generation-jobs/contract-job")
         payload = _json_for_status(response, 200, "GET /api/generation-jobs/<job_id>")
@@ -1103,18 +1394,90 @@ def test_withdrawal_api_maps_service_errors_to_json(product_api: ProductApiFixtu
     assert missing_admin_payload["code"] == "withdrawal_not_found"
 
 
-def test_fake_payment_order_is_available_in_local_demo(product_api: ProductApiFixture) -> None:
+def test_payment_order_requires_authenticated_session(product_api: ProductApiFixture) -> None:
     response = product_api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "local-demo-fake-pay"},
+        json={"packageId": "starter-500"},
+    )
+    payload = _json_for_status(response, 401, "POST /api/payments/orders anonymous")
+    assert payload["code"] == "auth_required"
+
+
+def test_fake_payment_order_is_available_in_local_demo(product_api: ProductApiFixture) -> None:
+    auth = _login(product_api.client)
+    response = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "local-demo-fake-pay"),
     )
     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders local demo")
     order = _nested(payload, "order", fallback=payload)
 
     assert _field(order, "provider") == "fake"
     assert _field(order, "status") == "pending"
+    assert _field(order, "userId", "user_id") == auth["user"]["id"]
+    assert _field(order, "amountCents", "amount_cents") == 4900
+    assert _field(order, "points") == 500
     assert _field(order, "paymentUrl", "payment_url").startswith("fakepay://checkout?")
     assert _field(_nested(payload, "instructions"), "paymentUrl", "payment_url").startswith("fakepay://checkout?")
+
+
+@pytest.mark.parametrize("field,value", (
+    ("userId", "attacker"),
+    ("amountCents", 1),
+    ("points", 999_999),
+    ("cash", 1),
+    ("provider", "fake"),
+    ("orderId", "client-selected"),
+    ("idempotencyKey", "body-key"),
+))
+def test_payment_order_rejects_client_controlled_fields(
+    product_api: ProductApiFixture,
+    field: str,
+    value: object,
+) -> None:
+    auth = _login(product_api.client)
+    response = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500", field: value},
+        headers=_payment_headers(auth["token"], f"reject-{field}"),
+    )
+    payload = _json_for_status(response, 400, f"POST /api/payments/orders rejects {field}")
+    assert payload["code"] == "invalid_payment_input"
+
+
+def test_payment_order_rejects_unknown_package_and_conflicting_idempotency(
+    product_api: ProductApiFixture,
+) -> None:
+    auth = _login(product_api.client)
+    unknown = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "unknown"},
+        headers=_payment_headers(auth["token"], "unknown-package"),
+    )
+    assert _json_for_status(unknown, 400, "POST /api/payments/orders unknown package")["code"] == "invalid_payment_input"
+
+    first = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "payment-api-idempotency"),
+    )
+    first_order = _json_for_status(first, 200, "POST /api/payments/orders first")["order"]
+    retry = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "payment-api-idempotency"),
+    )
+    retry_order = _json_for_status(retry, 200, "POST /api/payments/orders retry")["order"]
+    assert retry_order["orderId"] == first_order["orderId"]
+    assert retry_order["idempotent"] is True
+
+    conflict = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "store-1040"},
+        headers=_payment_headers(auth["token"], "payment-api-idempotency"),
+    )
+    assert _json_for_status(conflict, 409, "POST /api/payments/orders conflict")["code"] == "payment_order_conflict"
 
 
 def test_fake_payment_order_blocked_when_demo_billing_disabled_without_explicit_provider(
@@ -1129,9 +1492,11 @@ def test_fake_payment_order_blocked_when_demo_billing_disabled_without_explicit_
         ALLOW_FAKE_PAYMENT_PROVIDER=None,
     )
 
+    auth = _login(api.client)
     response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "provider": "fake"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "fake-disabled"),
     )
     payload = _json_for_status(response, 503, "POST /api/payments/orders fake provider disabled")
 
@@ -1149,14 +1514,17 @@ def test_fake_payment_order_blocked_on_render_runtime_even_if_demo_billing_enabl
         monkeypatch,
         APP_ENV=None,
         PUBLIC_BASE_URL="https://waimai-image-tool-1.onrender.com",
+        ALLOW_SQLITE_PRODUCT_RUNTIME_FOR_TESTS="true",
         ENABLE_LOCAL_DEMO_BILLING="true",
         PAYMENT_PROVIDER="fake",
         ALLOW_FAKE_PAYMENT_PROVIDER="true",
     )
 
+    auth = _login(api.client)
     response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "provider": "fake"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "fake-render"),
     )
     payload = _json_for_status(response, 503, "POST /api/payments/orders fake provider render")
 
@@ -1172,6 +1540,7 @@ def test_real_payment_order_fails_closed_until_adapter_exists(
         tmp_path,
         monkeypatch,
         APP_ENV="staging",
+        ALLOW_SQLITE_PRODUCT_RUNTIME_FOR_TESTS="true",
         ENABLE_LOCAL_DEMO_BILLING="false",
         PAYMENT_PROVIDER="wechat",
         WECHAT_PAY_APP_ID="wx-app-id",
@@ -1183,9 +1552,11 @@ def test_real_payment_order_fails_closed_until_adapter_exists(
         PAYMENT_NOTIFY_URL="https://example.test/payments/wechat/notify",
     )
 
+    auth = _login(api.client)
     response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "wechat-adapter-missing"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "wechat-adapter-missing"),
     )
     payload = _json_for_status(response, 503, "POST /api/payments/orders wechat adapter missing")
 
@@ -1204,16 +1575,215 @@ def test_real_payment_order_fails_closed_until_adapter_exists(
     assert row["count"] == 0
 
 
+def test_legacy_refund_endpoint_never_writes_sqlite_in_live_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+        BILLING_API_TOKEN="billing-service-test-token",
+    )
+
+    response = api.client.post(
+        "/api/refund",
+        json={
+            "userId": "customer-1",
+            "sourceOrderId": "debit-1",
+            "points": 10,
+        },
+        headers={"X-Billing-Token": "billing-service-test-token"},
+    )
+    payload = _json_for_status(
+        response,
+        409,
+        "POST /api/refund in live runtime",
+    )
+
+    assert payload["code"] == "durable_settlement_refund_required"
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "expected_code"),
+    (
+        (
+            "/api/recharge",
+            {"userId": "customer-1", "points": 1000},
+            "payment_order_required",
+        ),
+        (
+            "/api/debit",
+            {"userId": "customer-1", "points": 10},
+            "task_owned_debit_required",
+        ),
+    ),
+)
+def test_legacy_wallet_mutations_never_bypass_live_business_flows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    payload: dict[str, object],
+    expected_code: str,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+        BILLING_API_TOKEN="billing-service-test-token",
+    )
+
+    response = api.client.post(
+        path,
+        json=payload,
+        headers={"X-Billing-Token": "billing-service-test-token"},
+    )
+    body = _json_for_status(response, 409, f"POST {path} in live runtime")
+
+    assert body["code"] == expected_code
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+
+
+def test_legacy_fake_callback_never_opens_sqlite_in_live_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+    )
+
+    response = api.client.post(
+        "/api/payments/fake-callback",
+        json={
+            "provider": "alipay",
+            "providerOrderId": "must-not-read-sqlite",
+        },
+    )
+    body = _json_for_status(
+        response,
+        410,
+        "POST /api/payments/fake-callback in live runtime",
+    )
+
+    assert body["code"] == "fake_payment_callback_disabled_live"
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+
+
+def test_product_db_connection_is_centrally_forbidden_in_live_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+    )
+    app_module = importlib.import_module("app")
+
+    with pytest.raises(app_module.LiveSQLiteAccessForbidden):
+        app_module.product_db_conn()
+
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+
+
+def test_live_library_import_requires_admin_idempotency_and_remote_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+        ADMIN_API_TOKEN="library-admin-token",
+    )
+
+    unauthorized = api.client.post(
+        "/api/upload-library",
+        data={"file": (io.BytesIO(b"not-read"), "library.zip")},
+        content_type="multipart/form-data",
+    )
+    assert unauthorized.status_code == 403
+
+    response = api.client.post(
+        "/api/upload-library",
+        data={"file": (io.BytesIO(b"not-read"), "library.zip")},
+        content_type="multipart/form-data",
+        headers={"X-Admin-Token": "library-admin-token"},
+    )
+    body = _json_for_status(
+        response,
+        400,
+        "POST /api/upload-library without idempotency",
+    )
+    assert body["code"] == "idempotency_key_required"
+
+    unavailable = api.client.post(
+        "/api/upload-library",
+        data={"file": (io.BytesIO(b"not-read"), "library.zip")},
+        content_type="multipart/form-data",
+        headers={
+            "X-Admin-Token": "library-admin-token",
+            "Idempotency-Key": "library-import-1",
+        },
+    )
+    unavailable_body = _json_for_status(
+        unavailable,
+        503,
+        "POST /api/upload-library without remote storage",
+    )
+    assert unavailable_body["code"] == "library_object_storage_unavailable"
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+    assert list(api.object_store_dir.rglob("*")) == []
+
+
+def test_legacy_local_download_is_gone_in_live_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _fresh_product_api(
+        tmp_path,
+        monkeypatch,
+        APP_ENV="staging",
+        PRODUCT_POSTGRES_ENABLED="true",
+    )
+
+    response = api.client.get("/download/legacy-export.zip")
+    body = _json_for_status(
+        response,
+        410,
+        "GET /download in live runtime",
+    )
+
+    assert body["code"] == "durable_object_download_required"
+    assert api.storage_db_path.exists() is False
+    assert api.billing_db_path.exists() is False
+
+
 def test_alipay_order_returns_signed_checkout_and_persists_pending_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = _alipay_env()
     api = _fresh_product_api(tmp_path, monkeypatch, **env)
+    auth = _login(api.client)
 
     response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "alipay-page-pay"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "alipay-page-pay"),
     )
     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders alipay")
 
@@ -1243,9 +1813,11 @@ def test_alipay_notify_marks_order_paid_and_credits_points(
 ) -> None:
     env = _alipay_env()
     api = _fresh_product_api(tmp_path, monkeypatch, **env)
+    auth = _login(api.client)
     create_response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "alipay-notify"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "alipay-notify"),
     )
     create_payload = _json_for_status(create_response, (200, 201), "POST /api/payments/orders alipay")
     provider_order_id = create_payload["order"]["providerOrderId"]
@@ -1270,8 +1842,8 @@ def test_alipay_notify_marks_order_paid_and_credits_points(
     assert row["status"] == "paid"
     assert row["paid_at"]
 
-    account = billing.get_account("default", db_path=api.billing_db_path)
-    assert account["balance"] >= 490
+    account = billing.get_account(auth["user"]["id"], db_path=api.billing_db_path)
+    assert account["balance"] >= 500
 
 
 def test_admin_payment_reconciliation_requires_finance_role_and_writes_audit(
@@ -1429,9 +2001,11 @@ def test_explicit_fake_payment_config_allows_order_when_demo_billing_disabled(
         **explicit_env,
     )
 
+    auth = _login(api.client)
     response = api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": f"explicit-{next(iter(explicit_env)).lower()}"},
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], f"explicit-{next(iter(explicit_env)).lower()}"),
     )
     payload = _json_for_status(response, (200, 201), "POST /api/payments/orders explicit fake config")
     order = _nested(payload, "order", fallback=payload)
@@ -1447,8 +2021,8 @@ def test_fake_payment_callback_credits_billing_once(product_api: ProductApiFixtu
 
     create_response = product_api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "pay-49-once"},
-        headers=_auth_header(token),
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(token, "pay-49-once"),
     )
     create_payload = _json_for_status(create_response, (200, 201), "POST /api/payments/orders")
     order = _nested(create_payload, "order", fallback=create_payload)
@@ -1462,15 +2036,15 @@ def test_fake_payment_callback_credits_billing_once(product_api: ProductApiFixtu
 
     retry_response = product_api.client.post(
         "/api/payments/orders",
-        json={"cash": 49, "idempotencyKey": "pay-49-once"},
-        headers=_auth_header(token),
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(token, "pay-49-once"),
     )
     retry_payload = _json_for_status(retry_response, (200, 201), "POST /api/payments/orders idempotent retry")
     retry_order = _nested(retry_payload, "order", fallback=retry_payload)
     assert _field(retry_order, "orderId", "order_id") == _field(order, "orderId", "order_id")
 
     provider_order_id = _field(order, "providerOrderId", "provider_order_id")
-    event_payload = {"eventId": "evt-pay-success-1", "status": "paid"}
+    event_payload = {"eventId": "evt-pay-success-1", "status": "paid", "amountCents": 4900}
     event_payload["signature"] = payment_service.fake_callback_signature(
         "fake",
         provider_order_id,
@@ -1501,6 +2075,184 @@ def test_fake_payment_callback_credits_billing_once(product_api: ProductApiFixtu
     assert billing.get_account(user_id, db_path=product_api.billing_db_path)["balance"] == expected_points
 
 
+def test_duplicate_payment_callback_retries_failed_wallet_credit(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("app")
+    auth = _login(product_api.client)
+    create_response = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "pay-retry-wallet-credit"),
+    )
+    create_payload = _json_for_status(
+        create_response,
+        (200, 201),
+        "POST /api/payments/orders for wallet retry",
+    )
+    order = create_payload["order"]
+    provider_order_id = order["providerOrderId"]
+    event_payload = {
+        "eventId": "evt-pay-retry-wallet-credit",
+        "status": "paid",
+        "amountCents": order["amountCents"],
+    }
+    event_payload["signature"] = payment_service.fake_callback_signature(
+        "fake",
+        provider_order_id,
+        "pay_success",
+        event_payload,
+        PAYMENT_WEBHOOK_SECRET,
+    )
+    callback_body = {
+        "provider": "fake",
+        "providerOrderId": provider_order_id,
+        "eventType": "pay_success",
+        "payload": event_payload,
+    }
+
+    original_credit_points = app_module.credit_points
+    attempts = 0
+
+    def flaky_credit_points(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise billing.BillingError("injected wallet outage")
+        return original_credit_points(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "credit_points", flaky_credit_points)
+
+    first = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    first_payload = _json_for_status(first, 400, "first callback with wallet outage")
+    assert first_payload["callback"]["status"] == "paid"
+    assert first_payload["billingError"]["code"] == "billing_error"
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == 0
+
+    replay = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    replay_payload = _json_for_status(replay, 200, "replayed callback repairs wallet")
+    assert replay_payload["callback"]["idempotent"] is True
+    assert replay_payload["billing"]["idempotent"] is False
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == order["points"]
+
+    duplicate = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    duplicate_payload = _json_for_status(duplicate, 200, "duplicate callback remains idempotent")
+    assert duplicate_payload["billing"]["idempotent"] is True
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == order["points"]
+
+
+def test_duplicate_refund_callback_retries_failed_wallet_debit(
+    product_api: ProductApiFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("app")
+    auth = _login(product_api.client)
+    create_response = product_api.client.post(
+        "/api/payments/orders",
+        json={"packageId": "starter-500"},
+        headers=_payment_headers(auth["token"], "pay-retry-wallet-refund"),
+    )
+    order = _json_for_status(
+        create_response,
+        (200, 201),
+        "POST /api/payments/orders for refund retry",
+    )["order"]
+    provider_order_id = order["providerOrderId"]
+
+    paid_payload = {
+        "eventId": "evt-pay-before-refund-retry",
+        "status": "paid",
+        "amountCents": order["amountCents"],
+    }
+    paid_payload["signature"] = payment_service.fake_callback_signature(
+        "fake",
+        provider_order_id,
+        "pay_success",
+        paid_payload,
+        PAYMENT_WEBHOOK_SECRET,
+    )
+    paid_response = product_api.client.post(
+        "/api/payments/fake-callback",
+        json={
+            "provider": "fake",
+            "providerOrderId": provider_order_id,
+            "eventType": "pay_success",
+            "payload": paid_payload,
+        },
+    )
+    _json_for_status(paid_response, 200, "payment before refund retry")
+
+    refund_payload = {
+        "eventId": "evt-refund-retry-wallet-debit",
+        "status": "refunded",
+        "refundCents": order["amountCents"],
+    }
+    refund_payload["signature"] = payment_service.fake_callback_signature(
+        "fake",
+        provider_order_id,
+        "refund_success",
+        refund_payload,
+        PAYMENT_WEBHOOK_SECRET,
+    )
+    callback_body = {
+        "provider": "fake",
+        "providerOrderId": provider_order_id,
+        "eventType": "refund_success",
+        "payload": refund_payload,
+    }
+
+    original_debit_points = app_module.debit_points
+    attempts = 0
+
+    def flaky_debit_points(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise billing.BillingError("injected refund wallet outage")
+        return original_debit_points(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "debit_points", flaky_debit_points)
+
+    first = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    first_payload = _json_for_status(first, 400, "first refund with wallet outage")
+    assert first_payload["callback"]["status"] == "refunded"
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == order["points"]
+
+    replay = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    replay_payload = _json_for_status(replay, 200, "replayed refund repairs wallet")
+    assert replay_payload["callback"]["idempotent"] is True
+    assert replay_payload["billing"]["idempotent"] is False
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == 0
+
+    duplicate = product_api.client.post("/api/payments/fake-callback", json=callback_body)
+    duplicate_payload = _json_for_status(
+        duplicate,
+        200,
+        "duplicate refund remains idempotent",
+    )
+    assert duplicate_payload["billing"]["idempotent"] is True
+    assert billing.get_account(
+        auth["user"]["id"],
+        db_path=product_api.billing_db_path,
+    )["balance"] == 0
+
+
 def test_signed_object_download_requires_token(product_api: ProductApiFixture) -> None:
     auth = _login(product_api.client)
     token = auth["token"]
@@ -1523,11 +2275,15 @@ def test_signed_object_download_requires_token(product_api: ProductApiFixture) -
     download_response = product_api.client.get(
         f"/objects/{object_key}",
         query_string={"token": sign_payload["token"]},
+        headers=_auth_header(token),
     )
     _assert_status(download_response, 200, f"GET /objects/{object_key}?token=...")
     assert download_response.data == b"hello product object"
 
-    missing_token_response = product_api.client.get(f"/objects/{object_key}")
+    missing_token_response = product_api.client.get(
+        f"/objects/{object_key}",
+        headers=_auth_header(token),
+    )
     _assert_status(missing_token_response, (401, 403), f"GET /objects/{object_key} without token")
 
     conn = storage_db.get_conn(product_api.storage_db_path)
@@ -1547,6 +2303,84 @@ def test_signed_object_download_requires_token(product_api: ProductApiFixture) -
         ("preview", 1, ""),
         ("object_access", 0, "missing_token"),
     ]
+
+
+def test_signed_object_download_requires_matching_authenticated_user(
+    product_api: ProductApiFixture,
+) -> None:
+    owner = _login(product_api.client, phone=PHONE)
+    other = _login(product_api.client, phone=OTHER_PHONE)
+    storage = object_storage_service.get_object_storage_service()
+    object_key = storage.put_bytes(
+        b"owner-only-object",
+        object_key="generated/product-api/owner-only.txt",
+    )
+    access = object_storage_service.create_signed_access(
+        object_key,
+        owner["user"]["id"],
+        asset_security.PREVIEW,
+        asset_security.PREVIEW,
+        OBJECT_SIGNING_SECRET,
+    )
+
+    anonymous = product_api.client.get(
+        access["url"],
+        environ_base={"REMOTE_ADDR": "203.0.113.10"},
+    )
+    _assert_status(anonymous, 401, "anonymous signed object access")
+
+    cross_user = product_api.client.get(
+        access["url"],
+        headers=_auth_header(other["token"]),
+    )
+    payload = _json_for_status(
+        cross_user,
+        403,
+        "cross-user signed object access",
+    )
+    assert payload["reason"] == "user_mismatch"
+
+    owner_response = product_api.client.get(
+        access["url"],
+        headers=_auth_header(owner["token"]),
+    )
+    _assert_status(owner_response, 200, "owner signed object access")
+    assert owner_response.data == b"owner-only-object"
+
+
+def test_export_object_token_is_single_use(
+    product_api: ProductApiFixture,
+) -> None:
+    owner = _login(product_api.client)
+    storage = object_storage_service.get_object_storage_service()
+    object_key = storage.put_bytes(
+        b"single-use-export",
+        object_key="exports/product-api/single-use.zip",
+    )
+    access = object_storage_service.create_signed_access(
+        object_key,
+        owner["user"]["id"],
+        asset_security.EXPORT,
+        asset_security.EXPORT,
+        OBJECT_SIGNING_SECRET,
+    )
+
+    first = product_api.client.get(
+        access["url"],
+        headers=_auth_header(owner["token"]),
+    )
+    replay = product_api.client.get(
+        access["url"],
+        headers=_auth_header(owner["token"]),
+    )
+
+    _assert_status(first, 200, "first export object access")
+    replay_payload = _json_for_status(
+        replay,
+        403,
+        "replayed export object access",
+    )
+    assert replay_payload["reason"] == "token_replayed"
 
 
 def test_admin_risk_action_smoke_writes_event(product_api: ProductApiFixture) -> None:
@@ -1879,13 +2713,13 @@ def _set_user_metadata(db_path: Path, user_id: str, metadata: dict[str, Any]) ->
         conn.close()
 
 
-def _login(client: Any) -> dict[str, Any]:
-    request_response = client.post("/api/auth/request-otp", json={"phone": PHONE})
+def _login(client: Any, *, phone: str = PHONE) -> dict[str, Any]:
+    request_response = client.post("/api/auth/request-otp", json={"phone": phone})
     request_payload = _json_for_status(request_response, 200, "POST /api/auth/request-otp")
 
     assert request_payload["challengeId"]
     assert request_payload["mockCode"]
-    assert request_payload["phone"] == NORMALIZED_PHONE
+    assert request_payload["phone"] == auth_rules.normalize_phone(phone)
 
     verify_response = client.post(
         "/api/auth/verify-otp",
@@ -1899,7 +2733,7 @@ def _login(client: Any) -> dict[str, Any]:
     user = _nested(verify_payload, "user")
     session = _nested(verify_payload, "session")
     assert user["id"]
-    assert user["phone"] == NORMALIZED_PHONE
+    assert user["phone"] == auth_rules.normalize_phone(phone)
     assert session["token"]
     return {"user": user, "token": session["token"]}
 
@@ -1921,6 +2755,13 @@ def _assert_status(response: Any, expected_status: int | tuple[int, ...], label:
 
 def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _payment_headers(token: str, idempotency_key: str) -> dict[str, str]:
+    return {
+        **_auth_header(token),
+        "Idempotency-Key": idempotency_key,
+    }
 
 
 def _age_otp_challenges(db_path: Path) -> None:
