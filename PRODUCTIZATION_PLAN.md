@@ -2,6 +2,15 @@
 
 本文档保存外卖菜品图工具从 MVP 到可售卖产品的模块计划。当前原则：
 
+> 2026-07-30 final sync: this file intentionally preserves the historical
+> roadmap and early gap descriptions. The current implementation status is
+> authoritative in `MODULE_STATUS.md`; requirement-by-requirement acceptance is
+> recorded in
+> `AI-Project/handoffs/2026-07-30/final-goal-completion-audit.md`. Any older
+> statement below that describes PostgreSQL, Redis Workers, COS adapters,
+> one-time export tokens, refinement, growth, or finance as merely planned is
+> superseded by those two files.
+
 - 高质量出图默认走混元生成，旧图库只做参考或人工兜底。
 - 新生成的品类背景图、免费样图、正式菜品图都必须沉淀到服务器目录或生产对象存储；AI asset manifest 必须打上品类、菜名、关键词、风格、质量、来源和存储位置等标签，后续用于复用。
 - 前台产品口径不宣传“真实图库”，只表达为 AI 生成、样图预览和历史生成资产复用；历史/种子图片只作为内部参考、兜底或资产沉淀来源。

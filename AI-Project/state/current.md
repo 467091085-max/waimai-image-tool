@@ -4,8 +4,9 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 85 in progress: sync final evidence into the isolated remote-main worktree,
-run the commit-scope gates, and create the local integration commit.
+Step 87 in progress: reconcile stale delivery documentation with the verified
+implementation, rebuild the sanitized archive, and push the documentation-only
+follow-up without deployment.
 
 ## Status
 - Obsidian memory structure: done
@@ -387,7 +388,18 @@ run the commit-scope gates, and create the local integration commit.
 - Final broad read-only object/image boundary audit: in progress
 - Real COS plus Render-restart preview recovery smoke: pending
 - Formal generation selected-background recovery after local cache loss: done locally
-- Final commit and push to remote main: pending; authorized only after all acceptance gates pass
+- Final isolated integration commit: done, `f680c24b0ed826a6ea999d614cf7deb172d7710e`
+- Official Render skip-deploy phrase: verified; `[skip render]` prevents an auto-deploy and emits a skipped-commit event
+- Render Blueprint inventory: verified empty; the workspace has no Blueprint instance or automatic Blueprint sync
+- GitHub deployment workflow inventory: verified empty; no `.github` deployment workflow exists
+- Remote main push: done by fast-forward from `1dbcbb48...` to `f680c24...`
+- Render no-deploy verification: done; event says `Deploy skipped for commit f680c24`
+- Render live commit after push: unchanged at `1dbcbb48aac38a118367e650cbd6d27af4faa17f`
+- Deployment, Render configuration change, and external database migration after push: not performed
+- Final documentation reconciliation: in progress; stale MVP/SQLite status is being replaced with the current code-level acceptance boundary
+- Final goal completion audit: done; every explicit implementation, verification, push, no-deploy, and no-migration requirement has an evidence disposition
+- Final sanitized source archive v6: done, 1134096 bytes, 224 files, ZIP integrity passed
+- Final sanitized source archive v6 SHA-256: f5409d62d735f70f57d27a422897cd72c3ca09981bd901402b7a08b01d076be3
 
 ## Constraints
 - Codex 每次继续任务前必须先读 `AI-Project/state/current.md`。
@@ -603,8 +615,8 @@ run the commit-scope gates, and create the local integration commit.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 仅提交隔离分支，不推送；记录提交 SHA。
-2. 等待明确授权：关闭 Render `Auto-Deploy` 后推送，或允许这次 `main` 推送同时触发测试环境部署。
+1. 在 `f680c24...` 上创建仅含文档/状态的 `[skip render]` 提交。
+2. 推送 remote `main`，确认 GitHub SHA 和 Render skipped event；不部署、不迁移。
 
 ## Latest Verified Checkpoint
 - 支付下单入口现在强制有效手机号会话，只接受服务端版本化套餐 `packageId`；用户、金额、积分、支付渠道和订单 ID 不再由浏览器指定，幂等键只从 `Idempotency-Key` 请求头读取。

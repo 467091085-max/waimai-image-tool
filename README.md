@@ -1,6 +1,6 @@
 # 外卖菜品图一键生成工具
 
-这是一个“AI 生成 + 资产沉淀复用”的外卖菜品图 MVP。当前版本可以上传 Excel 菜单，展示风格和样图，选择风格后生成整店正式图预览，并按平台尺寸导出图片包。
+这是一个“AI 生成 + 资产沉淀复用”的外卖菜品图产品代码基线。当前版本可以上传 Excel 菜单，生成并选择品类背景，批量生成整店菜品图，精细改单图，并按平台尺寸导出图片包。
 
 ## 已实现功能
 
@@ -13,8 +13,8 @@
 - 风格预览：展示背景风格，免费样图生成和风格选择分离，避免选择风格时自动触发耗时生成。
 - 出图质量：支持普通出图和精修出图两档，普通出图 10 积分/张，精修出图 20 积分/张。
 - 账号登录：支持手机号 OTP、session、门店接口；短信发送已抽象为 local/mock 与 webhook provider，关闭本地 demo 且未配置 provider 时会返回明确 503。
-- 积分计费：SQLite 本地账本，支持套餐充值、自定义充值、生成扣费、失败退款、幂等订单；fake 支付只在本地 demo 或显式配置时可用；支付宝电脑网站支付已有本地 MVP 下单和异步通知验签入账；后台财务可做人工支付对账并写审计。
-- 代理/邀请 MVP：支持一级代理档案、直接客户绑定、邀请注册积分、首充积分返利，并在 fake 支付回调成功后生成代理待结算佣金；退款后可重算/取消未结算佣金并追回首充返利积分；后台可释放 T+7 佣金并创建/标记结算批次。
+- 积分计费：生产路径使用 PostgreSQL 钱包、流水、订单、结算和 outbox，支持服务端套餐、生成扣费、失败/部分退款、回调重放修复和人工对账；SQLite/fake 支付仅保留为显式本地 demo，live readiness 会拒绝使用。
+- 代理/邀请：一级直接关系，代理首单 20%、复购 10%，邀请注册 100/20 积分，直接邀请首充返 10% 积分；佣金、退款冲销、结算、提现、财务角色和审计都已接入 PostgreSQL。
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
 - 正式出图异步任务：新的 SaaS 骨架已拆出 `api-server/`、`worker/`、`shared/`，标准接口固定为 `POST /generate`（只接受 `prompt` 并返回 `task_id`）和 `GET /status/<task_id>`（只返回 `status`、`image_url`），API Server 只写 Redis 队列和查询状态，AI 生成由独立 Worker 执行。
@@ -23,9 +23,9 @@
 - 平台尺寸：支持美团、淘宝外卖/饿了么、京东外卖/京东秒送导出，不裁掉主体，按目标尺寸留边适配。
 - 内部后台：`/admin` 可查看运营概览，并已接入生成任务、资产访问、佣金结算、订单等 lists 明细。
 - AI 资产审核 API：后台可通过状态接口 approve/reject/disable AI 资产，保存审核备注并写后台审计；完整人工审核台仍未生产化。
-- 存储底座：预留 SQLite 表结构和本地对象存储接口，并提供对象存储生产 readiness 评估；生产或关闭本地 demo 时会要求私有远程 provider 和签名 secret，真实 COS/OSS/R2 SDK 仍待接入。
+- 存储底座：已实现本地/COS 对象存储 adapter、私有对象 key、限量流式读写、上传后 SHA-256 校验和生产 readiness；live 环境必须配置私有远程 provider、bucket 和签名 secret。
 - 资产访问审计：导出下载和对象读取的允许/拒绝会写入本地 `asset_access_logs`，后台可汇总并按 `status=denied/allowed` 等条件查看异常访问。
-- 一次性下载保护：签名 token 可生成哈希化消费键，下载守卫可拒绝已消费 token；生产仍需接 Redis/DB 原子消费记录。
+- 一次性下载保护：PostgreSQL nonce 预留、session advisory lock、精确消费和拒绝审计保证并发首用只读取一次对象，重放在对象下载前被拒绝。
 - 契约测试保护：测试已锁定前台不回退到“真实图库/免费样图预览”等旧口径，正式出图必须走异步任务，后台必须保留 lists 明细接入。
 
 ## 产品化口径
@@ -33,15 +33,14 @@
 - 图库策略：新生成的品类背景图、免费样图、正式菜品图都沉淀到服务器目录或生产对象存储；AI asset manifest 打标签，未来按品类、菜名、关键词、风格和质量复用。
 - 前台口径：不宣传“真实图库”，只表达 AI 生成、样图预览、历史生成资产复用；内部参考图只用于匹配、兜底、审核和资产沉淀。
 - 代理/邀请：只做一级直接关系；代理首单按实付净额 20% 返佣、复购按 10% 返佣；C 端注册邀请人 100 积分、被邀请人 20 积分，仅直接邀请首充返 10% 积分，不返现金、不提现。上线前仍需由中国执业律师审核具体页面、合同和运营流程。
-- 当前代理/邀请只完成本地 MVP 闭环；提现、实名/主体认证、真实打款、已打款后的财务追索、月度自动结算和完整后台操作仍未生产化。
+- 代理佣金、退款追索、结算与提现状态机已经完成；实名/主体认证、税务和真实打款属于上线前的外部财务与合规验收。
 - 短信登录：本地 demo 可继续返回 `mockCode`；生产环境必须关闭本地 demo，配置 `SMS_PROVIDER=webhook`、`SMS_WEBHOOK_URL`、`AUTH_SESSION_HASH_SECRET` 和 `AUTH_OTP_HASH_SECRET`，并共享 `DATABASE_URL`/`REDIS_URL`。生产验证码、用户、session 和门店归属不会回退到本地 SQLite。
 - 支付：本地 demo 可继续使用 fake pay；生产关闭 `ENABLE_LOCAL_DEMO_BILLING` 后，必须配置真实支付。当前支付宝电脑网站支付支持 RSA2 签名下单和异步通知验签入账；后台财务人工支付对账已可推进订单 paid/refunded/closed/failed 并复用积分入账/退款；微信支付仍未接入 adapter，会 fail-closed。
 - 对象存储：本地 demo 可继续使用 local/mock 存储；生产或设置 `ENABLE_LOCAL_DEMO_STORAGE=false` 时，local/mock 会被 readiness 标记为 not production-ready，必须配置私有远程 provider、bucket 和 `OBJECT_SIGNING_SECRET`。
 - 合规边界：多级分销暂不启用，必须法务确认后另开方案。
 - 产品模块：数据库、对象存储、积分/支付、账号/门店、生成队列、AI 图库沉淀、防盗图/签名 URL、防刷风控、代理/邀请、管理后台、审计、运营指标。
-- 当前审计只完成本地落库和后台汇总；生产日志聚合、告警、长期留存和一次性 token 原子消费存储仍未完成。
-- 当前后台只完成本地 dashboard、lists 明细和局部操作 API；完整 CRUD、权限分级、人工审核工作台仍未完成。
-- 当前状态：仍是本地 MVP/产品化骨架，不要表述为已上线生产；详细状态见 `MODULE_STATUS.md`。
+- 当前代码已完成所需产品路径和角色/审计门禁；生产日志聚合、告警、备份、人工审核 SOP 和真实财务流程仍属于部署运营配置。
+- 当前状态：产品实现已通过本地及一次性 PostgreSQL/Redis 验收，但没有部署或迁移外部数据库；详细证据见 `MODULE_STATUS.md` 和 `AI-Project/handoffs/2026-07-30/final-goal-completion-audit.md`。
 
 ## 默认平台尺寸
 
@@ -95,10 +94,10 @@ Render 拓扑以仓库根目录的 `render.yaml` 为准。蓝图关闭了自动�
 - Redis/Key Value：所有活动进程通过 `fromService` 共用内部 `REDIS_URL`；队列配置为 `noeviction`，PostgreSQL/outbox 才是持久任务事实源。
 - PostgreSQL：客户网站和 Outbox Dispatcher 通过 `fromDatabase` 获取 `DATABASE_URL`；蓝图不会自动执行 `migrations/`。
 
-部署阻塞：
+部署前外部验收：
 
-- Prompt 队列消费者已在蓝图中声明，但本次只完成代码和无网络测试；同步蓝图、创建付费 Worker、配置 TokenHub 密钥及真实生图仍需单独授权和线上验收。
-- 客户网站仍有部分账号、计费和审计状态使用本地 SQLite；计算服务未挂载持久磁盘，不能把本地文件系统当生产数据源。
+- 本次完成代码、确定性生图和一次性 PostgreSQL/Redis 验收；同步蓝图、创建付费 Worker、配置 TokenHub/Gemini/COS/支付密钥及真实供应商验收仍需单独授权。
+- live 路径会强制 PostgreSQL、Redis、私有对象存储和服务心跳；SQLite、本地文件和 fake provider 只允许显式本地 demo。
 - 首次启用 PostgreSQL 前必须人工执行并验证迁移；本次蓝图不会部署、创建资源或迁移数据库。
 
 独立 Prompt Worker 本地启动需要与 API 共用 `REDIS_URL`，并配置：
@@ -118,10 +117,10 @@ Worker 会把 provider 返回的 HTTPS 图片地址写入 Redis 终态。当前�
 `/generate` 合同未承诺把该远程地址再次复制到产品对象存储；供应商 URL
 的有效期仍需在真实联调中确认。
 
-当前线上地址：
+当前测试站地址（仍运行旧提交，本次推送已通过 `[skip render]` 跳过部署）：
 
 ```text
-https://waimai-image-tool-1.onrender.com
+https://waimai-image-tool.onrender.com
 ```
 
 ## 测试命令
@@ -280,23 +279,24 @@ HTTP 冒烟：前台、后台、dashboard、admin lists 和 AI 资产非法状�
 线上检查：
 
 ```bash
-curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+curl https://waimai-image-tool.onrender.com/api/tencent-status
 ```
 
 `configured=true` 代表 Render 已读到腾讯云密钥；`cosReady=true` 代表已能把临时商品图上传到腾讯 COS，商品背景生成会更稳定。
 
-## 生产化遗留问题
+## 上线前外部验收
 
-当前版本还是 MVP，已经能跑通主流程，但要正式卖给客户，还需要继续补：
+产品代码路径已经实现并通过本地及一次性 PostgreSQL/Redis 验收。正式对外提供服务前仍需完成这些依赖真实账号或运营流程的验证：
 
-- 登录系统：目前使用默认 demo 用户，需要接手机号/微信登录。
-- 支付系统：支付宝电脑网站支付已有本地 MVP 下单和异步通知验签入账，后台财务人工对账已有审计；仍缺真实商户联调、微信支付、退款 API 和异常补单。
-- 对象存储：图片资产不要放 Render 硬盘。当前商品背景生成已支持腾讯 COS 临时图；生产图片资产建议迁到腾讯 COS、阿里 OSS 或 Cloudflare R2。`object_storage_service.assess_object_storage_readiness()` 会检查 local/mock、future remote provider、bucket、私有读和签名 secret 的生产 readiness，但不初始化真实 SDK。
-- 数据库：当前是 SQLite，商用后菜单、订单、积分流水、导出记录需要迁到 PostgreSQL。
-- 图片资产清洗后台：当前已有 AI 资产状态 API 和质量字段，仍缺自动识别品牌水印、菜品名水印、可复用图、需抠图图的完整人工审核工作台。
-- AI 接口：普通出图已接腾讯云混元；精修出图还需要后续接 Gemini/OpenAI 或其他高质量编辑模型。
-- 异步任务队列：SaaS 骨架已接入 Redis queue/status 和独立 Worker；标准 API 合同已固定为 `POST /generate` 和 `GET /status/<task_id>`。旧 `/api/generation-jobs` monolith 入口仍保留在旧应用内，后续需要把前端正式出图完全迁到标准合同。
-- 平台尺寸复核：上线前用美团/淘宝/京东商家后台最新规则再确认一次。
+- 手机短信送达、设备/CAPTCHA 风控供应商和真实攻击样本验证。
+- 支付宝真实商户、异步回调公网、退款/日账单、税务/KYC 和真实代理打款验证；微信支付未启用时保持 fail-closed。
+- 腾讯 COS 私有桶 IAM、Bucket Policy、网络和 Render 重启恢复验证。
+- 付费混元/Gemini 的额度、延迟和 40 品类人工视觉验收。
+- PostgreSQL 迁移审批、备份/恢复、生产规模并发和 Redis Worker 长稳测试。
+- 客服、财务、风控和 AI 资产审核的人工 SOP；代理合同与营销口径需中国执业律师审核。
+- 上线前用美团、饿了么/淘宝外卖和京东商家后台最新规则复核导出规格。
+
+缺少这些配置时 live readiness 会失败并阻止付费调用或本地数据回退。当前任务没有部署、创建 Render 资源或执行外部数据库迁移。
 
 完整产品化路线图、代理规则、邀请返积分、防盗图机制和 worker/sub-agent 拆分保存在：
 
@@ -346,7 +346,7 @@ TENCENT_TOKENHUB_POLL_TIMEOUT=120
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
-PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
+PUBLIC_BASE_URL=https://waimai-image-tool.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
 TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
@@ -355,8 +355,8 @@ TENCENT_COS_PREFIX=waimai-model-inputs
 TENCENT_COS_AI_ASSET_PREFIX=ai-assets
 AI_ASSET_UPLOAD_TO_COS=true
 PAYMENT_PROVIDER=alipay
-PAYMENT_NOTIFY_URL=https://waimai-image-tool-1.onrender.com/api/payments/alipay/notify
-PAYMENT_RETURN_URL=https://waimai-image-tool-1.onrender.com/
+PAYMENT_NOTIFY_URL=https://waimai-image-tool.onrender.com/api/payments/alipay/notify
+PAYMENT_RETURN_URL=https://waimai-image-tool.onrender.com/
 ALIPAY_APP_ID=你的支付宝应用 APP ID
 ALIPAY_PRIVATE_KEY=你的支付宝应用私钥
 ALIPAY_PUBLIC_KEY=支付宝公钥
@@ -380,7 +380,7 @@ ALIPAY_PUBLIC_KEY=支付宝公钥
 检查环境变量是否生效：
 
 ```bash
-curl https://waimai-image-tool-1.onrender.com/api/tencent-status
+curl https://waimai-image-tool.onrender.com/api/tencent-status
 ```
 
 返回里的 `configured` 为 `true` 才代表 Render 已读取到密钥。
@@ -421,7 +421,7 @@ TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
-PUBLIC_BASE_URL=https://waimai-image-tool-1.onrender.com
+PUBLIC_BASE_URL=https://waimai-image-tool.onrender.com
 TENCENT_HUNYUAN_MODE=auto
 TENCENT_HUNYUAN_SYNC_LIMIT=6
 TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
@@ -433,12 +433,12 @@ ALLOW_LOCAL_IMAGE_FALLBACK=false
 线上自检：
 
 ```bash
-curl https://waimai-image-tool-1.onrender.com/api/tencent-status
-curl https://waimai-image-tool-1.onrender.com/api/library-status
+curl https://waimai-image-tool.onrender.com/api/tencent-status
+curl https://waimai-image-tool.onrender.com/api/library-status
 ```
 
 当前仍然保留的限制：
 
-- `TENCENT_HUNYUAN_SYNC_LIMIT=6` 表示一次网页请求最多同步真实生成 6 张，适合风格和样图的小批量验证。正式图已走本地异步任务入口，但正式卖给客户前仍要替换为 Redis/RQ/Celery 等跨进程队列。
-- 现在还没有真实短信/微信登录、微信支付、支付宝真实商户联调、退款 API、异常补单、生产对象存储全链路、跨进程队列和完整运营后台；这些是商业化版本下一阶段要补的。
-- 如果腾讯云额度、权限或接口报错，前端会显示「模型生成失败」或「待正式生成」，不会再假装已经生成成功。
+- `TENCENT_HUNYUAN_SYNC_LIMIT=6` 只约束网页中的六张风格/样图小批量请求；整店正式图和精修改图走 PostgreSQL outbox、Redis Worker 和独立 reconciler。
+- 真实短信、支付商户、COS IAM、付费图像供应商及生产迁移仍需外部授权和验收；缺失时 live readiness 会 fail closed。
+- 如果腾讯云额度、权限或接口报错，前端会显示「模型生成失败」或「待正式生成」，不会用占位图假装成功。
