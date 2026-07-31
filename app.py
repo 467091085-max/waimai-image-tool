@@ -616,11 +616,50 @@ def is_local_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1", None}
 
 
+def staging_test_access_configured() -> bool:
+    return bool(
+        str(os.environ.get("APP_ENV") or "").strip().lower()
+        == "staging-demo"
+        and str(os.environ.get("STAGING_BASIC_AUTH_USER") or "").strip()
+        and str(os.environ.get("STAGING_BASIC_AUTH_PASSWORD") or "").strip()
+    )
+
+
+def staging_test_access_allowed() -> bool:
+    if not staging_test_access_configured() or not has_request_context():
+        return False
+    authorization = request.authorization
+    if authorization is None or str(authorization.type or "").lower() != "basic":
+        return False
+    expected_user = str(os.environ.get("STAGING_BASIC_AUTH_USER") or "").strip()
+    expected_password = str(
+        os.environ.get("STAGING_BASIC_AUTH_PASSWORD") or ""
+    ).strip()
+    return hmac.compare_digest(
+        str(authorization.username or ""),
+        expected_user,
+    ) and hmac.compare_digest(
+        str(authorization.password or ""),
+        expected_password,
+    )
+
+
+@app.before_request
+def require_staging_test_access():
+    if not staging_test_access_configured() or staging_test_access_allowed():
+        return None
+    return Response(
+        "Staging access required",
+        status=401,
+        headers={"WWW-Authenticate": 'Basic realm="Waimai Image Tool Staging"'},
+    )
+
+
 def local_demo_auth_allowed() -> bool:
     return (
         not postgres_product_runtime_enabled()
         and env_truthy("ENABLE_LOCAL_DEMO_AUTH", default=True)
-        and is_local_request()
+        and (is_local_request() or staging_test_access_allowed())
     )
 
 
@@ -638,7 +677,11 @@ def local_demo_billing_allowed(user_id: str) -> bool:
         and not postgres_product_runtime_enabled()
         and not billing_token_configured()
         and user_id == billing.DEFAULT_USER_ID
-        and (not has_request_context() or is_local_request())
+        and (
+            not has_request_context()
+            or is_local_request()
+            or staging_test_access_allowed()
+        )
     )
 
 
@@ -665,7 +708,7 @@ def local_demo_generation_allowed() -> bool:
     return (
         env_truthy("ENABLE_LOCAL_DEMO_GENERATION", default=False)
         and not generation_token_configured()
-        and is_local_request()
+        and (is_local_request() or staging_test_access_allowed())
     )
 
 
@@ -1375,7 +1418,7 @@ def object_write_authorized(user_id: str) -> bool:
         or (
             env_truthy("ENABLE_LOCAL_DEMO_OBJECTS", default=True)
             and not object_token_configured()
-            and is_local_request()
+            and (is_local_request() or staging_test_access_allowed())
         )
     )
 
