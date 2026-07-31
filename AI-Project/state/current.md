@@ -267,7 +267,12 @@ image probe without changing the production service.
 - Pure-background v5 edible-prop exclusion: implemented and locally verified
 - Pure-background v5 focused regression: 83 passed
 - Pure-background v5 full regression: 1269 passed, 20 skipped
-- Pure-background v5 Render deployment and visual acceptance: pending
+- Pure-background v5 Render deployment: passed
+- Pure-background v5 visual acceptance: failed 3/6 because styles 3, 5, and 6 contained glass/vase props
+- Pure-background v6 no-props prompt: implemented and locally verified
+- Pure-background v6 focused regression: 83 passed
+- Pure-background v6 full regression: 1269 passed, 20 skipped
+- Pure-background v6 Render deployment and visual acceptance: pending
 - Production auth readiness schema/Redis/SMS/secret probes: done locally
 - Production registration anti-abuse context persistence and fail-closed reward gate: done locally
 - PostgreSQL export package, nonce, and access-audit foundation: done locally
@@ -625,7 +630,7 @@ image probe without changing the production service.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 部署纯背景 v5 到独立 Render 测试服务并重新生成六张轻食背景。
+1. 实现并部署纯背景 v6 的全道具禁用规则，再生成六张轻食背景。
 2. 选择合格背景，验证六张免费样图和至少一张正式菜品图。
 3. 完成测试站验证后再实现微信支付 Native Pay 的 fail-closed 接口和回归测试；不接真实商户、不迁移数据库、不改生产环境。
 
