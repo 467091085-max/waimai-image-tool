@@ -3554,7 +3554,10 @@ def save_result_image(result_image: str, target: Path) -> None:
         finally:
             source.close()
     try:
-        img.save(target, "JPEG", quality=92, optimize=True)
+        if target.suffix.lower() == ".png":
+            img.save(target, "PNG", optimize=True)
+        else:
+            img.save(target, "JPEG", quality=92, optimize=True)
     finally:
         img.close()
 
@@ -3976,7 +3979,7 @@ def foreground_cache_targets(
         / quality_id
     )
     stem = f"{int(row['row']):04d}_{safe_filename(str(row.get('name') or 'dish'))}"
-    return folder / f"{stem}.jpg", folder / f"{stem}.mask.png"
+    return folder / f"{stem}.png", folder / f"{stem}.mask.png"
 
 
 def tencent_extract_foreground_mask(

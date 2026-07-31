@@ -11,8 +11,9 @@ with the real Excel menu without changing the production service.
 ## Status
 - Chroma residual false-success root cause: done
 - Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
-- Chroma-spill focused tests: done, 21 passed
-- Full regression after chroma-spill validator: done, 1280 passed / 20 skipped
+- Lossless RGB PNG chroma intermediate: done locally
+- Chroma-spill and exact-background focused tests: done, 22 passed
+- Full regression after chroma-spill and PNG fixes: done, 1281 passed / 20 skipped
 - Render deployment and real six-sample visual recheck: pending
 - Obsidian memory structure: done
 - Render background generation failure reproduced: done

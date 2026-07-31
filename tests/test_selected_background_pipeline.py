@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +45,20 @@ def selected_background(path: Path) -> app_module.SelectedBackgroundAsset:
         width=width,
         height=height,
     )
+
+
+def test_algorithm_intermediate_png_preserves_canonical_rgb_pixels() -> None:
+    source = Image.new("RGB", (128, 128), (0, 245, 245))
+    ImageDraw.Draw(source).ellipse((24, 18, 104, 116), fill=(190, 55, 35))
+    raw = io.BytesIO()
+    source.save(raw, "PNG")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "foreground.png"
+        app_module.save_result_image(base64.b64encode(raw.getvalue()).decode(), target)
+        with Image.open(target) as persisted:
+            assert persisted.format == "PNG"
+            assert persisted.convert("RGB").tobytes() == source.tobytes()
 
 
 class SelectedBackgroundPipelineTests(unittest.TestCase):
