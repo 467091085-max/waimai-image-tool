@@ -40,6 +40,27 @@ def test_accepts_small_realistic_chroma_variation() -> None:
     assert result.mask.getbbox() is not None
 
 
+def test_rejects_large_dark_chroma_shadow_connected_to_subject_edge() -> None:
+    image = Image.new("RGB", (320, 240), CYAN)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((55, 145, 265, 225), fill=(55, 155, 158))
+    draw.ellipse((70, 35, 250, 205), fill=(215, 72, 38))
+
+    with pytest.raises(ChromaExtractionError) as exc_info:
+        extract_chroma_mask(image)
+
+    assert exc_info.value.code == "chroma_spill_too_large"
+
+
+def test_accepts_small_interior_dark_chroma_detail() -> None:
+    image = chroma_subject()
+    ImageDraw.Draw(image).ellipse((145, 105, 175, 135), fill=(55, 155, 158))
+
+    result = extract_chroma_mask(image)
+
+    assert result.metadata["residualChromaRatio"] == 0
+
+
 @pytest.mark.parametrize(
     ("image", "code"),
     [

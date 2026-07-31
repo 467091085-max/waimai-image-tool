@@ -4,11 +4,16 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 88 in progress: validate the protected Render test site with a real local
-Excel menu, paid TokenHub background generation, free samples, and a formal
-image probe without changing the production service.
+Step 89 in progress: deploy the fail-closed chroma-spill validator to the
+protected Render test service, then repeat the paid six-sample visual acceptance
+with the real Excel menu without changing the production service.
 
 ## Status
+- Chroma residual false-success root cause: done
+- Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
+- Chroma-spill focused tests: done, 21 passed
+- Full regression after chroma-spill validator: done, 1280 passed / 20 skipped
+- Render deployment and real six-sample visual recheck: pending
 - Obsidian memory structure: done
 - Render background generation failure reproduced: done
 - Root cause located: done

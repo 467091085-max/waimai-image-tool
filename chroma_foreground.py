@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
 
-EXTRACTION_VERSION = 1
+EXTRACTION_VERSION = 2
 EXPECTED_CHROMA_RGB = (0, 255, 255)
 
 
@@ -68,6 +68,41 @@ def _edge_reachable(candidate: np.ndarray) -> np.ndarray:
             reachable[y, x + 1] = True
             queue.append((y, x + 1))
     return reachable
+
+
+def _connected_to_seed(candidate: np.ndarray, seeds: np.ndarray) -> np.ndarray:
+    height, width = candidate.shape
+    connected = np.zeros((height, width), dtype=np.bool_)
+    queue: deque[tuple[int, int]] = deque()
+    for y, x in np.argwhere(np.logical_and(candidate, seeds)):
+        connected[y, x] = True
+        queue.append((int(y), int(x)))
+
+    while queue:
+        y, x = queue.popleft()
+        if y > 0 and candidate[y - 1, x] and not connected[y - 1, x]:
+            connected[y - 1, x] = True
+            queue.append((y - 1, x))
+        if y + 1 < height and candidate[y + 1, x] and not connected[y + 1, x]:
+            connected[y + 1, x] = True
+            queue.append((y + 1, x))
+        if x > 0 and candidate[y, x - 1] and not connected[y, x - 1]:
+            connected[y, x - 1] = True
+            queue.append((y, x - 1))
+        if x + 1 < width and candidate[y, x + 1] and not connected[y, x + 1]:
+            connected[y, x + 1] = True
+            queue.append((y, x + 1))
+    return connected
+
+
+def _foreground_boundary(foreground: np.ndarray) -> np.ndarray:
+    outside = np.logical_not(foreground)
+    adjacent_outside = np.zeros_like(foreground)
+    adjacent_outside[1:, :] |= outside[:-1, :]
+    adjacent_outside[:-1, :] |= outside[1:, :]
+    adjacent_outside[:, 1:] |= outside[:, :-1]
+    adjacent_outside[:, :-1] |= outside[:, 1:]
+    return np.logical_and(foreground, adjacent_outside)
 
 
 def extract_chroma_mask(
@@ -150,6 +185,50 @@ def extract_chroma_mask(
             "extracted foreground covers too much of the image",
         )
 
+    float_array = array.astype(np.float32)
+    pixel_sums = np.maximum(float_array.sum(axis=2, keepdims=True), 1.0)
+    chromaticity = float_array / pixel_sums
+    background_chromaticity = background_color.astype(np.float32)
+    background_chromaticity /= max(float(background_chromaticity.sum()), 1.0)
+    chroma_distance = np.linalg.norm(
+        chromaticity - background_chromaticity.reshape(1, 1, 3),
+        axis=2,
+    )
+    red_channel = float_array[:, :, 0]
+    green_channel = float_array[:, :, 1]
+    blue_channel = float_array[:, :, 2]
+    cyan_axis = np.logical_and.reduce(
+        (
+            np.minimum(green_channel, blue_channel) - red_channel
+            >= np.maximum(25.0, np.maximum(green_channel, blue_channel) * 0.18),
+            np.abs(green_channel - blue_channel)
+            <= np.maximum(24.0, np.maximum(green_channel, blue_channel) * 0.18),
+            np.maximum(green_channel, blue_channel) >= 55.0,
+        )
+    )
+    residual_chroma = np.logical_and.reduce(
+        (
+            foreground,
+            np.logical_not(candidate_background),
+            np.logical_or(chroma_distance <= 0.055, cyan_axis),
+            float_array.sum(axis=2) >= 90.0,
+        )
+    )
+    boundary_residual = _connected_to_seed(
+        residual_chroma,
+        _foreground_boundary(foreground),
+    )
+    residual_ratio = float(np.count_nonzero(boundary_residual)) / foreground.size
+    residual_foreground_ratio = float(np.count_nonzero(boundary_residual)) / max(
+        1,
+        np.count_nonzero(foreground),
+    )
+    if residual_ratio > 0.012 and residual_foreground_ratio > 0.04:
+        raise ChromaExtractionError(
+            "chroma_spill_too_large",
+            "extracted foreground still contains a large chroma-colored edge region",
+        )
+
     ys, xs = np.nonzero(foreground)
     left = int(xs.min())
     top = int(ys.min())
@@ -194,6 +273,8 @@ def extract_chroma_mask(
             "distanceThreshold": round(threshold, 3),
             "borderCandidateRatio": round(border_candidate_ratio, 6),
             "foregroundRatio": round(foreground_ratio, 6),
+            "residualChromaRatio": round(residual_ratio, 6),
+            "residualChromaForegroundRatio": round(residual_foreground_ratio, 6),
             "foregroundBounds": {
                 "x": left,
                 "y": top,

@@ -277,7 +277,12 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 quality: str | None,
                 target: Path,
             ) -> dict[str, object]:
-                save_image(target, (640, 480), (245, 245, 245))
+                image = Image.new("RGB", (640, 480), (0, 245, 245))
+                draw = ImageDraw.Draw(image)
+                draw.ellipse((110, 290, 530, 450), fill=(55, 155, 158))
+                draw.ellipse((140, 70, 500, 410), fill=(190, 55, 35))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                image.save(target)
                 return {
                     "provider": "tencent-hunyuan",
                     "action": "TokenHubImageV3",
@@ -318,7 +323,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             cloud_mask.assert_called_once()
             self.assertEqual(
                 detail["maskExtraction"]["fallbackReasonCode"],
-                "chroma_color_not_detected",
+                "chroma_spill_too_large",
             )
             self.assertEqual(
                 detail["maskExtraction"]["fallbackFrom"],
