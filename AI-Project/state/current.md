@@ -4,9 +4,9 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 89 in progress: deploy the fail-closed chroma-spill validator to the
-protected Render test service, then repeat the paid six-sample visual acceptance
-with the real Excel menu without changing the production service.
+Step 90 in progress: deploy the calibrated chroma-spill threshold to the
+protected Render test service, then repeat the paid visual acceptance after the
+first real run correctly exposed one remaining false-success halo.
 
 ## Status
 - Chroma residual false-success root cause: done
@@ -15,8 +15,12 @@ with the real Excel menu without changing the production service.
 - Test-service TokenHub in-process single-flight: done locally
 - Chroma-spill and exact-background focused tests: done, 22 passed
 - Provider concurrency plus image-path focused tests: done, 50 passed
-- Full regression after chroma-spill, PNG, and single-flight fixes: done, 1282 passed / 20 skipped
-- Render deployment and real six-sample visual recheck: pending latest commit
+- Real two-at-a-time six-background staging run: done, 6/6 success and exact SHA match
+- First v3 real six-sample run: rejected, one remaining cyan halo on `煎蛋`
+- Calibrated 0.4% residual-chroma threshold and pipeline v4: done locally
+- Updated focused tests: done, 51 passed
+- Full regression after calibrated threshold: done, 1283 passed / 20 skipped
+- Render v4 deployment and real visual recheck: pending latest commit
 - Obsidian memory structure: done
 - Render background generation failure reproduced: done
 - Root cause located: done

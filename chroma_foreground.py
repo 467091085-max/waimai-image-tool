@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
 
-EXTRACTION_VERSION = 2
+EXTRACTION_VERSION = 3
 EXPECTED_CHROMA_RGB = (0, 255, 255)
 
 
@@ -223,7 +223,7 @@ def extract_chroma_mask(
         1,
         np.count_nonzero(foreground),
     )
-    if residual_ratio > 0.012 and residual_foreground_ratio > 0.04:
+    if residual_ratio > 0.004 and residual_foreground_ratio > 0.02:
         raise ChromaExtractionError(
             "chroma_spill_too_large",
             "extracted foreground still contains a large chroma-colored edge region",

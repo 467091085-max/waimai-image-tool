@@ -52,6 +52,19 @@ def test_rejects_large_dark_chroma_shadow_connected_to_subject_edge() -> None:
     assert exc_info.value.code == "chroma_spill_too_large"
 
 
+def test_rejects_medium_chroma_halo_below_one_percent_of_image() -> None:
+    image = Image.new("RGB", (320, 240), CYAN)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((66, 55, 254, 220), fill=(215, 72, 38))
+    draw.ellipse((58, 185, 262, 228), fill=(55, 155, 158))
+    draw.ellipse((66, 55, 254, 215), fill=(215, 72, 38))
+
+    with pytest.raises(ChromaExtractionError) as exc_info:
+        extract_chroma_mask(image)
+
+    assert exc_info.value.code == "chroma_spill_too_large"
+
+
 def test_accepts_small_interior_dark_chroma_detail() -> None:
     image = chroma_subject()
     ImageDraw.Draw(image).ellipse((145, 105, 175, 135), fill=(55, 155, 158))
