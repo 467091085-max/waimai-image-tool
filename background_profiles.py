@@ -14,7 +14,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-07-31.v4"
+BACKGROUND_PROFILE_VERSION = "2026-07-31.v5"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = tuple(f"style-{index}" for index in range(1, 7))
 
@@ -127,13 +127,12 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
 
 def pure_background_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
-    label = TAXONOMY_LABELS.get(normalized_category, "复合餐饮")
     return (
         "纯背景场景商业摄影。EMPTY SET ONLY. NO FOOD, CONTAINERS OR PROPS "
         "OF ANY KIND. 禁止菜品、饮料、果蔬、植物、叶片、花、装饰物、道具、"
         "花瓶、玻璃器皿、餐具、容器、文字、菜单、logo、水印、人物或手。"
         "画面只允许空置台面和背景墙；中央、边缘、前景和后景全部无物。"
-        f"供后期合成{label}商品；只用台面和背景墙本身的材质、配色与光线暗示品类；"
+        "供后期商品合成；只用台面和背景墙本身的材质、配色与光线暗示品类；"
         f"{pure_background_style_prompt(normalized_category, style_id)}；"
         "中央保留宽阔摆放区，真实光影。"
     )

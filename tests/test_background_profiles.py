@@ -41,6 +41,7 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         assert all("适合大浅碗轮廓" not in prompt for prompt in prompts)
         assert all("餐盒轮廓" not in prompt for prompt in prompts)
         assert all("轻食沙拉场景" not in prompt for prompt in prompts)
+        assert all("轻食/沙拉商品" not in prompt for prompt in prompts)
         assert all("点缀" not in prompt for prompt in prompts)
         assert all(len(prompt) <= 250 for prompt in prompts)
 
