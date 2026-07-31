@@ -285,6 +285,10 @@ image probe without changing the production service.
 - Single-provider-call fast foreground/mask path: implemented locally behind a default-off flag; ChatGPT Pro review remains in progress
 - Chroma fast-path focused regression: 29 passed, 1 environment-gated skip
 - Chroma fast-path full regression: 1277 passed, 20 environment-gated skips
+- TokenHub HY-Image-V3.0 postpaid activation: done; service status is running and billed per image after the exhausted 50-image trial
+- Latest real six-background run: 5/6 visual pass; style 3 contained a vase and plant despite the negative prompt
+- Style-3 empty cyclorama prompt refinement: implemented locally; only style 3 prompt SHA changes
+- Style-3 refinement focused/full regression: 34 passed; 1278 passed, 20 environment-gated skips
 - Production auth readiness schema/Redis/SMS/secret probes: done locally
 - Production registration anti-abuse context persistence and fail-closed reward gate: done locally
 - PostgreSQL export package, nonce, and access-audit foundation: done locally
@@ -642,8 +646,8 @@ image probe without changing the production service.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 将单次 TokenHub 调用的 fail-closed 快速前景/Mask 路径提交并部署到独立 Render 测试服务。
-2. 重新验证同一背景下的六张免费样图和至少一张正式菜品图，并记录真实耗时与本地/云端 Mask 路径。
+1. 部署并真实验收只影响三号背景的空摄影棚提示修正。
+2. 在六张背景全部通过后，重新验证同一背景下的六张免费样图和至少一张正式菜品图，并记录真实耗时与本地/云端 Mask 路径。
 3. 完成测试站验证后再实现微信支付 Native Pay 的 fail-closed 接口和回归测试；不接真实商户、不迁移数据库、不改生产环境。
 
 ## Latest Verified Checkpoint

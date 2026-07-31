@@ -46,6 +46,16 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         assert all(len(prompt) <= 250 for prompt in prompts)
 
 
+def test_style_three_uses_an_empty_studio_cyclorama() -> None:
+    prompt = background_profiles.pure_background_prompt(
+        "light_food",
+        "style-3",
+    )
+
+    assert "无缝白灰摄影棚弧面" in prompt
+    assert "空无一物" in prompt
+
+
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:
     menu = {
         "store": "熊猫说烧烤",
