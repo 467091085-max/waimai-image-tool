@@ -277,7 +277,14 @@ image probe without changing the production service.
 - Pure-background v7 food-name-free category hint: implemented and locally verified
 - Pure-background v7 focused regression: 83 passed
 - Pure-background v7 full regression: 1269 passed, 20 skipped
-- Pure-background v7 Render deployment and visual acceptance: pending
+- Pure-background v7 Render deployment: passed
+- Pure-background v7 visual acceptance: passed 6/6 with exact downloaded SHA-256 verification
+- Selected style-3 first real free sample: passed; exact background identity verified
+- Free-sample latency: failed product target at 108.66 seconds per successful image
+- Concurrent free-sample probe: one passed in 106.87 seconds; one failed provider quota in 8.25 seconds
+- Single-provider-call fast foreground/mask path: implemented locally behind a default-off flag; ChatGPT Pro review remains in progress
+- Chroma fast-path focused regression: 29 passed, 1 environment-gated skip
+- Chroma fast-path full regression: 1277 passed, 20 environment-gated skips
 - Production auth readiness schema/Redis/SMS/secret probes: done locally
 - Production registration anti-abuse context persistence and fail-closed reward gate: done locally
 - PostgreSQL export package, nonce, and access-audit foundation: done locally
@@ -635,8 +642,8 @@ image probe without changing the production service.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 实现并部署纯背景 v7，移除直接菜品名称，只保留品类材质和配色特征。
-2. 选择合格背景，验证六张免费样图和至少一张正式菜品图。
+1. 将单次 TokenHub 调用的 fail-closed 快速前景/Mask 路径提交并部署到独立 Render 测试服务。
+2. 重新验证同一背景下的六张免费样图和至少一张正式菜品图，并记录真实耗时与本地/云端 Mask 路径。
 3. 完成测试站验证后再实现微信支付 Native Pay 的 fail-closed 接口和回归测试；不接真实商户、不迁移数据库、不改生产环境。
 
 ## Latest Verified Checkpoint

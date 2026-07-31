@@ -35,6 +35,11 @@ import auth_service
 import background_profiles
 import billing
 import asset_security
+from chroma_foreground import (
+    ChromaExtractionError,
+    EXTRACTION_VERSION as CHROMA_EXTRACTION_VERSION,
+    extract_chroma_mask,
+)
 import commission_settlement_service
 import download_guard
 import growth_rules
@@ -215,7 +220,8 @@ MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 7
 DISH_GENERATION_PROMPT_VERSION = 1
-EXACT_BACKGROUND_PIPELINE_VERSION = 1
+EXACT_BACKGROUND_PIPELINE_VERSION = 2
+CHROMA_FOREGROUND_PROMPT_VERSION = 1
 AI_ASSET_MANIFEST_LOCK = threading.Lock()
 TENCENT_MASK_EXTRACTION_LOCK = threading.Lock()
 GENERATION_BATCH_SUBMIT_LOCK = threading.Lock()
@@ -3901,6 +3907,62 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
     return {"provider": "tencent-hunyuan", "action": "ReplaceBackground", "promptType": prompt_type, "requestId": response.get("RequestId"), "endpoint": response.get("_Endpoint")}
 
 
+def chroma_foreground_fast_path_enabled() -> bool:
+    return bool(
+        tokenhub_ready()
+        and env_truthy("EXACT_BACKGROUND_CHROMA_FAST_PATH", default=False)
+    )
+
+
+def prompt_for_chroma_foreground(
+    row: dict[str, Any],
+    quality: str | None,
+) -> str:
+    dish = str(row.get("name") or "外卖菜品")
+    kind = str(row.get("kind") or "菜品")
+    components = ""
+    if kind == "套餐/组合":
+        components = f"，套餐内容：{row_components_text(row)}，全部放在一个完整托盘内"
+    return (
+        f"{dish}，{kind}{components}，单个完整菜品主体，包括承载菜品的完整餐盘、餐碗或托盘，"
+        f"{quality_detail(quality)}，主体居中并四周留足空隙。背景必须是完全均匀的纯青色抠图幕布"
+        "（RGB 0,255,255），无桌面、无墙面、无地平线、无渐变、无阴影、无反射、无道具。"
+        "不要出现文字、价格、logo、水印、品牌名、人物或手，不要裁切主体。"
+    )[:250]
+
+
+def tencent_chroma_foreground(
+    row: dict[str, Any],
+    quality: str | None,
+    target: Path,
+) -> dict[str, Any]:
+    response = tencent_api_request(
+        "TextToImageLite",
+        {
+            "Prompt": prompt_for_chroma_foreground(row, quality),
+            "NegativePrompt": (
+                "文字，水印，logo，品牌名，价格，人物，手，裁切主体，复杂背景，"
+                "桌面，墙面，地平线，渐变背景，阴影，反射，额外道具，拼贴，边框"
+            ),
+            "Resolution": default_delivery_resolution(),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        },
+    )
+    save_result_image(str(response.get("ResultImage") or ""), target)
+    return {
+        "provider": str(response.get("_Provider") or "tencent-hunyuan"),
+        "action": str(response.get("_Action") or "TextToImageLite"),
+        "promptType": "chroma_foreground",
+        "promptVersion": CHROMA_FOREGROUND_PROMPT_VERSION,
+        "requestId": response.get("RequestId"),
+        "seed": response.get("Seed"),
+        "endpoint": response.get("_Endpoint"),
+        "model": response.get("_Model"),
+        "referenceConditioned": False,
+    }
+
+
 def foreground_cache_targets(
     row: dict[str, Any],
     selected_background: SelectedBackgroundAsset,
@@ -3991,6 +4053,12 @@ def tencent_exact_background_image(
     target: Path,
 ) -> dict[str, Any]:
     validate_selected_background_snapshot(selected_background)
+    fast_chroma_enabled = chroma_foreground_fast_path_enabled()
+    foreground_mode = (
+        f"chroma-key.v{CHROMA_FOREGROUND_PROMPT_VERSION}"
+        if fast_chroma_enabled
+        else "reference-conditioned.v1"
+    )
     foreground_target, mask_target = foreground_cache_targets(row, selected_background, quality)
     foreground_metadata = load_ai_output_metadata(foreground_target) if foreground_target.exists() else None
     try:
@@ -4003,6 +4071,7 @@ def tencent_exact_background_image(
         and foreground_metadata
         and foreground_metadata.get("provider") == "tencent-hunyuan"
         and foreground_metadata.get("pipelineVersion") == EXACT_BACKGROUND_PIPELINE_VERSION
+        and foreground_metadata.get("foregroundMode") == foreground_mode
         and hmac.compare_digest(
             str(foreground_metadata.get("foregroundSha256") or ""),
             str(foreground_fingerprint["sha256"]),
@@ -4012,18 +4081,26 @@ def tencent_exact_background_image(
         assert foreground_metadata is not None
         foreground_detail = dict(foreground_metadata.get("tencent") or {})
     else:
-        foreground_detail = tencent_text_to_image(
-            row,
-            selected_background.style_id,
-            quality,
-            foreground_target,
-            selected_background,
-        )
+        if fast_chroma_enabled:
+            foreground_detail = tencent_chroma_foreground(
+                row,
+                quality,
+                foreground_target,
+            )
+        else:
+            foreground_detail = tencent_text_to_image(
+                row,
+                selected_background.style_id,
+                quality,
+                foreground_target,
+                selected_background,
+            )
         foreground_fingerprint = image_file_fingerprint(foreground_target)
         foreground_metadata = {
             "status": "foreground_ready",
             "provider": "tencent-hunyuan",
             "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
+            "foregroundMode": foreground_mode,
             "action": foreground_detail.get("action"),
             "promptType": foreground_detail.get("promptType"),
             "row": row.get("row"),
@@ -4050,7 +4127,34 @@ def tencent_exact_background_image(
     if mask_cached:
         mask_detail = dict((foreground_metadata or {}).get("maskExtraction") or {})
     else:
-        mask_detail = tencent_extract_foreground_mask(row, foreground_target, mask_target)
+        if fast_chroma_enabled:
+            try:
+                with Image.open(foreground_target) as foreground_image:
+                    chroma_result = extract_chroma_mask(foreground_image)
+                mask_target.parent.mkdir(parents=True, exist_ok=True)
+                chroma_result.mask.save(mask_target, "PNG", optimize=True)
+                mask_detail = {
+                    **chroma_result.metadata,
+                    "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "extractionVersion": CHROMA_EXTRACTION_VERSION,
+                }
+            except ChromaExtractionError as exc:
+                mask_detail = tencent_extract_foreground_mask(
+                    row,
+                    foreground_target,
+                    mask_target,
+                )
+                mask_detail = {
+                    **mask_detail,
+                    "fallbackFrom": "local-chroma-key",
+                    "fallbackReasonCode": exc.code,
+                }
+        else:
+            mask_detail = tencent_extract_foreground_mask(
+                row,
+                foreground_target,
+                mask_target,
+            )
         mask_fingerprint = image_file_fingerprint(mask_target)
         foreground_metadata = {
             **(foreground_metadata or {}),

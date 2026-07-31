@@ -215,6 +215,117 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertTrue(candidate["backgroundIdentityVerified"])
             self.assertEqual(Path(str(candidate["path"])).suffix, ".png")
 
+    def test_exact_pipeline_uses_local_chroma_mask_without_cloud_mask_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (800, 600), (35, 90, 145))
+            background = selected_background(background_path)
+            row = menu_row()
+
+            def fake_chroma(
+                item: dict[str, object],
+                quality: str | None,
+                target: Path,
+            ) -> dict[str, object]:
+                image = Image.new("RGB", (640, 480), (0, 245, 245))
+                ImageDraw.Draw(image).ellipse((120, 70, 520, 440), fill=(190, 55, 35))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                image.save(target)
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "TokenHubImageV3",
+                    "promptType": "chroma_foreground",
+                    "requestId": "foreground-fast-1",
+                    "referenceConditioned": False,
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "current_menu_cache_key", return_value="menu-test"),
+                mock.patch.object(app_module, "chroma_foreground_fast_path_enabled", return_value=True),
+                mock.patch.object(app_module, "tencent_chroma_foreground", side_effect=fake_chroma) as chroma,
+                mock.patch.object(app_module, "tencent_text_to_image") as reference_generation,
+                mock.patch.object(app_module, "tencent_extract_foreground_mask") as cloud_mask,
+            ):
+                target = root / "fast.png"
+                detail = app_module.tencent_exact_background_image(
+                    row,
+                    background,
+                    "standard",
+                    target,
+                )
+
+            chroma.assert_called_once()
+            reference_generation.assert_not_called()
+            cloud_mask.assert_not_called()
+            self.assertEqual(detail["maskExtraction"]["action"], "LocalChromaKeyMask")
+            self.assertTrue(detail["backgroundIdentityVerified"])
+            self.assertTrue(detail["persistedOutputBackgroundVerified"])
+            self.assertFalse(detail["referenceConditioned"])
+
+    def test_exact_pipeline_falls_back_to_cloud_mask_when_chroma_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (800, 600), (35, 90, 145))
+            background = selected_background(background_path)
+            row = menu_row()
+
+            def fake_chroma(
+                item: dict[str, object],
+                quality: str | None,
+                target: Path,
+            ) -> dict[str, object]:
+                save_image(target, (640, 480), (245, 245, 245))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "TokenHubImageV3",
+                    "promptType": "chroma_foreground",
+                    "requestId": "foreground-fast-2",
+                    "referenceConditioned": False,
+                }
+
+            def fake_cloud_mask(
+                item: dict[str, object],
+                foreground: Path,
+                target: Path,
+            ) -> dict[str, object]:
+                mask = Image.new("L", (640, 480), 0)
+                ImageDraw.Draw(mask).ellipse((120, 70, 520, 440), fill=255)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                mask.save(target)
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "ReplaceBackgroundMask",
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "current_menu_cache_key", return_value="menu-test"),
+                mock.patch.object(app_module, "chroma_foreground_fast_path_enabled", return_value=True),
+                mock.patch.object(app_module, "tencent_chroma_foreground", side_effect=fake_chroma),
+                mock.patch.object(app_module, "tencent_extract_foreground_mask", side_effect=fake_cloud_mask) as cloud_mask,
+            ):
+                target = root / "fallback.png"
+                detail = app_module.tencent_exact_background_image(
+                    row,
+                    background,
+                    "standard",
+                    target,
+                )
+
+            cloud_mask.assert_called_once()
+            self.assertEqual(
+                detail["maskExtraction"]["fallbackReasonCode"],
+                "chroma_color_not_detected",
+            )
+            self.assertEqual(
+                detail["maskExtraction"]["fallbackFrom"],
+                "local-chroma-key",
+            )
+            self.assertTrue(detail["persistedOutputBackgroundVerified"])
+
     def test_preview_mask_failure_never_falls_back_to_unverified_local_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

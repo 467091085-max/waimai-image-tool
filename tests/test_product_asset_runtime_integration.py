@@ -211,7 +211,9 @@ def test_postgres_asset_persistence_is_private_pending_and_background_bound(
     assert registration["reuse_scope"] == "owner"
     assert registration["background_asset_id"] == background.library_asset_id
     assert registration["background_sha256"] == background.sha256
-    assert registration["pipeline_version"] == "exact-background.v1"
+    assert registration["pipeline_version"] == (
+        f"exact-background.v{app_module.EXACT_BACKGROUND_PIPELINE_VERSION}"
+    )
     object_key = str(registration["original_object_ref"])
     assert object_key.startswith("ai-assets/tenant-")
     assert storage.read_bytes(object_key) == output.read_bytes()
