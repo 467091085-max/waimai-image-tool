@@ -4,9 +4,9 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 87 in progress: reconcile stale delivery documentation with the verified
-implementation, rebuild the sanitized archive, and push the documentation-only
-follow-up without deployment.
+Step 88 in progress: validate the protected Render test site with a real local
+Excel menu, paid TokenHub background generation, free samples, and a formal
+image probe without changing the production service.
 
 ## Status
 - Obsidian memory structure: done
@@ -258,6 +258,16 @@ follow-up without deployment.
 - Production PostgreSQL auth/session plus Redis OTP persistence foundation: done locally and independently verified against disposable PostgreSQL 16 and Redis 7
 - Production HTTP auth/session/store route integration: done locally
 - Production auth Render secret declarations and live mock-OTP prohibition: done locally
+- Protected Render test service on `codex/render-image-staging`: deployed
+- Real 56-row light-food Excel upload on the test service: passed
+- TokenHub `hy-image-v3.0` readiness on the test service: passed
+- Pure-background prompt v4 first paid generation: passed; 23.27 seconds and new SHA-256
+- Remaining five backgrounds: generated and SHA-256 verified
+- Pure-background v4 visual acceptance: failed 2/6 because styles 2 and 3 contained edible produce
+- Pure-background v5 edible-prop exclusion: implemented and locally verified
+- Pure-background v5 focused regression: 83 passed
+- Pure-background v5 full regression: 1269 passed, 20 skipped
+- Pure-background v5 Render deployment and visual acceptance: pending
 - Production auth readiness schema/Redis/SMS/secret probes: done locally
 - Production registration anti-abuse context persistence and fail-closed reward gate: done locally
 - PostgreSQL export package, nonce, and access-audit foundation: done locally
@@ -615,8 +625,9 @@ follow-up without deployment.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 在 `f680c24...` 上创建仅含文档/状态的 `[skip render]` 提交。
-2. 推送 remote `main`，确认 GitHub SHA 和 Render skipped event；不部署、不迁移。
+1. 部署纯背景 v5 到独立 Render 测试服务并重新生成六张轻食背景。
+2. 选择合格背景，验证六张免费样图和至少一张正式菜品图。
+3. 完成测试站验证后再实现微信支付 Native Pay 的 fail-closed 接口和回归测试；不接真实商户、不迁移数据库、不改生产环境。
 
 ## Latest Verified Checkpoint
 - 支付下单入口现在强制有效手机号会话，只接受服务端版本化套餐 `packageId`；用户、金额、积分、支付渠道和订单 ID 不再由浏览器指定，幂等键只从 `Idempotency-Key` 请求头读取。

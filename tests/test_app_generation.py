@@ -683,7 +683,7 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][0], "TextToImageLite")
             self.assertNotIn("ProductUrl", payloads[0][1])
             self.assertIn("纯背景场景", str(payloads[0][1]["Prompt"]))
-            self.assertIn("不要出现菜品", str(payloads[0][1]["Prompt"]))
+            self.assertIn("禁止菜品", str(payloads[0][1]["Prompt"]))
             seed_candidate.assert_not_called()
             public_url.assert_not_called()
 

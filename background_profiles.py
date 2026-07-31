@@ -14,12 +14,13 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-07-31.v2"
+BACKGROUND_PROFILE_VERSION = "2026-07-31.v3"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = tuple(f"style-{index}" for index in range(1, 7))
 
 PURE_BACKGROUND_NEGATIVE_PROMPT = (
-    "食物，菜品，饮料，餐具，餐盘，碗，杯子，餐盒，筷子，刀叉，"
+    "食物，菜品，饮料，水果，蔬菜，香草，食材，原料，牛油果，莓果，"
+    "柠檬，橄榄，餐具，餐盘，碗，杯子，餐盒，筷子，刀叉，"
     "文字，价格，菜单，logo，品牌名，水印，人物，手，低清晰度，"
     "模糊，畸变，拼贴，边框，画中画"
 )
@@ -118,19 +119,21 @@ def style_prompt(category_id: str, style_id: str) -> str:
 
 def pure_background_style_prompt(category_id: str, style_id: str) -> str:
     prompt = style_prompt(category_id, style_id)
-    return re.sub(r"，适合[^，；。]+轮廓", "", prompt)
+    prompt = re.sub(r"^[^，；。]+场景，", "", prompt)
+    return re.sub(r"(?:适合|兼容)[^，；。]+轮廓，?", "", prompt).strip("，；。")
 
 
 def pure_background_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
     label = TAXONOMY_LABELS.get(normalized_category, "复合餐饮")
     return (
-        "纯背景场景商业摄影，不要出现菜品。EMPTY SET ONLY. NO FOOD OR "
-        "CONTAINERS. 严禁食物、饮料、餐具、容器、文字、菜单、logo、水印、人物或手。"
-        "只允许空置台面、背景墙和非食用材质；中央与边缘都必须完全空置。"
-        f"这是供后期合成{label}商品的空摄影台，仅用材质、配色和光线暗示品类；"
+        "纯背景场景商业摄影。EMPTY SET ONLY. NO FOOD, EDIBLE PROPS OR "
+        "CONTAINERS. 禁止菜品、饮料、果蔬、香草、食材、餐具、容器、文字、"
+        "菜单、logo、水印、人物或手。只允许空置台面、背景墙和非食用材质；"
+        f"中央与边缘都必须完全空置。供后期合成{label}商品；"
+        "仅用材质、配色和光线暗示品类；"
         f"{pure_background_style_prompt(normalized_category, style_id)}；"
-        "中央保留完整宽阔摆放区，边缘有自然层次，真实光影，高分辨率。"
+        "中央保留完整宽阔摆放区，真实光影，高分辨率。"
     )
 
 
