@@ -4,9 +4,9 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 90 in progress: deploy the calibrated chroma-spill threshold to the
-protected Render test service, then repeat the paid visual acceptance after the
-first real run correctly exposed one remaining false-success halo.
+Step 90 complete: the calibrated pipeline v4 is deployed to the protected
+Render test service and passed the paid six-sample visual acceptance. The next
+separate step is full-store formal generation, which remains capped in staging.
 
 ## Status
 - Chroma residual false-success root cause: done
@@ -20,7 +20,11 @@ first real run correctly exposed one remaining false-success halo.
 - Calibrated 0.4% residual-chroma threshold and pipeline v4: done locally
 - Updated focused tests: done, 51 passed
 - Full regression after calibrated threshold: done, 1283 passed / 20 skipped
-- Render v4 deployment and real visual recheck: pending latest commit
+- Render v4 deployment: done, commit `37429f9`
+- Real pipeline-v4 six-sample acceptance: done, 6/6 visual and SHA pass
+- Formal compositor probe: done, 1 succeeded / 55 limited by staging sync cap
+- Full 56-row paid formal batch: not accepted
+- Durable staging acceptance report: done
 - Obsidian memory structure: done
 - Render background generation failure reproduced: done
 - Root cause located: done
@@ -658,11 +662,12 @@ first real run correctly exposed one remaining false-success halo.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 部署并真实验收只影响三号背景的空摄影棚提示修正。
-2. 在六张背景全部通过后，重新验证同一背景下的六张免费样图和至少一张正式菜品图，并记录真实耗时与本地/云端 Mask 路径。
-3. 完成测试站验证后再实现微信支付 Native Pay 的 fail-closed 接口和回归测试；不接真实商户、不迁移数据库、不改生产环境。
+1. 由用户在隔离测试链接复测上传菜单、六张背景和六张免费样图。
+2. 单独解决全店正式出图的 durable Worker、进度和 56 行限额；在完成前不得声称整店正式图已验收。
+3. 图片主链路稳定后再实现微信支付 Native Pay 的 fail-closed 接口；没有商户凭据时不接真实支付、不迁移数据库、不改生产环境。
 
 ## Latest Verified Checkpoint
+- Render image staging acceptance: commit `37429f9`, real 56-row Excel parsed with zero errors, six pipeline-v4 paid samples passed visual/SHA/background checks, and the formal compositor probe passed one row. Evidence: `AI-Project/handoffs/2026-07-31/RENDER_IMAGE_STAGING_ACCEPTANCE.md`.
 - 支付下单入口现在强制有效手机号会话，只接受服务端版本化套餐 `packageId`；用户、金额、积分、支付渠道和订单 ID 不再由浏览器指定，幂等键只从 `Idempotency-Key` 请求头读取。
 - 支付回调按冻结订单金额校验后才允许入账；客户充值 UI 已改为固定套餐下单并移除直接加积分的自定义充值入口。
 - 支付目录、服务、计费、API、增长联动和安全定向回归：`59 passed`。
