@@ -33,7 +33,10 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         assert len(prompts) == 6
         assert len(set(prompts)) == 6
         assert all(prompt.startswith("纯背景场景商业摄影，不要出现菜品") for prompt in prompts)
+        assert all("EMPTY SET ONLY" in prompt for prompt in prompts)
+        assert all("中央与边缘都必须完全空置" in prompt for prompt in prompts)
         assert all("中央保留完整宽阔摆放区" in prompt for prompt in prompts)
+        assert all("适合大浅碗轮廓" not in prompt for prompt in prompts)
         assert all(len(prompt) <= 250 for prompt in prompts)
 
 

@@ -14,7 +14,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-07-30.v1"
+BACKGROUND_PROFILE_VERSION = "2026-07-31.v2"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = tuple(f"style-{index}" for index in range(1, 7))
 
@@ -116,13 +116,20 @@ def style_prompt(category_id: str, style_id: str) -> str:
     return f"{scene}；{STYLE_VARIANTS[style_index]}"
 
 
+def pure_background_style_prompt(category_id: str, style_id: str) -> str:
+    prompt = style_prompt(category_id, style_id)
+    return re.sub(r"，适合[^，；。]+轮廓", "", prompt)
+
+
 def pure_background_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
     label = TAXONOMY_LABELS.get(normalized_category, "复合餐饮")
     return (
-        "纯背景场景商业摄影，不要出现菜品；严禁出现食物、饮料、餐具、餐盘、碗、杯子、"
-        "餐盒、文字、价格、logo、水印、人物或手。"
-        f"用于{label}外卖主图合成；{style_prompt(normalized_category, style_id)}；"
+        "纯背景场景商业摄影，不要出现菜品。EMPTY SET ONLY. NO FOOD OR "
+        "CONTAINERS. 严禁食物、饮料、餐具、容器、文字、菜单、logo、水印、人物或手。"
+        "只允许空置台面、背景墙和非食用材质；中央与边缘都必须完全空置。"
+        f"这是供后期合成{label}商品的空摄影台，仅用材质、配色和光线暗示品类；"
+        f"{pure_background_style_prompt(normalized_category, style_id)}；"
         "中央保留完整宽阔摆放区，边缘有自然层次，真实光影，高分辨率。"
     )
 
