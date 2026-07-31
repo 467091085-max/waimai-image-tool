@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -259,6 +262,57 @@ class AppGenerationTests(unittest.TestCase):
 
         self.assertEqual(response["_Action"], "TokenHubImageV3")
         tokenhub.assert_called_once()
+        legacy.assert_not_called()
+
+    def test_tokenhub_generation_is_serialized_within_the_service_process(self) -> None:
+        state_lock = threading.Lock()
+        in_flight = 0
+        max_in_flight = 0
+
+        def fake_tokenhub(
+            payload: dict[str, object],
+            timeout: int = 70,
+        ) -> dict[str, object]:
+            nonlocal in_flight, max_in_flight
+            with state_lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            time.sleep(0.03)
+            with state_lock:
+                in_flight -= 1
+            return {
+                "ResultImage": "https://cdn.example.test/tokenhub.jpg",
+                "RequestId": str(payload.get("Prompt") or "job"),
+                "_Endpoint": "tokenhub.tencentmaas.com",
+                "_Action": "TokenHubImageV3",
+                "_Model": "hy-image-v3.0",
+            }
+
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+                },
+                clear=True,
+            ),
+            mock.patch.object(app_module, "tokenhub_image_request", side_effect=fake_tokenhub),
+            mock.patch.object(app_module, "tencent_cloud_api_request") as legacy,
+        ):
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                responses = list(
+                    executor.map(
+                        lambda index: app_module.tencent_api_request(
+                            "TextToImageLite",
+                            {"Prompt": f"测试-{index}"},
+                        ),
+                        range(4),
+                    )
+                )
+
+        self.assertEqual(len(responses), 4)
+        self.assertEqual(max_in_flight, 1)
         legacy.assert_not_called()
 
     def test_tokenhub_payload_maps_legacy_text_to_image_fields(self) -> None:

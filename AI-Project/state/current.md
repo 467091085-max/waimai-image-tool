@@ -12,9 +12,11 @@ with the real Excel menu without changing the production service.
 - Chroma residual false-success root cause: done
 - Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
 - Lossless RGB PNG chroma intermediate: done locally
+- Test-service TokenHub in-process single-flight: done locally
 - Chroma-spill and exact-background focused tests: done, 22 passed
-- Full regression after chroma-spill and PNG fixes: done, 1281 passed / 20 skipped
-- Render deployment and real six-sample visual recheck: pending
+- Provider concurrency plus image-path focused tests: done, 50 passed
+- Full regression after chroma-spill, PNG, and single-flight fixes: done, 1282 passed / 20 skipped
+- Render deployment and real six-sample visual recheck: pending latest commit
 - Obsidian memory structure: done
 - Render background generation failure reproduced: done
 - Root cause located: done

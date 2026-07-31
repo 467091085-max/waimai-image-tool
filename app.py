@@ -223,6 +223,7 @@ DISH_GENERATION_PROMPT_VERSION = 1
 EXACT_BACKGROUND_PIPELINE_VERSION = 3
 CHROMA_FOREGROUND_PROMPT_VERSION = 1
 AI_ASSET_MANIFEST_LOCK = threading.Lock()
+TENCENT_TOKENHUB_GENERATION_LOCK = threading.Lock()
 TENCENT_MASK_EXTRACTION_LOCK = threading.Lock()
 GENERATION_BATCH_SUBMIT_LOCK = threading.Lock()
 REVISION_BATCH_SUBMIT_LOCK = threading.Lock()
@@ -3468,7 +3469,8 @@ def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TEN
         errors = []
         if tokenhub_ready():
             try:
-                return tokenhub_image_request(payload, timeout=timeout)
+                with TENCENT_TOKENHUB_GENERATION_LOCK:
+                    return tokenhub_image_request(payload, timeout=timeout)
             except RuntimeError as exc:
                 errors.append(str(exc))
         endpoints = [
