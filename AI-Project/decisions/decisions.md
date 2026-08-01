@@ -123,5 +123,16 @@
   prompt and makes each category/style output reproducible. `NegativePrompt`
   remains Lite-only because it is not part of the documented v3 input schema.
 - A prompt version may never mix seeds or image bytes from an older version.
+- A normal full-size dining table may show a broad front edge or legs when its
+  tabletop occupies the lower composition area and can hold the dish. This is
+  a valid `flat-table` background, as explicitly required by the product.
+  A small central product plinth, isolated slab, mat, board, or inset rectangle
+  remains a rejection condition; those are not equivalent to a dining table.
+- A paid catalog category is the restart checkpoint. Its six-slot manifest is
+  written immediately after the sixth object, and future runs may skip provider
+  calls only after re-reading and hashing all six exact COS objects.
+- Approval is hash locked: an operator must submit the six reviewed SHA-256
+  values, and any missing, duplicate, replaced, or tampered object fails the
+  write. Provider success and a contact sheet never auto-approve a category.
 - Do not spend the remaining 39-category batch until the six-slot v11 pilot
   passes exact-object visual review.

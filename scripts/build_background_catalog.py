@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import re
 import sys
 import time
 from typing import Any
+
+from PIL import Image, ImageDraw, ImageOps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +97,130 @@ def reusable_local_entry(
     if any(entry.get(key) != value for key, value in expected.items()):
         return None
     return entry
+
+
+def remote_category_manifest_document(
+    category_id: str,
+) -> dict[str, Any] | None:
+    category = background_catalog.normalize_category_id(category_id)
+    key = background_catalog.catalog_manifest_key(
+        category,
+        PROMPT_VERSION,
+        tenant_id=app_module.product_shared_asset_tenant_id(),
+    )
+    storage = object_storage_service.get_object_storage_service()
+    raw = object_storage_service.read_object_bytes_limited_if_exists(
+        storage,
+        key,
+        2 * 1024 * 1024,
+    )
+    if raw is None:
+        return None
+    document = json.loads(raw.decode("utf-8"))
+    if not isinstance(document, dict):
+        raise RuntimeError("background catalog manifest must be an object")
+    return document
+
+
+def reusable_remote_category_entries(
+    category_id: str,
+) -> list[dict[str, Any]] | None:
+    category = background_catalog.normalize_category_id(category_id)
+    document = remote_category_manifest_document(category)
+    if document is None:
+        return None
+    expected_document = {
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": app_module.TAXONOMY_VERSION,
+        "categoryId": category,
+        "promptVersion": PROMPT_VERSION,
+    }
+    if any(
+        document.get(key) != value
+        for key, value in expected_document.items()
+    ):
+        return None
+    review_status = str(document.get("reviewStatus") or "").lower()
+    if review_status not in {"pending", "approved"}:
+        return None
+    raw_assets = document.get("assets")
+    if not isinstance(raw_assets, list) or len(raw_assets) != 6:
+        return None
+
+    by_style: dict[str, dict[str, Any]] = {}
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            return None
+        style_id = str(raw_asset.get("styleId") or "")
+        if style_id not in background_catalog.STYLE_IDS or style_id in by_style:
+            return None
+        by_style[style_id] = raw_asset
+    if set(by_style) != set(background_catalog.STYLE_IDS):
+        return None
+
+    storage = object_storage_service.get_object_storage_service()
+    entries: list[dict[str, Any]] = []
+    for style_id in background_catalog.STYLE_IDS:
+        raw_asset = by_style[style_id]
+        prompt = background_profiles.pure_background_prompt(
+            category,
+            style_id,
+        )
+        prompt_sha256 = hashlib.sha256(
+            prompt.encode("utf-8")
+        ).hexdigest()
+        asset_sha256 = str(raw_asset.get("sha256") or "").lower()
+        object_key = str(raw_asset.get("objectKey") or "")
+        if not background_catalog.SHA256_RE.fullmatch(asset_sha256):
+            return None
+        try:
+            file_size = int(raw_asset.get("fileSize") or 0)
+            expected_key = background_catalog.catalog_object_key(
+                category_id=category,
+                style_id=style_id,
+                prompt_version=PROMPT_VERSION,
+                prompt_sha256=prompt_sha256,
+                asset_sha256=asset_sha256,
+                suffix=Path(object_key).suffix,
+                tenant_id=app_module.product_shared_asset_tenant_id(),
+            )
+        except (TypeError, ValueError):
+            return None
+        expected_asset = {
+            "catalogVersion": background_catalog.CATALOG_VERSION,
+            "taxonomyVersion": app_module.TAXONOMY_VERSION,
+            "categoryId": category,
+            "styleId": style_id,
+            "promptVersion": PROMPT_VERSION,
+            "promptSha256": prompt_sha256,
+            "objectKey": expected_key,
+            "reviewStatus": review_status,
+        }
+        if any(
+            raw_asset.get(key) != value
+            for key, value in expected_asset.items()
+        ):
+            return None
+        if not 0 < file_size <= app_module.MAX_AI_ASSET_BYTES:
+            return None
+        stored = object_storage_service.read_object_bytes_limited(
+            storage,
+            object_key,
+            app_module.MAX_AI_ASSET_BYTES,
+        )
+        if len(stored) != file_size:
+            return None
+        if hashlib.sha256(stored).hexdigest() != asset_sha256:
+            return None
+        entries.append(
+            {
+                **raw_asset,
+                "uploaded": True,
+                "remoteManifestReused": True,
+            }
+        )
+    return entries
 
 
 def provider_model(response: dict[str, Any]) -> str:
@@ -353,6 +480,10 @@ def upload_category_manifest(
         }
         for entry in sorted(entries, key=lambda item: item["styleId"])
     ]
+    review_sheet = upload_category_review_sheet(
+        entries,
+        category_id=category_id,
+    )
     document = {
         "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
         "catalogVersion": background_catalog.CATALOG_VERSION,
@@ -361,6 +492,7 @@ def upload_category_manifest(
         "categoryName": background_catalog.category_label(category_id),
         "promptVersion": PROMPT_VERSION,
         "reviewStatus": "pending",
+        "reviewSheet": review_sheet,
         "assets": public_entries,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -388,6 +520,89 @@ def upload_category_manifest(
     if hashlib.sha256(readback).digest() != hashlib.sha256(payload).digest():
         raise RuntimeError("category manifest read-back verification failed")
     return key
+
+
+def upload_category_review_sheet(
+    entries: list[dict[str, Any]],
+    *,
+    category_id: str,
+) -> dict[str, Any]:
+    category = background_catalog.normalize_category_id(category_id)
+    by_style = {
+        str(entry.get("styleId") or ""): entry
+        for entry in entries
+    }
+    if set(by_style) != set(background_catalog.STYLE_IDS):
+        raise RuntimeError("review sheet requires all six style slots")
+    storage = object_storage_service.get_object_storage_service()
+    tile_width = 512
+    image_height = 384
+    label_height = 28
+    canvas = Image.new(
+        "RGB",
+        (tile_width * 3, (image_height + label_height) * 2),
+        (242, 242, 242),
+    )
+    draw = ImageDraw.Draw(canvas)
+    for index, style_id in enumerate(background_catalog.STYLE_IDS):
+        entry = by_style[style_id]
+        raw = object_storage_service.read_object_bytes_limited(
+            storage,
+            str(entry["objectKey"]),
+            app_module.MAX_AI_ASSET_BYTES,
+        )
+        if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+            raise RuntimeError(f"review sheet source changed for {style_id}")
+        with Image.open(BytesIO(raw)) as source:
+            tile = ImageOps.fit(
+                source.convert("RGB"),
+                (tile_width, image_height),
+                method=Image.Resampling.LANCZOS,
+            )
+        column = index % 3
+        row = index // 3
+        x = column * tile_width
+        y = row * (image_height + label_height)
+        canvas.paste(tile, (x, y))
+        draw.rectangle(
+            (x, y + image_height, x + tile_width, y + image_height + label_height),
+            fill=(24, 24, 24),
+        )
+        slot = background_catalog.style_slot(style_id)
+        draw.text(
+            (x + 10, y + image_height + 7),
+            f"{style_id}  {slot.slot_id}",
+            fill=(255, 255, 255),
+        )
+    output = BytesIO()
+    canvas.save(output, "JPEG", quality=92, optimize=True)
+    payload = output.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest_key = background_catalog.catalog_manifest_key(
+        category,
+        PROMPT_VERSION,
+        tenant_id=app_module.product_shared_asset_tenant_id(),
+    )
+    object_key = (
+        manifest_key.rsplit("/", 1)[0]
+        + f"/review/contact-sheet-{digest}.jpg"
+    )
+    if storage.put_bytes(payload, object_key=object_key) != object_key:
+        raise RuntimeError("review contact-sheet object key mismatch")
+    readback = object_storage_service.read_object_bytes_limited(
+        storage,
+        object_key,
+        4 * 1024 * 1024,
+    )
+    if hashlib.sha256(readback).hexdigest() != digest:
+        raise RuntimeError("review contact-sheet read-back verification failed")
+    return {
+        "objectKey": object_key,
+        "sha256": digest,
+        "fileSize": len(payload),
+        "width": canvas.width,
+        "height": canvas.height,
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -451,6 +666,22 @@ def main(argv: list[str] | None = None) -> int:
     report_path = output / "run-report.json"
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    manifest_keys: list[str] = []
+    manifested_categories: set[str] = set()
+    remote_entries: dict[tuple[str, str], dict[str, Any]] = {}
+    if args.upload_pending and not args.register_pending:
+        for category_id in categories:
+            try:
+                reusable = reusable_remote_category_entries(category_id)
+            except Exception as exc:
+                detail = re.sub(r"\s+", " ", str(exc))[:300]
+                print(
+                    f"REMOTE-MISS {category_id} "
+                    f"{type(exc).__name__}: {detail}"
+                )
+                continue
+            for entry in reusable or []:
+                remote_entries[(category_id, entry["styleId"])] = entry
     for category_id, style_id in pairs:
         image_path, sidecar_path = entry_paths(
             output,
@@ -463,13 +694,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         try:
-            entry = reusable_local_entry(
-                image_path,
-                sidecar_path,
-                category_id=category_id,
-                style_id=style_id,
-                prompt_sha256=prompt_sha256,
-            )
+            entry = remote_entries.get((category_id, style_id))
+            if entry is None:
+                entry = reusable_local_entry(
+                    image_path,
+                    sidecar_path,
+                    category_id=category_id,
+                    style_id=style_id,
+                    prompt_sha256=prompt_sha256,
+                )
             if entry is None:
                 entry = generate_entry(
                     category_id=category_id,
@@ -488,6 +721,35 @@ def main(argv: list[str] | None = None) -> int:
                 entry = {**entry, "uploaded": True}
             write_json(sidecar_path, entry)
             entries.append(entry)
+            category_entries = [
+                item
+                for item in entries
+                if item["categoryId"] == category_id
+            ]
+            if (
+                (args.register_pending or args.upload_pending)
+                and category_id not in manifested_categories
+                and {item["styleId"] for item in category_entries}
+                == set(background_catalog.STYLE_IDS)
+            ):
+                if all(
+                    item.get("remoteManifestReused")
+                    for item in category_entries
+                ):
+                    manifest_key = background_catalog.catalog_manifest_key(
+                        category_id,
+                        PROMPT_VERSION,
+                        tenant_id=(
+                            app_module.product_shared_asset_tenant_id()
+                        ),
+                    )
+                else:
+                    manifest_key = upload_category_manifest(
+                        category_entries,
+                        category_id=category_id,
+                    )
+                manifest_keys.append(manifest_key)
+                manifested_categories.add(category_id)
             print(
                 f"PASS {category_id}/{style_id} "
                 f"sha256={entry['sha256']} review={entry['reviewStatus']}"
@@ -510,31 +772,21 @@ def main(argv: list[str] | None = None) -> int:
                 **plan,
                 "completedAssetCount": len(entries),
                 "failureCount": len(failures),
+                "manifestKeys": manifest_keys,
                 "entries": entries,
                 "failures": failures,
             },
         )
 
-    manifest_keys = []
-    if args.register_pending or args.upload_pending:
-        for category_id in categories:
-            category_entries = [
-                entry
-                for entry in entries
-                if entry["categoryId"] == category_id
-            ]
-            if len(category_entries) == 6:
-                manifest_keys.append(
-                    upload_category_manifest(
-                        category_entries,
-                        category_id=category_id,
-                    )
-                )
     final_report = {
         **plan,
         "completedAssetCount": len(entries),
         "failureCount": len(failures),
         "complete": not failures and len(entries) == len(pairs),
+        "remoteReusedAssetCount": sum(
+            bool(entry.get("remoteManifestReused"))
+            for entry in entries
+        ),
         "manifestKeys": manifest_keys,
         "entries": entries,
         "failures": failures,

@@ -11,7 +11,11 @@ pilot is intentionally rejected because four of six images contain a raised
 plinth or rectangular mat. The paid v10 pilot is also rejected: it removed the
 small plinths but still produced a paper-sheet seam and table-front slabs.
 Prompt v11 now uses the actual Hunyuan 3.0 `Revise=0` and fixed-seed contract;
-it awaits a six-image staging pilot before the remaining 39 categories may run.
+its six-image staging pilot has generated successfully and passed visual review.
+Hash-locked approval, COS object resume, per-category checkpoints, and review
+contact sheets are implemented and locally verified. The next gate is to deploy
+that operator flow, approve the six exact light-food hashes, then start the
+remaining 39 categories in resumable batches.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -42,6 +46,26 @@ it awaits a six-image staging pilot before the remaining 39 categories may run.
 - Prompt v11 focused verification: `91 passed, 1 skipped`
 - Full local regression after v11: `1306 passed, 20 skipped`; scoped Python
   compilation and `git diff --check` passed
+- Paid v11 pilot: 6/6 generated, uploaded, and SHA-verified in private COS;
+  exact hashes are recorded in the execution log and all six remain `pending`
+  until the hash-locked approval operation is implemented and run
+- v11 visual result: styles 1 and 2 are empty single-color seamless spaces;
+  styles 3 through 6 are ordinary full-size dining tables. No food, prop,
+  paper roll, rectangular mat, small product plinth, inset image, or frame was
+  found. The light-food six-slot set passes the revised product visual gate
+- Render was restored after the pilot to the normal Gunicorn command; restore
+  deploy `dep-d9mu195aeets73aq62b0` is live
+- Remote paid-work resume: complete current-version manifests now re-read and
+  verify all six prompt hashes, immutable keys, file sizes, object bytes, and
+  SHA-256 values before skipping provider calls
+- Batch checkpointing: each category manifest is persisted immediately after
+  its sixth style, instead of waiting until the entire 240-image run finishes
+- Review operator: approval requires all six exact reviewed SHA-256 values and
+  writes reviewer/time/note metadata only after read-back verification
+- Review contact sheet: every completed category gets a SHA-addressed 3-by-2
+  sheet in private COS for efficient six-image visual review
+- Catalog/resume/review focused verification: `98 passed, 1 skipped`
+- Full local regression after resumable review flow: `1313 passed, 20 skipped`
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -884,6 +908,6 @@ it awaits a six-image staging pilot before the remaining 39 categories may run.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: finish the full regression, push prompt v11 to the staging
-  branch, regenerate only the six `light_food` slots, and inspect the exact COS
-  objects before any remaining 39-category paid batch.
+- Next action: push and deploy the resumable review flow, run the hash-locked
+  `light_food` approval, verify the customer catalog endpoint returns six exact
+  images, then start the remaining categories in bounded batches.

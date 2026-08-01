@@ -94,6 +94,12 @@ stored at the versioned COS manifest key. The COS backend also verifies the
 current prompt SHA, immutable object key, image SHA, file size, category, style,
 taxonomy, and top-level approval before exposing any asset.
 
+Each category is now its own paid-work checkpoint. The pending six-slot
+manifest is written immediately after style 6, and a resumed run re-reads and
+hashes all six COS objects before skipping provider calls. A SHA-addressed 3 x 2
+review contact sheet is stored beside the manifest. Neither provider success,
+remote resume, nor the contact sheet grants approval.
+
 ## Operator Sequence
 
 1. Confirm the exact plan without spending provider credits:
@@ -125,10 +131,25 @@ taxonomy, and top-level approval before exposing any asset.
 3. Review all six pilot images. Reject any prop, raised platform, color-card
    appearance, blurred outer frame, incorrect aspect ratio, unsafe center area,
    duplicate composition, or low-resolution output.
-4. Approve exactly one asset per pilot slot and verify a real Excel upload,
+4. Approve exactly one asset per pilot slot by locking all six reviewed hashes:
+
+   ```bash
+   python scripts/review_background_catalog.py \
+     --category light_food \
+     --reviewer catalog-visual-review \
+     --expected-sha style-1=2c8a2644609a73191f0b605210a8defcc87d9954f6f08fc3b423e7d189d02673 \
+     --expected-sha style-2=7d4ebf83b7b39606393284ca70c9f9ef40a6654a32ef1b7c7463aa3c17de2cb4 \
+     --expected-sha style-3=d0af5a7981b5baaf6433f2ec8ade9a04efad21ee9d2b192d15e8a71cce12bc20 \
+     --expected-sha style-4=198c0a8c167958dd84b2810fa9d9cac3d2fa937bf2a65de75fdac7c38206c2b5 \
+     --expected-sha style-5=7bf3d33ceb883e4a01ebd338ee200b7d4b2a9a769b8c6ab6e328fec21bbc657a \
+     --expected-sha style-6=61516e0d3645c0f01a834273d99cf26edc33a390c6ef12b08ecec64331c7e3e6 \
+     --approve-reviewed
+   ```
+
+5. Verify a real Excel upload,
    six-background retrieval, free samples, selected-background identity, formal
    generation, export, private-media authorization, and billing behavior.
-5. Generate and review the remaining 39 categories only after the pilot passes.
+6. Generate and review the remaining 39 categories only after the pilot passes.
 
 ## Verified Local Evidence
 
@@ -152,3 +173,10 @@ taxonomy, and top-level approval before exposing any asset.
 - Prompt v11 focused verification passed `91 passed, 1 skipped`; full default
   regression passed `1306 passed, 20 skipped`; scoped Python compilation and
   `git diff --check` passed.
+- The exact v11 light-food set generated 6/6, uploaded with matching SHA-256,
+  and passed manual visual review: two empty single-color seamless spaces plus
+  four ordinary full-size dining tables, with no props, mats, paper rolls,
+  small product plinths, inset images, or blurred frames.
+- Remote resume, immediate category checkpoint, review contact-sheet, changed
+  object rejection, and hash-locked approval verification passed `98 passed, 1
+  skipped`; full default regression passed `1313 passed, 20 skipped`.
