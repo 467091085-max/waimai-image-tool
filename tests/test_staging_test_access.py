@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 
+from generation_queue import InMemoryGenerationQueue
+
 import app as app_module
 
 
@@ -93,3 +95,42 @@ def test_staging_credentials_never_enable_production_demo(monkeypatch) -> None:
         assert app_module.local_demo_auth_allowed() is False
         assert app_module.local_demo_generation_allowed() is False
         assert app_module.object_write_authorized("default") is False
+
+
+def test_staging_can_explicitly_use_the_single_process_generation_queue(
+    monkeypatch,
+) -> None:
+    _configure_staging(monkeypatch)
+    monkeypatch.setenv("RENDER", "true")
+
+    assert app_module.product_redis_required() is True
+
+    monkeypatch.setenv("ALLOW_STAGING_IN_PROCESS_GENERATION", "true")
+
+    assert app_module.staging_in_process_generation_allowed() is True
+    assert app_module.product_redis_required() is False
+
+
+def test_staging_queue_override_never_applies_to_production(
+    monkeypatch,
+) -> None:
+    _configure_staging(monkeypatch)
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("ALLOW_STAGING_IN_PROCESS_GENERATION", "true")
+    monkeypatch.setenv("APP_ENV", "production")
+
+    assert app_module.staging_in_process_generation_allowed() is False
+    assert app_module.product_redis_required() is True
+
+
+def test_configured_generation_queue_limits_are_applied() -> None:
+    queue = app_module.generation_queue
+
+    assert isinstance(queue, InMemoryGenerationQueue)
+    assert queue.limits.stale_after_seconds == (
+        app_module.GENERATION_QUEUE_STALE_AFTER_SECONDS
+    )
+    assert queue.limits.timeout_seconds == (
+        app_module.GENERATION_QUEUE_TIMEOUT_SECONDS
+    )
+    assert queue.limits.timeout_seconds >= queue.limits.stale_after_seconds

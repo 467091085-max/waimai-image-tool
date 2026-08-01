@@ -4,25 +4,42 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 91 complete: the full 40-category x 6-style catalog is generated,
-manually reviewed, and hash-lock approved in private COS, for 240 of 240 target
-assets. Final generation deploy `dep-d9n1nfvlk1mc73dj7cp0` completed 30/30
-assets with `failureCount=0`. Approval deploy `dep-d9n1toflk1mc73djgftg`
-approved `bottled_drinks` and `fresh_drinks`; bounded retry deploy
-`dep-d9n20h0ae00c73amvtj0` approved `dessert_bakery`, `fried_snacks`, and
-`fruit` after a transient COS read timeout. All final prompt bytes are frozen;
-focused verification passed `15 passed`, full regression passed `1324 passed,
-20 skipped`, maximum prompt length is 588, and scoped compilation plus
-`git diff --check` passed. Render restore deploy
-`dep-d9n23cijnfac73a7sqeg` is live with the normal Gunicorn command.
+Step 92 complete: the full 40-category x 6-style catalog is generated,
+manually reviewed, hash-lock approved in private COS, frozen in commit
+`b7b4395`, and pushed to the isolated staging branch. Render auto-deploy
+`dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
+customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 92 in progress: commit and push the complete catalog freeze to the
-isolated staging branch, confirm its normal Render auto-deploy, then run one
-real Excel menu through taxonomy routing, six approved backgrounds, six free
-samples, selected-background generation, full dish generation including
-combos, platform export, and points/billing verification.
+Step 93 in progress: deploy and independently verify the explicit staging-only
+in-process generation queue, then run the real 60-row mixed-rice Excel menu
+through upload, taxonomy routing, six approved backgrounds, six free samples,
+selected-background generation, all dish/combo generation, Meituan export,
+and server-owned point debit/refund verification. Production remains
+fail-closed without Redis and an independent worker.
 
 ## Status
+- Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
+  `dep-d9n24ic9v7es73c3od8g` reached live with the exact normal Gunicorn
+  command and no catalog-review process.
+- Real formal-generation staging root cause: the frontend correctly submits
+  `/api/generation-jobs`, but the test service has no Redis and Render runtime
+  policy therefore rejects the queue before debit with
+  `redis_generation_queue_required`.
+- Minimal staging queue correction: an in-process queue is permitted only when
+  `APP_ENV=staging-demo`, staging Basic Auth is configured, and
+  `ALLOW_STAGING_IN_PROCESS_GENERATION=true`. Production and every other
+  Render environment continue to require Redis.
+- Queue stale and terminal timeouts are environment-configurable while keeping
+  the existing 300-second and 1800-second defaults. The staging test may opt
+  into a two-hour timeout without weakening production defaults.
+- Added a paid-call-gated Render HTTP acceptance runner. It validates the exact
+  expected taxonomy, complete approved six-slot catalog, all six free samples,
+  full formal manifest including combo rows, account debit/refund arithmetic,
+  and downloadable Meituan ZIP, then persists its redacted report to private
+  COS.
+- Staging queue and real-acceptance focused verification passed `100 passed`.
+  Full regression passed `1327 passed, 20 skipped`; scoped Python compilation
+  and `git diff --check` passed.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

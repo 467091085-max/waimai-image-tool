@@ -213,6 +213,14 @@ TENCENT_SYNC_LIMIT = env_int("TENCENT_HUNYUAN_SYNC_LIMIT", 6)
 TENCENT_TOKENHUB_POLL_TIMEOUT = env_int("TENCENT_TOKENHUB_POLL_TIMEOUT", 120)
 TENCENT_TOKENHUB_POLL_INTERVAL = max(1, env_int("TENCENT_TOKENHUB_POLL_INTERVAL", 3))
 FINAL_GENERATION_WORKERS = max(1, env_int("FINAL_GENERATION_WORKERS", 3))
+GENERATION_QUEUE_STALE_AFTER_SECONDS = max(
+    1,
+    env_int("GENERATION_QUEUE_STALE_AFTER_SECONDS", 5 * 60),
+)
+GENERATION_QUEUE_TIMEOUT_SECONDS = max(
+    GENERATION_QUEUE_STALE_AFTER_SECONDS,
+    env_int("GENERATION_QUEUE_TIMEOUT_SECONDS", 30 * 60),
+)
 DEFAULT_TENCENT_COS_BUCKET = "waimai-image-tool-inputs-1311836560"
 DEFAULT_TENCENT_COS_REGION = "ap-guangzhou"
 AI_ASSET_SCHEMA_VERSION = 1
@@ -260,7 +268,11 @@ MAX_LIBRARY_ZIP_COMPRESSION_RATIO = 100
 ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024
-generation_queue = InMemoryGenerationQueue(worker_count=FINAL_GENERATION_WORKERS)
+generation_queue = InMemoryGenerationQueue(
+    worker_count=FINAL_GENERATION_WORKERS,
+    stale_after_seconds=GENERATION_QUEUE_STALE_AFTER_SECONDS,
+    timeout_seconds=GENERATION_QUEUE_TIMEOUT_SECONDS,
+)
 ASSET_VERSION = os.environ.get("ASSET_VERSION") or str(
     int(max((BASE_DIR / "static" / "app.js").stat().st_mtime, (BASE_DIR / "static" / "styles.css").stat().st_mtime))
 )
@@ -659,6 +671,16 @@ def staging_test_access_allowed() -> bool:
     ) and hmac.compare_digest(
         str(authorization.password or ""),
         expected_password,
+    )
+
+
+def staging_in_process_generation_allowed() -> bool:
+    return (
+        staging_test_access_configured()
+        and env_truthy(
+            "ALLOW_STAGING_IN_PROCESS_GENERATION",
+            default=False,
+        )
     )
 
 
@@ -16777,6 +16799,8 @@ def product_redis_queue():
 
 
 def product_redis_required() -> bool:
+    if staging_in_process_generation_allowed():
+        return False
     return (
         runtime_environment_label() in {"production", "prod", "staging", "render"}
         or render_runtime_detected()

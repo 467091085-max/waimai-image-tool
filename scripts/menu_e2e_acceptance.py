@@ -1052,6 +1052,8 @@ def execute_pipeline(
     platforms: list[str],
     style_index: int,
     timeout_seconds: float,
+    expected_category_id: str = "",
+    require_approved_catalog: bool = False,
 ) -> dict[str, Any]:
     client = app_module.app.test_client()
     expected_count = int(parsed_menu["count"])
@@ -1148,6 +1150,34 @@ def execute_pipeline(
                     f"got {plan_count}"
                 ),
             )
+        category = (
+            body.get("category")
+            if isinstance(body.get("category"), dict)
+            else {}
+        )
+        actual_category_id = str(category.get("taxonomyId") or "")
+        if expected_category_id and actual_category_id != expected_category_id:
+            raise AcceptanceError(
+                "plan",
+                (
+                    "menu taxonomy mismatch: expected "
+                    f"{expected_category_id}, got {actual_category_id or 'missing'}"
+                ),
+                details={"category": category},
+            )
+        pipeline = (
+            body.get("pipeline")
+            if isinstance(body.get("pipeline"), dict)
+            else {}
+        )
+        if require_approved_catalog and not bool(
+            pipeline.get("approvedBackgroundCatalog")
+        ):
+            raise AcceptanceError(
+                "plan",
+                "approved background catalog is not enabled",
+                details={"pipeline": pipeline},
+            )
         state["styleIds"] = style_ids
         state["plan"] = body
         return {
@@ -1155,24 +1185,71 @@ def execute_pipeline(
             "rowCount": plan_count,
             "styleCount": len(style_ids),
             "styleIds": style_ids,
+            "categoryId": actual_category_id,
+            "categoryConfidence": int(category.get("confidence") or 0),
+            "approvedBackgroundCatalog": bool(
+                pipeline.get("approvedBackgroundCatalog")
+            ),
         }
 
     run_stage(report, "plan", plan)
 
     def backgrounds() -> dict[str, Any]:
         records = []
-        for style_id in state["styleIds"]:
-            query = urlencode(
-                {
-                    "menuUploadId": state["menuUploadId"],
-                    "style": style_id,
-                    "generate": 1,
-                }
-            )
-            body = response_json(
-                client.get(f"/api/style-background?{query}"),
+        catalog_styles: dict[str, dict[str, Any]] = {}
+        if require_approved_catalog:
+            query = urlencode({"menuUploadId": state["menuUploadId"]})
+            catalog = response_json(
+                client.get(f"/api/background-catalog?{query}"),
                 "backgrounds",
             )
+            if catalog.get("mode") != "approved" or catalog.get("ready") is not True:
+                raise AcceptanceError(
+                    "backgrounds",
+                    "approved six-slot background catalog is not ready",
+                    details={"catalog": catalog},
+                )
+            catalog_category_id = str(catalog.get("categoryId") or "")
+            if (
+                expected_category_id
+                and catalog_category_id != expected_category_id
+            ):
+                raise AcceptanceError(
+                    "backgrounds",
+                    (
+                        "background catalog taxonomy mismatch: expected "
+                        f"{expected_category_id}, got "
+                        f"{catalog_category_id or 'missing'}"
+                    ),
+                    details={"catalog": catalog},
+                )
+            raw_styles = catalog.get("styles")
+            if not isinstance(raw_styles, list) or len(raw_styles) != 6:
+                raise AcceptanceError(
+                    "backgrounds",
+                    "approved catalog must return exactly six styles",
+                    details={"catalog": catalog},
+                )
+            catalog_styles = {
+                str(style.get("id") or style.get("styleId") or ""): style
+                for style in raw_styles
+                if isinstance(style, dict)
+            }
+        for style_id in state["styleIds"]:
+            if require_approved_catalog:
+                body = catalog_styles.get(style_id) or {}
+            else:
+                query = urlencode(
+                    {
+                        "menuUploadId": state["menuUploadId"],
+                        "style": style_id,
+                        "generate": 1,
+                    }
+                )
+                body = response_json(
+                    client.get(f"/api/style-background?{query}"),
+                    "backgrounds",
+                )
             sample = (
                 body.get("sample")
                 if isinstance(body.get("sample"), dict)
@@ -1228,9 +1305,18 @@ def execute_pipeline(
             )
         state["backgrounds"] = records
         return {
-            "summary": "six unique background images generated and SHA-verified",
+            "summary": (
+                "six approved background images retrieved and SHA-verified"
+                if require_approved_catalog
+                else "six unique background images generated and SHA-verified"
+            ),
             "generatedCount": len(records),
             "uniqueSha256Count": len({row["sha256"] for row in records}),
+            "source": (
+                "approved-background-catalog"
+                if require_approved_catalog
+                else "provider-generation"
+            ),
             "backgrounds": records,
         }
 
@@ -1360,6 +1446,11 @@ def execute_pipeline(
 
     def formal_generation() -> dict[str, Any]:
         selected = state["selected"]
+        account_before = response_json(
+            client.get("/api/account"),
+            "formal-generation",
+        )
+        balance_before = int(account_before.get("balance") or 0)
         idempotency_key = (
             f"menu-e2e-{mode}-{file_sha256(menu_path)[:20]}-"
             f"{selected['sha256'][:12]}-{state['menuUploadId'][-8:]}"
@@ -1413,6 +1504,41 @@ def execute_pipeline(
                 ),
                 details={"job": last_body},
             )
+        submission_billing = (
+            body.get("generationBatch")
+            if isinstance(body.get("generationBatch"), dict)
+            else {}
+        )
+        result_payload = (
+            last_body.get("result")
+            if isinstance(last_body.get("result"), dict)
+            else {}
+        )
+        terminal_billing = (
+            last_body.get("generationBatch")
+            if isinstance(last_body.get("generationBatch"), dict)
+            else result_payload.get("generationBatch")
+            if isinstance(result_payload.get("generationBatch"), dict)
+            else {}
+        )
+        charged_points = int(submission_billing.get("chargedPoints") or 0)
+        refunded_points = int(terminal_billing.get("refundedPoints") or 0)
+        account_after = response_json(
+            client.get("/api/account"),
+            "formal-generation",
+        )
+        balance_after = int(account_after.get("balance") or 0)
+        if balance_after != balance_before - charged_points + refunded_points:
+            raise AcceptanceError(
+                "formal-generation",
+                "point balance does not match the server-owned debit/refund",
+                details={
+                    "balanceBefore": balance_before,
+                    "balanceAfter": balance_after,
+                    "chargedPoints": charged_points,
+                    "refundedPoints": refunded_points,
+                },
+            )
         state["jobId"] = job_id
         state["job"] = last_body
         return {
@@ -1421,6 +1547,10 @@ def execute_pipeline(
             "status": last_status,
             "pollCount": polls,
             "requestedImageCount": expected_count,
+            "balanceBefore": balance_before,
+            "balanceAfter": balance_after,
+            "chargedPoints": charged_points,
+            "refundedPoints": refunded_points,
             "idempotencyKeySha256": sha256_bytes(
                 idempotency_key.encode("utf-8")
             ),
@@ -1446,14 +1576,24 @@ def execute_pipeline(
     run_stage(report, "manifest", manifest)
 
     def export() -> dict[str, Any]:
+        selected = state["selected"]
+        export_idempotency_key = (
+            f"export-{state['jobId']}-{file_sha256(menu_path)[:12]}"
+        )
         response = client.post(
             "/api/export",
+            headers={"Idempotency-Key": export_idempotency_key},
             json={
                 "jobId": state["jobId"],
+                "menuUploadId": state["menuUploadId"],
+                "style": selected["styleId"],
+                "backgroundAssetId": selected["assetId"],
+                "backgroundSha256": selected["sha256"],
                 "scope": "all",
                 "format": "jpg",
                 "platforms": platforms,
                 "watermark": {"enabled": False},
+                "quality": quality,
             },
         )
         body = response_json(response, "export")

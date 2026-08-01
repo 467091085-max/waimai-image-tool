@@ -178,3 +178,17 @@
   compatibility path preserves the same single-hue seamless rule and material
   label normalization, completing the frozen catalog at 40 categories / 240
   hash-lock approved assets.
+
+## Staging Generation Queue
+- Production and ordinary Render runtimes require Redis plus an independent
+  worker for durable formal-generation jobs; absence of Redis must fail before
+  point debit.
+- The protected `staging-demo` service may use the in-process queue only when
+  staging Basic Auth is configured and
+  `ALLOW_STAGING_IN_PROCESS_GENERATION=true` is explicitly set. This exception
+  is for single-worker paid-provider acceptance only and is not a production
+  architecture substitute.
+- Staging acceptance must keep Gunicorn at one worker so submission, polling,
+  manifest lookup, and export see the same ephemeral queue state. The queue
+  timeout may be raised by environment variable for a bounded full-menu run;
+  production defaults remain unchanged.
