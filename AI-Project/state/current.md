@@ -836,6 +836,16 @@ and prompt redesign.
   fixtures, not paid image quality or provider acceptance.
 - Durable catalog contract and operator sequence saved at
   `AI-Project/handoffs/2026-08-01/BACKGROUND_CATALOG_40X6.md`.
+- Render test environment audit: the Free service has no Shell and no
+  PostgreSQL environment, but its private Tencent COS configuration is ready.
+- COS manifest backend: done locally. Pending manifests remain unavailable;
+  six approved, prompt-bound, immutable-key assets are required as a complete
+  group, and tampered entries fail the category closed.
+- COS upload-only builder mode: done locally; generation can upload pending
+  objects and a pending six-slot manifest without pretending PostgreSQL review
+  registration occurred.
+- Full regression after the COS manifest backend passed `1304 passed,
+  20 skipped`.
 - Next action: review the three independent ChatGPT Pro deliverables, then add
   any evidence-backed corrections, push the staging branch, and regenerate
   only the light-food category for six-image visual acceptance before any

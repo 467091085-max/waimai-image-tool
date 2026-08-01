@@ -200,34 +200,7 @@ def register_pending_entry(
     ):
         raise ValueError("invalid background catalog actor user id")
     raw = image_path.read_bytes()
-    digest = hashlib.sha256(raw).hexdigest()
-    if digest != entry["sha256"]:
-        raise RuntimeError("background changed before catalog registration")
-    object_key = object_storage_service.validate_object_key(
-        str(entry["objectKey"])
-    )
-    storage = object_storage_service.get_object_storage_service()
-    existed = storage.exists(object_key)
-    if existed:
-        stored = object_storage_service.read_object_bytes_limited(
-            storage,
-            object_key,
-            app_module.MAX_AI_ASSET_BYTES,
-        )
-        if hashlib.sha256(stored).hexdigest() != digest:
-            raise RuntimeError("existing catalog object content changed")
-    else:
-        stored_key = storage.put_bytes(raw, object_key=object_key)
-        if stored_key != object_key:
-            raise RuntimeError("background catalog object key mismatch")
-        stored = object_storage_service.read_object_bytes_limited(
-            storage,
-            object_key,
-            app_module.MAX_AI_ASSET_BYTES,
-        )
-        if len(stored) != len(raw) or hashlib.sha256(stored).hexdigest() != digest:
-            storage.delete(object_key)
-            raise RuntimeError("background catalog read-back verification failed")
+    object_key, digest, existed = upload_pending_entry(entry, image_path)
 
     tenant_id = app_module.product_shared_asset_tenant_id()
     identity = {
@@ -290,7 +263,56 @@ def register_pending_entry(
         "reviewStatus": str(result.record["review_status"]),
         "registered": True,
         "registrationCreated": bool(result.created),
+        "uploaded": True,
     }
+
+
+def upload_pending_entry(
+    entry: dict[str, Any],
+    image_path: Path,
+) -> tuple[str, str, bool]:
+    raw = image_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != entry["sha256"]:
+        raise RuntimeError("background changed before catalog upload")
+    object_key = object_storage_service.validate_object_key(
+        str(entry["objectKey"])
+    )
+    storage = object_storage_service.get_object_storage_service()
+    existed = storage.exists(object_key)
+    if existed:
+        stored = object_storage_service.read_object_bytes_limited(
+            storage,
+            object_key,
+            app_module.MAX_AI_ASSET_BYTES,
+        )
+        if (
+            len(stored) != len(raw)
+            or hashlib.sha256(stored).hexdigest() != digest
+        ):
+            raise RuntimeError("existing catalog object content changed")
+        return object_key, digest, True
+
+    stored_key = storage.put_bytes(raw, object_key=object_key)
+    if stored_key != object_key:
+        raise RuntimeError("background catalog object key mismatch")
+    try:
+        stored = object_storage_service.read_object_bytes_limited(
+            storage,
+            object_key,
+            app_module.MAX_AI_ASSET_BYTES,
+        )
+        if (
+            len(stored) != len(raw)
+            or hashlib.sha256(stored).hexdigest() != digest
+        ):
+            raise RuntimeError(
+                "background catalog read-back verification failed"
+            )
+    except Exception:
+        storage.delete(object_key)
+        raise
+    return object_key, digest, False
 
 
 def upload_category_manifest(
@@ -362,6 +384,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--upload-pending", action="store_true")
     parser.add_argument("--register-pending", action="store_true")
     parser.add_argument(
         "--actor-user-id",
@@ -389,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         "categories": list(categories),
         "styles": list(styles),
         "execute": bool(args.execute),
+        "uploadPending": bool(args.upload_pending),
         "registerPending": bool(args.register_pending),
     }
     if not args.execute:
@@ -438,6 +462,9 @@ def main(argv: list[str] | None = None) -> int:
                     image_path,
                     actor_user_id=args.actor_user_id,
                 )
+            elif args.upload_pending and not entry.get("uploaded"):
+                upload_pending_entry(entry, image_path)
+                entry = {**entry, "uploaded": True}
             write_json(sidecar_path, entry)
             entries.append(entry)
             print(
@@ -468,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     manifest_keys = []
-    if args.register_pending:
+    if args.register_pending or args.upload_pending:
         for category_id in categories:
             category_entries = [
                 entry

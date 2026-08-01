@@ -88,6 +88,12 @@ as `pending`. Generation never auto-approves an asset. A category is customer
 ready only when exactly one approved record exists for every one of its six
 slots. Missing or duplicate approved records fail the category closed.
 
+The catalog can read approval state from PostgreSQL or, for the current Render
+test service that has private COS but no PostgreSQL, from the category manifest
+stored at the versioned COS manifest key. The COS backend also verifies the
+current prompt SHA, immutable object key, image SHA, file size, category, style,
+taxonomy, and top-level approval before exposing any asset.
+
 ## Operator Sequence
 
 1. Confirm the exact plan without spending provider credits:
@@ -97,6 +103,16 @@ slots. Missing or duplicate approved records fail the category closed.
    ```
 
 2. Generate only the light-food pilot in the staging environment:
+
+   ```bash
+   python scripts/build_background_catalog.py \
+     --category light_food \
+     --execute \
+     --upload-pending
+   ```
+
+   When PostgreSQL is available, the same run can additionally register the
+   pending records:
 
    ```bash
    python scripts/build_background_catalog.py \

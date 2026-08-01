@@ -166,3 +166,52 @@ def test_register_entry_writes_shared_private_object_pending(
     assert call["category_id"] == "light_food"
     assert call["style_id"] == "style-1"
     assert call["pipeline_version"] == "style-background.v8"
+
+
+def test_upload_pending_entry_writes_cos_object_without_registration(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "light_food" / "style-1.jpg"
+    save_test_image(target)
+    fingerprint = builder.app_module.image_file_fingerprint(target)
+    prompt = builder.background_profiles.pure_background_prompt(
+        "light_food",
+        "style-1",
+    )
+    prompt_sha = builder.hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    entry = {
+        "sha256": fingerprint["sha256"],
+        "objectKey": builder.background_catalog.catalog_object_key(
+            category_id="light_food",
+            style_id="style-1",
+            prompt_version=builder.PROMPT_VERSION,
+            prompt_sha256=prompt_sha,
+            asset_sha256=fingerprint["sha256"],
+        ),
+    }
+    storage = object_storage_service.ObjectStorageService(
+        tmp_path / "objects"
+    )
+
+    with mock.patch.object(
+        builder.object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        object_key, digest, existed = builder.upload_pending_entry(
+            entry,
+            target,
+        )
+
+    assert existed is False
+    assert digest == fingerprint["sha256"]
+    assert object_key == entry["objectKey"]
+    assert storage.read_bytes(object_key) == target.read_bytes()
+
+    with mock.patch.object(
+        builder.object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        replay = builder.upload_pending_entry(entry, target)
+    assert replay == (object_key, digest, True)

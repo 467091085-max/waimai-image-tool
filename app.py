@@ -568,6 +568,12 @@ def approved_background_catalog_enabled() -> bool:
     return env_truthy("BACKGROUND_CATALOG_APPROVED_ONLY", default=False)
 
 
+def background_catalog_manifest_backend() -> str:
+    return str(
+        os.environ.get("BACKGROUND_CATALOG_MANIFEST_BACKEND") or "postgres"
+    ).strip().lower()
+
+
 def is_safe_style_id(style_id: str) -> bool:
     return bool(SAFE_STYLE_ID_RE.fullmatch(str(style_id or "")))
 
@@ -5889,10 +5895,207 @@ def materialize_reusable_background_asset(
     return record, metadata
 
 
+def object_storage_background_catalog_manifest(
+    base: dict[str, Any],
+    *,
+    category_id: str,
+    prompt_version: str,
+) -> dict[str, Any]:
+    empty = {
+        **base,
+        "status": "incomplete",
+        "ready": False,
+        "code": "background_catalog_incomplete",
+        "approvedCount": 0,
+        "missingStyleIds": list(background_catalog.STYLE_IDS),
+        "duplicateStyleIds": [],
+        "pendingCount": 0,
+        "rejectedCount": 0,
+        "assets": [],
+        "_recordsByStyle": {},
+    }
+    readiness = object_storage_service.assess_object_storage_readiness()
+    if not readiness.get("ready"):
+        return {
+            **empty,
+            "status": "unavailable",
+            "code": "background_catalog_unavailable",
+        }
+    key = background_catalog.catalog_manifest_key(
+        category_id,
+        prompt_version,
+        tenant_id=product_shared_asset_tenant_id(),
+    )
+    try:
+        raw = object_storage_service.read_object_bytes_limited_if_exists(
+            object_storage_service.get_object_storage_service(),
+            key,
+            2 * 1024 * 1024,
+        )
+        if raw is None:
+            return empty
+        document = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        app.logger.error(
+            "Background catalog manifest read failed for %s: %s",
+            category_id,
+            type(exc).__name__,
+        )
+        return {
+            **empty,
+            "status": "unavailable",
+            "code": "background_catalog_unavailable",
+        }
+    if not isinstance(document, dict):
+        return empty
+    expected_document = {
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": TAXONOMY_VERSION,
+        "categoryId": category_id,
+        "promptVersion": prompt_version,
+    }
+    if any(document.get(name) != value for name, value in expected_document.items()):
+        return empty
+
+    catalog_approved = str(
+        document.get("reviewStatus") or ""
+    ).lower() == "approved"
+    entries: list[dict[str, Any]] = []
+    records_by_style: dict[str, list[dict[str, Any]]] = {}
+    invalid_style_ids: list[str] = []
+    raw_assets = document.get("assets")
+    if not isinstance(raw_assets, list) or len(raw_assets) > 100:
+        return empty
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            continue
+        style_id = str(raw_asset.get("styleId") or "")
+        if style_id not in background_catalog.STYLE_IDS:
+            continue
+        prompt = background_profiles.pure_background_prompt(
+            category_id,
+            style_id,
+        )
+        prompt_sha256 = hashlib.sha256(
+            prompt.encode("utf-8")
+        ).hexdigest()
+        asset_sha256 = str(raw_asset.get("sha256") or "").lower()
+        object_key = str(raw_asset.get("objectKey") or "")
+        try:
+            file_size = int(raw_asset.get("fileSize") or 0)
+        except (TypeError, ValueError):
+            invalid_style_ids.append(style_id)
+            continue
+        suffix = Path(object_key).suffix.lower()
+        try:
+            expected_key = background_catalog.catalog_object_key(
+                category_id=category_id,
+                style_id=style_id,
+                prompt_version=prompt_version,
+                prompt_sha256=prompt_sha256,
+                asset_sha256=asset_sha256,
+                suffix=suffix,
+                tenant_id=product_shared_asset_tenant_id(),
+            )
+        except (TypeError, ValueError):
+            invalid_style_ids.append(style_id)
+            continue
+        valid = bool(
+            str(raw_asset.get("catalogVersion") or "")
+            == background_catalog.CATALOG_VERSION
+            and str(raw_asset.get("taxonomyVersion") or "")
+            == TAXONOMY_VERSION
+            and str(raw_asset.get("categoryId") or "") == category_id
+            and str(raw_asset.get("promptVersion") or "")
+            == prompt_version
+            and str(raw_asset.get("promptSha256") or "").lower()
+            == prompt_sha256
+            and object_key == expected_key
+            and 0 < file_size <= MAX_AI_ASSET_BYTES
+        )
+        if not valid:
+            invalid_style_ids.append(style_id)
+            continue
+        review_status = str(
+            raw_asset.get("reviewStatus") or "pending"
+        ).lower()
+        if not catalog_approved:
+            review_status = "pending"
+        entry = {
+            "catalogVersion": background_catalog.CATALOG_VERSION,
+            "taxonomyVersion": TAXONOMY_VERSION,
+            "categoryId": category_id,
+            "categoryName": background_catalog.category_label(category_id),
+            "styleId": style_id,
+            "styleSlotId": background_catalog.style_slot(style_id).slot_id,
+            "promptVersion": prompt_version,
+            "promptSha256": prompt_sha256,
+            "pipelineVersion": prompt_version,
+            "provider": str(raw_asset.get("provider") or ""),
+            "model": str(raw_asset.get("model") or ""),
+            "assetRecordId": str(
+                raw_asset.get("assetRecordId")
+                or f"cos-catalog-{asset_sha256[:32]}"
+            ),
+            "sha256": asset_sha256,
+            "fileSize": file_size,
+            "reviewStatus": review_status,
+            "reviewedAt": raw_asset.get("reviewedAt"),
+            "createdAt": raw_asset.get("createdAt"),
+        }
+        entries.append(entry)
+        if review_status == "approved":
+            records_by_style.setdefault(style_id, []).append(
+                {
+                    "id": entry["assetRecordId"],
+                    "taxonomy_version": TAXONOMY_VERSION,
+                    "category_id": category_id,
+                    "category_name": entry["categoryName"],
+                    "style_id": style_id,
+                    "prompt_version": prompt_version,
+                    "pipeline_version": prompt_version,
+                    "source_provider": entry["provider"],
+                    "model_name": entry["model"],
+                    "original_object_ref": object_key,
+                    "original_sha256": asset_sha256,
+                    "original_size_bytes": file_size,
+                    "review_status": "approved",
+                    "reviewed_at": entry["reviewedAt"],
+                    "created_at": entry["createdAt"],
+                }
+            )
+
+    status = background_catalog.category_manifest_status(
+        entries,
+        category_id=category_id,
+        prompt_version=prompt_version,
+    )
+    if invalid_style_ids:
+        status = {
+            **status,
+            "status": "incomplete",
+            "ready": False,
+            "invalidStyleIds": sorted(set(invalid_style_ids)),
+        }
+    unique_records = {
+        style_id: matches[0]
+        for style_id, matches in records_by_style.items()
+        if len(matches) == 1
+    }
+    return {
+        **base,
+        **status,
+        "code": "" if status["ready"] else "background_catalog_incomplete",
+        "_recordsByStyle": unique_records,
+    }
+
+
 def approved_background_catalog_manifest() -> dict[str, Any]:
     context = active_category_context()
     category_id = str(context.get("taxonomyId") or "")
     prompt_version = product_asset_prompt_version("category_background")
+    backend = background_catalog_manifest_backend()
     base = {
         "mode": "approved",
         "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
@@ -5905,6 +6108,7 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
             context.get("selectionReason") or ""
         ),
         "promptVersion": prompt_version,
+        "manifestBackend": backend,
     }
     if category_id not in background_catalog.CATEGORY_LABELS:
         return {
@@ -5912,6 +6116,24 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
             "status": "classification_review",
             "ready": False,
             "code": "background_category_review_required",
+            "approvedCount": 0,
+            "missingStyleIds": list(background_catalog.STYLE_IDS),
+            "duplicateStyleIds": [],
+            "assets": [],
+            "_recordsByStyle": {},
+        }
+    if backend == "object-storage":
+        return object_storage_background_catalog_manifest(
+            base,
+            category_id=category_id,
+            prompt_version=prompt_version,
+        )
+    if backend != "postgres":
+        return {
+            **base,
+            "status": "unavailable",
+            "ready": False,
+            "code": "background_catalog_unavailable",
             "approvedCount": 0,
             "missingStyleIds": list(background_catalog.STYLE_IDS),
             "duplicateStyleIds": [],

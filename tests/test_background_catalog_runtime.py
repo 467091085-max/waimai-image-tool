@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
+import json
 from unittest import mock
 
 import app as app_module
 import background_catalog
+import background_profiles
+import object_storage_service
 
 
 def approved_record(style_id: str, *, suffix: str = "") -> dict[str, object]:
@@ -186,3 +190,151 @@ def test_approved_only_style_does_not_fall_back_to_live_generation() -> None:
     assert candidate["generationAction"] == "CatalogIncomplete"
     assert candidate["generationErrorCode"] == "background_catalog_incomplete"
     provider.assert_not_called()
+
+
+def cos_manifest_document(
+    storage: object_storage_service.ObjectStorageService,
+    *,
+    review_status: str = "approved",
+    tamper_style: str = "",
+) -> dict[str, object]:
+    assets = []
+    for style_id in background_catalog.STYLE_IDS:
+        raw = f"background-{style_id}".encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        prompt = background_profiles.pure_background_prompt(
+            "light_food",
+            style_id,
+        )
+        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        object_key = background_catalog.catalog_object_key(
+            category_id="light_food",
+            style_id=style_id,
+            prompt_version="style-background.v8",
+            prompt_sha256=prompt_sha,
+            asset_sha256=digest,
+        )
+        storage.put_bytes(raw, object_key=object_key)
+        assets.append(
+            {
+                "catalogVersion": background_catalog.CATALOG_VERSION,
+                "taxonomyVersion": app_module.TAXONOMY_VERSION,
+                "categoryId": "light_food",
+                "categoryName": "轻食/沙拉",
+                "styleId": style_id,
+                "promptVersion": "style-background.v8",
+                "promptSha256": (
+                    "0" * 64 if style_id == tamper_style else prompt_sha
+                ),
+                "provider": "tencent-hunyuan",
+                "model": "hy-image-v3.0",
+                "objectKey": object_key,
+                "sha256": digest,
+                "fileSize": len(raw),
+                "reviewStatus": review_status,
+                "createdAt": "2026-08-01T00:00:00Z",
+            }
+        )
+    return {
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": app_module.TAXONOMY_VERSION,
+        "categoryId": "light_food",
+        "categoryName": "轻食/沙拉",
+        "promptVersion": "style-background.v8",
+        "reviewStatus": review_status,
+        "assets": assets,
+    }
+
+
+def cos_manifest_patches(
+    storage: object_storage_service.ObjectStorageService,
+):
+    return (
+        mock.patch.object(
+            app_module,
+            "active_category_context",
+            side_effect=light_food_context,
+        ),
+        mock.patch.object(
+            app_module,
+            "background_catalog_manifest_backend",
+            return_value="object-storage",
+        ),
+        mock.patch.object(
+            app_module.object_storage_service,
+            "assess_object_storage_readiness",
+            return_value={"ready": True},
+        ),
+        mock.patch.object(
+            app_module.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+    )
+
+
+def write_cos_manifest(
+    storage: object_storage_service.ObjectStorageService,
+    document: dict[str, object],
+) -> None:
+    storage.put_bytes(
+        json.dumps(document, ensure_ascii=False).encode("utf-8"),
+        object_key=background_catalog.catalog_manifest_key(
+            "light_food",
+            "style-background.v8",
+        ),
+    )
+
+
+def test_complete_approved_cos_manifest_is_ready(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    write_cos_manifest(storage, cos_manifest_document(storage))
+    patches = cos_manifest_patches(storage)
+
+    with patches[0], patches[1], patches[2], patches[3]:
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["manifestBackend"] == "object-storage"
+    assert manifest["ready"] is True
+    assert manifest["approvedCount"] == 6
+    assert set(manifest["_recordsByStyle"]) == set(
+        background_catalog.STYLE_IDS
+    )
+    assert manifest["_recordsByStyle"]["style-1"][
+        "original_object_ref"
+    ].startswith("ai-assets/waimai-shared/background-catalog/")
+
+
+def test_pending_cos_manifest_fails_closed(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    write_cos_manifest(
+        storage,
+        cos_manifest_document(storage, review_status="pending"),
+    )
+    patches = cos_manifest_patches(storage)
+
+    with patches[0], patches[1], patches[2], patches[3]:
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is False
+    assert manifest["approvedCount"] == 0
+    assert manifest["pendingCount"] == 6
+    assert manifest["_recordsByStyle"] == {}
+
+
+def test_tampered_cos_prompt_hash_fails_closed(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    write_cos_manifest(
+        storage,
+        cos_manifest_document(storage, tamper_style="style-3"),
+    )
+    patches = cos_manifest_patches(storage)
+
+    with patches[0], patches[1], patches[2], patches[3]:
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is False
+    assert manifest["invalidStyleIds"] == ["style-3"]
+    assert "style-3" in manifest["missingStyleIds"]
+    assert "style-3" not in manifest["_recordsByStyle"]
