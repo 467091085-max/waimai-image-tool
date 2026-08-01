@@ -4,18 +4,15 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 91 in progress: replace per-menu live background generation with a
-reviewed 40-category x 6-style background catalog. Provider transport is live,
-and the catalog/COS contract is implemented. The first real `light_food` v9
-pilot is intentionally rejected because four of six images contain a raised
-plinth or rectangular mat. The paid v10 pilot is also rejected: it removed the
-small plinths but still produced a paper-sheet seam and table-front slabs.
-Prompt v11 now uses the actual Hunyuan 3.0 `Revise=0` and fixed-seed contract;
-its six-image staging pilot has generated successfully and passed visual review.
-Hash-locked approval, COS object resume, per-category checkpoints, and review
-contact sheets are implemented and locally verified. The next gate is to deploy
-that operator flow, approve the six exact light-food hashes, then start the
-remaining 39 categories in resumable batches.
+Step 91 in progress: build and visually approve the complete 40-category x
+6-style background catalog. The `light_food` v11 pilot is approved with six
+hash-locked COS objects. The first resumable five-category batch
+(`topped_rice`, `mixed_rice`, `porridge_soup_rice`, `rice_noodles`, and
+`wheat_noodles`) completed on the isolated Render staging service while
+Gunicorn remained live: 30 of 30 assets passed generation, immutable COS
+upload, and read-back verification with zero failures. All five durable
+manifests and SHA-addressed 3-by-2 contact sheets remain pending while their
+visual review is performed.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -74,6 +71,26 @@ remaining 39 categories in resumable batches.
 - Approval operation deploy `dep-d9mu8he1egvs73f0980g` succeeded; the service
   was restored to normal Gunicorn start command and deploy
   `dep-d9mu95daeets73aqmh8g` is live
+- First remaining-category batch deploy `dep-d9muan2jnfac739vofpg` is live and
+  completed the five-category catalog builder in the background. The final
+  report is `complete=true`, `completedAssetCount=30`, and `failureCount=0`;
+  all new assets remain `pending` until visual review.
+- Tencent console confirms `hy-image-v3.0` is running with per-image billing
+  enabled. Its free allowance is exhausted, but postpaid service is active;
+  the batch therefore did not depend on a free quota.
+- First-batch visual gate: `topped_rice` and `mixed_rice` passed and are now
+  hash-lock approved, bringing the approved catalog to 3 categories / 18
+  assets including `light_food`. `rice_noodles` failed because four table
+  slots became segmented color-block surfaces and style 5 added a second
+  table plane. `porridge_soup_rice` and `wheat_noodles` remain pending because
+  their second solid slot became a large decorative wood arch.
+- Prompt-profile v10 compatibility patch is locally implemented: the 18
+  approved v11 prompt hashes are frozen, while all unapproved flat-table
+  prompts require one material and one color and forbid patchwork/inlay/color
+  blocking. The unapproved second solid slot now uses the second palette
+  color. Focused verification passed `28 passed`; complete regression passed
+  `1315 passed, 20 skipped`, and scoped compilation plus `git diff --check`
+  passed.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import background_profiles
 from matching_engine import TAXONOMY_RULES
 
@@ -51,7 +53,7 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         assert all("轻食沙拉场景" not in prompt for prompt in prompts)
         assert all("轻食/沙拉商品" not in prompt for prompt in prompts)
         assert all("点缀" not in prompt for prompt in prompts)
-        assert all(len(prompt) <= 520 for prompt in prompts)
+        assert all(len(prompt) <= 620 for prompt in prompts)
 
 
 def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None:
@@ -71,6 +73,65 @@ def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None
     assert "一张普通浅色石材餐桌的连续桌面" in prompt
     assert "从左右与下边缘铺满" in prompt
     assert "桌面前沿和厚度位于画幅下方不可见" in prompt
+
+
+def test_unapproved_v11_profiles_forbid_multicolor_table_surfaces() -> None:
+    table = background_profiles.pure_background_prompt(
+        "rice_noodles",
+        "style-3",
+    )
+    porridge_cool = background_profiles.pure_background_prompt(
+        "porridge_soup_rice",
+        "style-2",
+    )
+    wheat_cool = background_profiles.pure_background_prompt(
+        "wheat_noodles",
+        "style-2",
+    )
+
+    assert "ONE MATERIAL, ONE COLOR TABLETOP" in table
+    assert "桌面禁止拼色、拼花、镶嵌、分区或混合材质" in table
+    assert "暖白、陶土红与青灰配色" not in table
+    assert "仅以燕麦色为唯一主色" in porridge_cool
+    assert "仅以暖灰为唯一主色" in wheat_cool
+
+
+def test_approved_v11_prompt_hashes_remain_frozen() -> None:
+    expected = {
+        "light_food": {
+            "style-1": "c149a36abed30e65ba945835b50289ae3f0551dd5a36aa5a4550feb5d4248d20",
+            "style-2": "5f2410da9c9bbc5038e8235808a2b84b3891f16f5ae96b046e1d7e3fedfa23c6",
+            "style-3": "55f07a690850dbc0c108045a9a36f67bca40a7b9e53027b5897a6303470e1b82",
+            "style-4": "5301e218b432e985539ce8e9412440e90db73745aa3525c071730f971a718487",
+            "style-5": "04d909cc3c24e95b389eeaa1af9b27261e2c18928dff6d14a6d51b87c8cf8d2c",
+            "style-6": "ddc68a34f450cf5e1eb6d0960ce6491debdb9cab59f5eb059ddace5dc98696e7",
+        },
+        "topped_rice": {
+            "style-1": "fb9bc0f51542c92433dd1731daab1c72926bb5cae0889b18db7572742dbdb5a6",
+            "style-2": "ff5a57e325a0338693863ae2879b1b11cef7e81fb62f271cd7a2ac761a7fd222",
+            "style-3": "2ae04993aa9d8356f9cdcf95b53cdf768b99e97ab7f867731bea3f399c94a5a7",
+            "style-4": "662f10e4d062a62d1ec13d6a788c065424ea3d993c12cff3fbbf4739e19c57d5",
+            "style-5": "f11c77f1846f8088fb7d7fdf9ac11261a5c88fd4425e0579b7a8368d834dd280",
+            "style-6": "0d56d547410e95035fec2fa9285f86aba9885d26f56f4a4ea49a7db3bf171369",
+        },
+        "mixed_rice": {
+            "style-1": "1508c2eb9ff731d3c6db825777a34f7c7ec5541d90e385c63cc96bf82bb64dc5",
+            "style-2": "83bf46169926262830d4d25fe9df9a91ee073de5fd0f9bffd5ba1b926c7dc3b4",
+            "style-3": "aaa6091df4665ea748c3c7db2b541fbdcfd1f946505d3315d06ccfe2215928c3",
+            "style-4": "1e1fb1f046fdd2aa23ab6db302811e5eb6df9ec14bdd56b2bd42c1ce7489924e",
+            "style-5": "a80c5ead30c1d221072b2957351fd267ff612606d8b1f3fcd5736054b5430fdd",
+            "style-6": "5223b7a7adde018432dd8671a6000321834f802fa578c445e0cc40b413a091b0",
+        },
+    }
+
+    assert background_profiles.FROZEN_V11_PROMPT_CATEGORIES == set(expected)
+    for category_id, hashes in expected.items():
+        for style_id, expected_hash in hashes.items():
+            prompt = background_profiles.pure_background_prompt(
+                category_id,
+                style_id,
+            )
+            assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:

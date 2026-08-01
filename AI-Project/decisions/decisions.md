@@ -136,3 +136,13 @@
   write. Provider success and a contact sheet never auto-approve a category.
 - Do not spend the remaining 39-category batch until the six-slot v11 pilot
   passes exact-object visual review.
+- Approved v11 prompt bytes are immutable compatibility data. `light_food`,
+  `topped_rice`, and `mixed_rice` keep their exact 18 prompt SHA-256 values so
+  later prompt tuning cannot invalidate their hash-locked COS manifests.
+- For every still-unapproved category, flat-table prompts use one table
+  material and one table color only. Category palette belongs on the wall and
+  may not create patchwork, mosaic, inlay, panels, color blocking, or mixed
+  materials on the tabletop.
+- The second seamless-solid slot uses the second palette color for unapproved
+  categories. This avoids treating a third palette value such as `浅木色` or
+  `深木色` as a physical wood panel or decorative arch.

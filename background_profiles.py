@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v9"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v10"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -76,6 +76,11 @@ BACKGROUND_SCENES = {
     "fruit": "水果果切场景，冷白、清水蓝与嫩绿配色，明亮清凉矿物材质",
 }
 
+# These v11 prompt bytes already back hash-locked approved COS manifests.
+FROZEN_V11_PROMPT_CATEGORIES = frozenset(
+    {"light_food", "topped_rice", "mixed_rice"}
+)
+
 MIXED_SCENE = "复合餐饮菜单场景，中性商业摄影台面，兼容深碗、浅盘和餐盒轮廓"
 
 _RULES_BY_ID = {
@@ -120,13 +125,26 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
     slot = background_catalog.style_slot(style_id)
     scene = BACKGROUND_SCENES.get(normalized_category, MIXED_SCENE)
+    match = re.search(r"场景，(.+?)配色，", scene)
+    palette = re.split(r"[、与和]", match.group(1)) if match else []
+    colors = [color.strip() for color in palette if color.strip()]
     if slot.scene_type == "seamless-solid":
-        match = re.search(r"场景，(.+?)配色，", scene)
-        palette = re.split(r"[、与和]", match.group(1)) if match else []
-        colors = [color.strip() for color in palette if color.strip()]
-        color_index = 0 if style_id == "style-1" else -1
+        if style_id == "style-1":
+            color_index = 0
+        elif normalized_category in FROZEN_V11_PROMPT_CATEGORIES:
+            color_index = -1
+        else:
+            color_index = 1 if len(colors) > 1 else -1
         color = colors[color_index] if colors else "低饱和中性色"
         return f"仅以{color}为唯一主色；{slot.prompt}"
+    if normalized_category not in FROZEN_V11_PROMPT_CATEGORIES:
+        wall_color = colors[0] if colors else "低饱和中性色"
+        return (
+            f"背景墙仅以{wall_color}为主色；ONE MATERIAL, ONE COLOR "
+            "TABLETOP. NO PATCHWORK, INLAY OR COLOR BLOCKING. "
+            "桌面禁止拼色、拼花、镶嵌、分区或混合材质；"
+            f"{slot.prompt}"
+        )
     prompt = style_prompt(normalized_category, style_id)
     prompt = re.sub(r"^[^，；。]+场景，", "", prompt)
     prompt = re.sub(r"(?:适合|兼容)[^，；。]+轮廓，?", "", prompt)
