@@ -15,9 +15,13 @@ paid call. The current five-category staging batch completed 30/30 with zero
 provider failures. `hotpot_skewers` and `barbecue` passed exact COS visual
 review. `fried_chicken`, `burger_hotdog`, and `pizza` remain rejected because
 individual slots contain a two-color solid scene, exposed table-front plane,
-or curled paper/cyclorama artifact. A minimal selective-slot regeneration path
-is now implemented and fully tested; the next action is deployment and paid
-replacement of only the rejected slots while preserving verified remote assets.
+or curled paper/cyclorama artifact. Selective replacement deploy
+`dep-d9mvhdajnfac73a2effg` proved the preserve-and-replace flow in real COS and
+approved `hotpot_skewers` plus `barbecue`, bringing the checkpoint to 12
+categories / 72 assets. Alternate seeds improved table slots but the two-color
+solid scenes persisted. The prompt root cause is the contradictory word
+`辅色`; profile v11 now requires the same hue across wall, curve, and floor while
+freezing every approved prompt hash.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -133,6 +137,22 @@ replacement of only the rejected slots while preserving verified remote assets.
 - Selective-regeneration focused tests passed `16 passed`; full regression
   passed `1320 passed, 20 skipped`; Python compilation and `git diff --check`
   passed.
+- Hash-lock approved `hotpot_skewers` at `2026-08-01T13:47:17Z` and
+  `barbecue` at `2026-08-01T13:47:47Z`; the catalog checkpoint is 12 categories
+  / 72 approved assets.
+- Real selective regeneration completed 5/5 provider calls and preserved all
+  unselected remote hashes. New table slots improved, but alternate seeds did
+  not cure the repeated two-color solid scenes in `fried_chicken` and
+  `burger_hotdog`.
+- Prompt profile v11 removes the ambiguous `辅色` instruction for all unapproved
+  style-2 slots and requires one identical hue across wall, architectural
+  curve, and floor. Exact prompt bytes for all 12 approved categories are
+  frozen. Selective replacement may accept a stale prompt hash only for the
+  exact slot being replaced; every preserved slot still requires its current
+  prompt hash and COS byte hash.
+- Profile-v11 and selective stale-prompt focused verification passed `29
+  passed`; full regression passed `1322 passed, 20 skipped`; Python compilation,
+  maximum prompt-length check, and `git diff --check` passed.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

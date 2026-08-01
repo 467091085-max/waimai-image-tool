@@ -124,8 +124,14 @@ def remote_category_manifest_document(
 
 def reusable_remote_category_entries(
     category_id: str,
+    *,
+    replace_style_ids: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]] | None:
     category = background_catalog.normalize_category_id(category_id)
+    replacement_styles = {
+        background_catalog.style_slot(style_id).style_id
+        for style_id in replace_style_ids
+    }
     document = remote_category_manifest_document(category)
     if document is None:
         return None
@@ -167,12 +173,22 @@ def reusable_remote_category_entries(
             category,
             style_id,
         )
-        prompt_sha256 = hashlib.sha256(
+        current_prompt_sha256 = hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest()
+        stored_prompt_sha256 = str(
+            raw_asset.get("promptSha256") or ""
+        ).lower()
+        prompt_sha256 = (
+            stored_prompt_sha256
+            if style_id in replacement_styles
+            else current_prompt_sha256
+        )
         asset_sha256 = str(raw_asset.get("sha256") or "").lower()
         object_key = str(raw_asset.get("objectKey") or "")
-        if not background_catalog.SHA256_RE.fullmatch(asset_sha256):
+        if not background_catalog.SHA256_RE.fullmatch(
+            prompt_sha256
+        ) or not background_catalog.SHA256_RE.fullmatch(asset_sha256):
             return None
         try:
             file_size = int(raw_asset.get("fileSize") or 0)
@@ -728,7 +744,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.upload_pending and not args.register_pending:
         for category_id in categories:
             try:
-                reusable = reusable_remote_category_entries(category_id)
+                reusable = reusable_remote_category_entries(
+                    category_id,
+                    replace_style_ids=(
+                        set(styles)
+                        if args.regenerate_selected
+                        else set()
+                    ),
+                )
             except Exception as exc:
                 detail = re.sub(r"\s+", " ", str(exc))[:300]
                 print(

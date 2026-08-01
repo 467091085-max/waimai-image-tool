@@ -204,8 +204,23 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
         return_value=storage,
     ):
         original_hashes = pending_category(tmp_path, storage)
+        original_prompt = builder.background_profiles.pure_background_prompt
+
+        def changed_selected_prompt(category_id: str, style_id: str) -> str:
+            prompt = original_prompt(category_id, style_id)
+            return (
+                prompt + "; stricter solid color"
+                if style_id == "style-2"
+                else prompt
+            )
+
         with (
             mock.patch.object(builder.app_module, "tencent_ready", return_value=True),
+            mock.patch.object(
+                builder.background_profiles,
+                "pure_background_prompt",
+                side_effect=changed_selected_prompt,
+            ),
             mock.patch.object(
                 builder.app_module,
                 "tencent_api_request",
@@ -277,6 +292,13 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
         if style_id != "style-2"
     }
     assert document["reviewStatus"] == "pending"
+    replacement_prompts = {
+        asset["styleId"]: asset["promptSha256"]
+        for asset in document["assets"]
+    }
+    assert replacement_prompts["style-2"] == builder.hashlib.sha256(
+        changed_selected_prompt("light_food", "style-2").encode("utf-8")
+    ).hexdigest()
     assert all(
         "remoteManifestReused" not in asset
         for asset in document["assets"]

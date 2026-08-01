@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v10"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v11"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -80,6 +80,23 @@ BACKGROUND_SCENES = {
 FROZEN_V11_PROMPT_CATEGORIES = frozenset(
     {"light_food", "topped_rice", "mixed_rice"}
 )
+FROZEN_PROFILE_V10_PROMPT_CATEGORIES = frozenset(
+    {
+        "porridge_soup_rice",
+        "rice_noodles",
+        "wheat_noodles",
+        "dumpling_wonton",
+        "buns_dim_sum",
+        "chinese_wraps",
+        "malatang_maocai",
+        "hotpot_skewers",
+        "barbecue",
+    }
+)
+HASH_LOCKED_PROMPT_CATEGORIES = (
+    FROZEN_V11_PROMPT_CATEGORIES
+    | FROZEN_PROFILE_V10_PROMPT_CATEGORIES
+)
 
 MIXED_SCENE = "复合餐饮菜单场景，中性商业摄影台面，兼容深碗、浅盘和餐盒轮廓"
 
@@ -136,6 +153,19 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
         else:
             color_index = 1 if len(colors) > 1 else -1
         color = colors[color_index] if colors else "低饱和中性色"
+        if (
+            style_id == "style-2"
+            and normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES
+        ):
+            single_color_prompt = slot.prompt.replace(
+                "单一低饱和辅色",
+                "同一色相的单一低饱和纯色",
+            )
+            return (
+                f"仅以{color}为唯一主色；墙面、建筑圆弧和地面必须全部使用"
+                f"{color}同一色相，仅允许自然明暗变化，地面不得变成另一色相，"
+                f"禁止任何第二色地面；{single_color_prompt}"
+            )
         return f"仅以{color}为唯一主色；{slot.prompt}"
     if normalized_category not in FROZEN_V11_PROMPT_CATEGORIES:
         wall_color = colors[0] if colors else "低饱和中性色"

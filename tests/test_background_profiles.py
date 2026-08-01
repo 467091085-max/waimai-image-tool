@@ -96,6 +96,22 @@ def test_unapproved_v11_profiles_forbid_multicolor_table_surfaces() -> None:
     assert "仅以暖灰为唯一主色" in wheat_cool
 
 
+def test_unapproved_cool_solid_uses_one_hue_on_wall_curve_and_floor() -> None:
+    for category_id, color in (
+        ("fried_chicken", "番茄红"),
+        ("burger_hotdog", "芥末黄"),
+        ("pizza", "奶油白"),
+    ):
+        prompt = background_profiles.pure_background_prompt(
+            category_id,
+            "style-2",
+        )
+        assert f"墙面、建筑圆弧和地面必须全部使用{color}同一色相" in prompt
+        assert "地面不得变成另一色相" in prompt
+        assert "禁止任何第二色地面" in prompt
+        assert "单一低饱和辅色" not in prompt
+
+
 def test_approved_v11_prompt_hashes_remain_frozen() -> None:
     expected = {
         "light_food": {
@@ -132,6 +148,35 @@ def test_approved_v11_prompt_hashes_remain_frozen() -> None:
                 style_id,
             )
             assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
+
+
+def test_approved_profile_v10_cool_prompt_hashes_remain_frozen() -> None:
+    expected = {
+        "porridge_soup_rice": "3d511d95fed044b4ec442d2b28e1c64ac271afdad518f2caac044fe88dc519bb",
+        "rice_noodles": "31b6486bb0a56acdf55ee4074e612a267050fa728b746d0c488235d20bfd9efb",
+        "wheat_noodles": "423d0bab42edd75194e3c7a7b0431d9d9394145a49f6f59f73ffc3ce146117d9",
+        "dumpling_wonton": "92acd2dd28cebe9b464bc437c240ce0748cc06003e42ec626ce1f3d2fc584551",
+        "buns_dim_sum": "f1158dfafd1ccfd34d5f8fb615ddba1c9d06171ca8116e6c53a9d495fdb326f1",
+        "chinese_wraps": "567dd68a1bc610907f180721002a3d48046a9799ec5ba180b881f659b382ad00",
+        "malatang_maocai": "1063192026dcf27e9b5af51d8faaffcef09763da33d78821f4a2955504530152",
+        "hotpot_skewers": "7e0324a4536cedd039ea2b9483a904dc8e3d5ef7e282a8b336ca2b9067919e27",
+        "barbecue": "fc8e6c0bc0660b21e445c3d0b24759a682c6fcb2c47105165e4ce0684981fc71",
+    }
+
+    assert (
+        background_profiles.FROZEN_PROFILE_V10_PROMPT_CATEGORIES
+        == set(expected)
+    )
+    assert background_profiles.HASH_LOCKED_PROMPT_CATEGORIES == (
+        background_profiles.FROZEN_V11_PROMPT_CATEGORIES
+        | set(expected)
+    )
+    for category_id, expected_hash in expected.items():
+        prompt = background_profiles.pure_background_prompt(
+            category_id,
+            "style-2",
+        )
+        assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:
