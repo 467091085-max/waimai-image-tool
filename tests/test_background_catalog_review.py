@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 import object_storage_service
 from scripts import build_background_catalog as builder
 from scripts import review_background_catalog as review
@@ -189,6 +191,146 @@ def test_execute_uploads_category_checkpoint_and_review_sheet(
     assert document["reviewStatus"] == "pending"
     assert len(document["assets"]) == 6
     assert storage.exists(document["reviewSheet"]["objectKey"])
+
+
+def test_selective_regeneration_replaces_only_named_pending_slot(
+    tmp_path: Path,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    output = tmp_path / "selective"
+    with mock.patch.object(
+        builder.object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        original_hashes = pending_category(tmp_path, storage)
+        with (
+            mock.patch.object(builder.app_module, "tencent_ready", return_value=True),
+            mock.patch.object(
+                builder.app_module,
+                "tencent_api_request",
+                return_value={
+                    "ResultImage": "replacement",
+                    "_Provider": "tencent-hunyuan",
+                    "_Action": "TokenHubImageV3",
+                    "_Model": "hy-image-v3.0",
+                    "RequestId": "request-selective",
+                },
+            ) as provider,
+            mock.patch.object(
+                builder.app_module,
+                "save_result_image",
+                side_effect=lambda _value, path: (
+                    Path(path).parent.mkdir(parents=True, exist_ok=True),
+                    Image.new("RGB", (1024, 768), (180, 45, 35)).save(
+                        path,
+                        "JPEG",
+                        quality=92,
+                    ),
+                ),
+            ),
+            mock.patch.object(
+                builder.app_module,
+                "require_generated_output_quality",
+                return_value={"status": "passed", "quality_score": 1.0},
+            ),
+        ):
+            result = builder.main(
+                [
+                    "--category",
+                    "light_food",
+                    "--style",
+                    "style-2",
+                    "--output",
+                    str(output),
+                    "--execute",
+                    "--upload-pending",
+                    "--regenerate-selected",
+                    "--seed-revision",
+                    "1",
+                ]
+            )
+
+    assert result == 0
+    assert provider.call_count == 1
+    assert provider.call_args.args[1]["Seed"] == (
+        builder.deterministic_generation_seed("light_food", "style-2", 2)
+    )
+    report = json.loads((output / "run-report.json").read_text("utf-8"))
+    assert report["completedAssetCount"] == 1
+    assert len(report["manifestKeys"]) == 1
+    document = json.loads(
+        storage.read_bytes(report["manifestKeys"][0]).decode("utf-8")
+    )
+    replacement_hashes = {
+        asset["styleId"]: asset["sha256"]
+        for asset in document["assets"]
+    }
+    assert replacement_hashes["style-2"] != original_hashes["style-2"]
+    assert {
+        style_id: digest
+        for style_id, digest in replacement_hashes.items()
+        if style_id != "style-2"
+    } == {
+        style_id: digest
+        for style_id, digest in original_hashes.items()
+        if style_id != "style-2"
+    }
+    assert document["reviewStatus"] == "pending"
+    assert all(
+        "remoteManifestReused" not in asset
+        for asset in document["assets"]
+    )
+
+
+def test_selective_regeneration_refuses_approved_manifest(
+    tmp_path: Path,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    with mock.patch.object(
+        builder.object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        pending_category(tmp_path, storage)
+        manifest_key = builder.background_catalog.catalog_manifest_key(
+            "light_food",
+            builder.PROMPT_VERSION,
+        )
+        document = json.loads(storage.read_bytes(manifest_key).decode("utf-8"))
+        document["reviewStatus"] = "approved"
+        for asset in document["assets"]:
+            asset["reviewStatus"] = "approved"
+        storage.put_bytes(
+            json.dumps(document).encode("utf-8"),
+            object_key=manifest_key,
+        )
+
+        with mock.patch.object(
+            builder.app_module,
+            "tencent_ready",
+            return_value=True,
+        ):
+            try:
+                builder.main(
+                    [
+                        "--category",
+                        "light_food",
+                        "--style",
+                        "style-2",
+                        "--output",
+                        str(tmp_path / "refused"),
+                        "--execute",
+                        "--upload-pending",
+                        "--regenerate-selected",
+                        "--seed-revision",
+                        "1",
+                    ]
+                )
+            except SystemExit as exc:
+                assert "approved manifest" in str(exc)
+            else:
+                raise AssertionError("approved manifest replacement must fail")
 
 
 def test_review_approval_is_hash_locked_and_read_back_verified(

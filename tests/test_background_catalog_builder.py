@@ -152,6 +152,51 @@ def test_generation_retry_uses_stable_distinct_seed(tmp_path: Path) -> None:
     assert entry["seed"] == requested_seeds[1]
 
 
+def test_generation_seed_revision_starts_from_next_deterministic_seed(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pizza" / "style-2.jpg"
+
+    with (
+        mock.patch.object(
+            builder.app_module,
+            "tencent_api_request",
+            return_value={
+                "ResultImage": "test-result",
+                "_Provider": "tencent-hunyuan",
+                "_Action": "TokenHubImageV3",
+                "_Model": "hy-image-v3.0",
+                "RequestId": "request-revision",
+            },
+        ) as provider,
+        mock.patch.object(
+            builder.app_module,
+            "save_result_image",
+            side_effect=lambda _value, path: save_test_image(path),
+        ),
+        mock.patch.object(
+            builder.app_module,
+            "require_generated_output_quality",
+            return_value={"status": "passed", "quality_score": 1.0},
+        ),
+    ):
+        entry = builder.generate_entry(
+            category_id="pizza",
+            style_id="style-2",
+            image_path=target,
+            attempts=1,
+            seed_revision=1,
+        )
+
+    expected = builder.deterministic_generation_seed(
+        "pizza",
+        "style-2",
+        2,
+    )
+    assert provider.call_args.args[1]["Seed"] == expected
+    assert entry["seed"] == expected
+
+
 @contextmanager
 def dummy_postgres_connection():
     yield object()

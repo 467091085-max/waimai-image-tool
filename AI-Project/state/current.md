@@ -5,17 +5,19 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Six categories are now hash-lock approved in
+6-style background catalog. Ten categories are now hash-lock approved in
 private COS: `light_food`, `topped_rice`, `mixed_rice`,
-`porridge_soup_rice`, `rice_noodles`, and `wheat_noodles`. This is 36 of the
-240 target assets. The corrected prompt profile removed the first-batch wood
-arches, patchwork tabletops, and second planes; the regenerated 18 assets all
-passed provider generation, immutable upload, SHA-256 read-back, exact-object
-visual review, and approved-manifest read-back. The next five-category paid
-batch completed 29 of 30 assets on isolated Render staging while Gunicorn
-continued serving the test website. Only `hotpot_skewers/style-2` failed after
-the provider content filter rejected the fixed-seed image. A deterministic
-alternate-seed retry patch has passed full regression and is ready to deploy.
+`porridge_soup_rice`, `rice_noodles`, `wheat_noodles`, `dumpling_wonton`,
+`buns_dim_sum`, `chinese_wraps`, and `malatang_maocai`. This is 60 of the 240
+target assets. The deterministic alternate-seed retry patch is deployed and
+has recovered the previously filtered `hotpot_skewers/style-2` image in a real
+paid call. The current five-category staging batch completed 30/30 with zero
+provider failures. `hotpot_skewers` and `barbecue` passed exact COS visual
+review. `fried_chicken`, `burger_hotdog`, and `pizza` remain rejected because
+individual slots contain a two-color solid scene, exposed table-front plane,
+or curled paper/cyclorama artifact. A minimal selective-slot regeneration path
+is now implemented and fully tested; the next action is deployment and paid
+replacement of only the rejected slots while preserving verified remote assets.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -113,6 +115,24 @@ alternate-seed retry patch has passed full regression and is ready to deploy.
   fallback now removes TokenHub-v3-only `Revise` and `Seed` fields. Focused
   generation tests passed `36 passed`; complete regression passed
   `1317 passed, 20 skipped`; Python compilation and `git diff --check` passed.
+- Retry patch commit `312d578` is pushed to the isolated staging branch and
+  Render deploy `dep-d9mv5f3m8hqs73cjh8u0` is live.
+- Hash-lock approved `dumpling_wonton`, `buns_dim_sum`, `chinese_wraps`, and
+  `malatang_maocai` after exact COS contact-sheet review. The approved catalog
+  checkpoint is now 10 categories / 60 assets.
+- Current batch deploy `dep-d9mv7qfqj5pc73dsecig` completed 30/30 with zero
+  provider failures. `hotpot_skewers` and `barbecue` passed visual review.
+  `fried_chicken`, `burger_hotdog`, and `pizza` failed the visual gate and stay
+  pending. Selective replacement of failed slots is the active implementation
+  step; no failed category is marked approved.
+- Selective pending-slot replacement is implemented. It requires one existing
+  complete pending remote manifest, re-verifies all six COS objects, uses an
+  explicit deterministic seed revision only for named rejected slots, preserves
+  the other exact hashes, writes a fresh pending manifest/contact sheet, and
+  refuses to modify an approved manifest.
+- Selective-regeneration focused tests passed `16 passed`; full regression
+  passed `1320 passed, 20 skipped`; Python compilation and `git diff --check`
+  passed.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

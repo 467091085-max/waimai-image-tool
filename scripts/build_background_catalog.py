@@ -256,13 +256,18 @@ def generate_entry(
     style_id: str,
     image_path: Path,
     attempts: int,
+    seed_revision: int = 0,
 ) -> dict[str, Any]:
     prompt = background_profiles.pure_background_prompt(
         category_id,
         style_id,
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    accepted_seed = deterministic_generation_seed(category_id, style_id)
+    accepted_seed = deterministic_generation_seed(
+        category_id,
+        style_id,
+        seed_revision + 1,
+    )
     image_path.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     started = time.time()
@@ -271,7 +276,7 @@ def generate_entry(
         requested_seed = deterministic_generation_seed(
             category_id,
             style_id,
-            attempt,
+            seed_revision + attempt,
         )
         try:
             response = app_module.tencent_api_request(
@@ -488,7 +493,7 @@ def upload_category_manifest(
         {
             key: value
             for key, value in entry.items()
-            if key not in {"localPath"}
+            if key not in {"localPath", "remoteManifestReused"}
         }
         for entry in sorted(entries, key=lambda item: item["styleId"])
     ]
@@ -631,6 +636,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=str(ROOT / "data" / "background_catalog_work" / PROMPT_VERSION),
     )
     parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument(
+        "--regenerate-selected",
+        action="store_true",
+        help=(
+            "Replace only the selected --style slots in one existing pending "
+            "remote category manifest."
+        ),
+    )
+    parser.add_argument(
+        "--seed-revision",
+        type=int,
+        default=0,
+        help=(
+            "Deterministic seed offset for an explicitly regenerated slot; "
+            "revision 1 starts from retry seed 2."
+        ),
+    )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--upload-pending", action="store_true")
     parser.add_argument("--register-pending", action="store_true")
@@ -645,6 +667,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     categories = selected_categories(args.category)
     styles = selected_styles(args.style)
+    if args.seed_revision < 0:
+        raise SystemExit("--seed-revision must be zero or greater")
+    if args.regenerate_selected:
+        if len(categories) != 1 or not args.category:
+            raise SystemExit(
+                "--regenerate-selected requires exactly one --category"
+            )
+        if not args.style:
+            raise SystemExit(
+                "--regenerate-selected requires at least one --style"
+            )
+        if not args.upload_pending or args.register_pending:
+            raise SystemExit(
+                "--regenerate-selected requires --upload-pending and does not "
+                "support --register-pending"
+            )
+        if args.seed_revision < 1:
+            raise SystemExit(
+                "--regenerate-selected requires --seed-revision of at least 1"
+            )
     pairs = [
         (category_id, style_id)
         for category_id in categories
@@ -662,6 +704,8 @@ def main(argv: list[str] | None = None) -> int:
         "execute": bool(args.execute),
         "uploadPending": bool(args.upload_pending),
         "registerPending": bool(args.register_pending),
+        "regenerateSelected": bool(args.regenerate_selected),
+        "seedRevision": int(args.seed_revision),
     }
     if not args.execute:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -694,6 +738,24 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             for entry in reusable or []:
                 remote_entries[(category_id, entry["styleId"])] = entry
+    if args.regenerate_selected:
+        category_id = categories[0]
+        document = remote_category_manifest_document(category_id)
+        if document is None or len(
+            [
+                entry
+                for (entry_category, _style_id), entry in remote_entries.items()
+                if entry_category == category_id
+            ]
+        ) != len(background_catalog.STYLE_IDS):
+            raise SystemExit(
+                "--regenerate-selected requires a complete verified remote "
+                "category manifest"
+            )
+        if str(document.get("reviewStatus") or "").lower() != "pending":
+            raise SystemExit(
+                "--regenerate-selected refuses to replace an approved manifest"
+            )
     for category_id, style_id in pairs:
         image_path, sidecar_path = entry_paths(
             output,
@@ -706,8 +768,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         try:
-            entry = remote_entries.get((category_id, style_id))
-            if entry is None:
+            entry = None
+            if not args.regenerate_selected:
+                entry = remote_entries.get((category_id, style_id))
+            if entry is None and not args.regenerate_selected:
                 entry = reusable_local_entry(
                     image_path,
                     sidecar_path,
@@ -721,6 +785,7 @@ def main(argv: list[str] | None = None) -> int:
                     style_id=style_id,
                     image_path=image_path,
                     attempts=max(1, min(5, int(args.attempts))),
+                    seed_revision=int(args.seed_revision),
                 )
             if args.register_pending and not entry.get("registered"):
                 entry = register_pending_entry(
@@ -733,14 +798,40 @@ def main(argv: list[str] | None = None) -> int:
                 entry = {**entry, "uploaded": True}
             write_json(sidecar_path, entry)
             entries.append(entry)
-            category_entries = [
+            processed_category_entries = [
                 item
                 for item in entries
                 if item["categoryId"] == category_id
             ]
+            category_entries = processed_category_entries
+            if args.regenerate_selected:
+                by_style = {
+                    remote_style: remote_entry
+                    for (
+                        remote_category,
+                        remote_style,
+                    ), remote_entry in remote_entries.items()
+                    if remote_category == category_id
+                }
+                by_style.update(
+                    {
+                        item["styleId"]: item
+                        for item in processed_category_entries
+                    }
+                )
+                category_entries = [
+                    by_style[required_style]
+                    for required_style in background_catalog.STYLE_IDS
+                    if required_style in by_style
+                ]
             if (
                 (args.register_pending or args.upload_pending)
                 and category_id not in manifested_categories
+                and {
+                    item["styleId"]
+                    for item in processed_category_entries
+                }
+                == set(styles)
                 and {item["styleId"] for item in category_entries}
                 == set(background_catalog.STYLE_IDS)
             ):
