@@ -10,15 +10,22 @@ manually reviewed, hash-lock approved in private COS, frozen in commit
 `dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
 customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 93 in progress: the 60-row real-Excel acceptance is ready for one final
-guarded Render run. The patch now keeps the Free instance awake through a
-public exact-instance nonce probe, prevents a restarted acceptance entrypoint
-from repeating paid work through a persistent run record, exposes nonterminal
-per-row progress, and reuses only strict exact-product foregrounds. Post-review
-regression passed `1362 passed, 20 skipped`; Render remains on the normal
-Gunicorn command until the patch and a unique run ID are deployed. Production
-still requires Redis, an independent worker, and durable distributed
-single-flight/provider recovery before this staging exception can be promoted.
+Step 93 complete: the final guarded Render acceptance passed with the exact
+60-row workbook. The live test service classified it as `mixed_rice`, read and
+SHA-verified all six approved backgrounds, generated and verified six free
+samples, completed 60 formal images including 26 combo rows, validated the
+server-owned point debit/refund arithmetic, and exported a ZIP containing all
+60 Meituan images plus its manifest. The exact-instance public keep-alive made
+26 successful probes with zero failures, and the redacted report is persisted
+in private COS. Render has been restored to the normal Gunicorn command and all
+nine temporary E2E variables have been removed.
+
+Step 94 pending: this proves the protected staging flow for one real 60-row
+menu, not production readiness or paid visual acceptance across all 40
+categories. Production still requires Redis, an independent worker,
+PostgreSQL deployment/migration, durable distributed single-flight/provider
+recovery, and the separately authorized production integrations before main
+can be promoted.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -1379,3 +1386,31 @@ single-flight/provider recovery before this staging exception can be promoted.
   normal Render deploy, set one unique `WAIMAI_STAGING_E2E_RUN_ID`, and run the
   60-row real Excel acceptance once. Restore normal startup and remove all
   temporary E2E variables immediately after the result is persisted.
+- Final guarded Render deploy `dep-d9n546e1egvs73fdpsg0` passed the complete
+  paid-provider staging acceptance for the exact workbook SHA-256
+  `ca4093931d503c08eff9fc9c959214c9b4ce0817d980cbbfe9240325af857df3`.
+  Runtime classification was `mixed_rice`; all 6 approved backgrounds and all
+  6 free samples passed downloaded-byte SHA and selected-background identity
+  checks.
+- Formal job `generation-da25d369dc900438051bed5c` completed all 60 menu rows,
+  including 26 combos. The formal manifest passed 60/60 asset downloads and
+  selected-background SHA consistency. The Meituan export ZIP was 5,424,386
+  bytes and contained all 60 platform images plus the report manifest.
+- The public exact-instance keep-alive completed 26 probes with zero
+  consecutive failures, so this run continued for about 44 minutes instead of
+  being terminated by the Free-service 15-minute inactivity boundary.
+- The final redacted evidence report is private COS object
+  `generated/acceptance/render-staging/20260801T200813Z/report-584da9946be4d4b0.json`,
+  SHA-256
+  `584da9946be4d4b08dd0fa7aec76f11ba3a4c0d7157b189a403e137ad760f025`,
+  size 51,556 bytes.
+- Restored the exact normal Gunicorn command in live deploy
+  `dep-d9n5u8m1egvs73ff818g`, then removed all nine
+  `WAIMAI_STAGING_E2E_*` variables. Cleanup deploy
+  `dep-d9n5vn0ae00c73au73o0` is live, starts only Gunicorn, and retains the
+  required catalog, provider, queue-timeout, worker-count, and sync-limit
+  settings.
+- Staging acceptance is complete. Do not merge to `main` or describe this as
+  production verification: Redis/independent Worker, production PostgreSQL,
+  distributed paid-call recovery, real payment/SMS/KYC, and production soak
+  evidence remain outside this acceptance.
