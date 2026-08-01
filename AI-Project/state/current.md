@@ -5,23 +5,15 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Ten categories are now hash-lock approved in
-private COS: `light_food`, `topped_rice`, `mixed_rice`,
-`porridge_soup_rice`, `rice_noodles`, `wheat_noodles`, `dumpling_wonton`,
-`buns_dim_sum`, `chinese_wraps`, and `malatang_maocai`. This is 60 of the 240
-target assets. The deterministic alternate-seed retry patch is deployed and
-has recovered the previously filtered `hotpot_skewers/style-2` image in a real
-paid call. The current five-category staging batch completed 30/30 with zero
-provider failures. `hotpot_skewers` and `barbecue` passed exact COS visual
-review. `fried_chicken`, `burger_hotdog`, and `pizza` remain rejected because
-individual slots contain a two-color solid scene, exposed table-front plane,
-or curled paper/cyclorama artifact. Selective replacement deploy
-`dep-d9mvhdajnfac73a2effg` proved the preserve-and-replace flow in real COS and
-approved `hotpot_skewers` plus `barbecue`, bringing the checkpoint to 12
-categories / 72 assets. Alternate seeds improved table slots but the two-color
-solid scenes persisted. The prompt root cause is the contradictory word
-`辅色`; profile v11 now requires the same hue across wall, curve, and floor while
-freezing every approved prompt hash.
+6-style background catalog. Fifteen categories are now hash-lock approved in
+private COS, for 90 of the 240 target assets. The latest approved groups are
+`fried_chicken`, `burger_hotdog`, and `pizza`; their corrected same-hue solid
+slots and complete six-image contact sheets passed exact COS visual review.
+Render deploy `dep-d9mvpm2jnfac73a32hvg` re-read every object and wrote all
+three approved manifests. The next action is to freeze these approved prompt
+bytes, restore the normal web start command, and generate the next five
+categories: `sandwich_bagel`, `pasta_steak`, `japanese`, `korean`, and
+`southeast_asian`.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -153,6 +145,11 @@ freezing every approved prompt hash.
 - Profile-v11 and selective stale-prompt focused verification passed `29
   passed`; full regression passed `1322 passed, 20 skipped`; Python compilation,
   maximum prompt-length check, and `git diff --check` passed.
+- Corrected `fried_chicken`, `burger_hotdog`, and `pizza` contact sheets passed
+  exact COS visual review. Hash-lock approval deploy
+  `dep-d9mvpm2jnfac73a32hvg` reported `reviewStatus=approved` at
+  `2026-08-01T14:04:59Z`, `2026-08-01T14:05:38Z`, and
+  `2026-08-01T14:06:11Z`. The catalog checkpoint is 15 categories / 90 assets.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

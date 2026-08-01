@@ -93,9 +93,13 @@ FROZEN_PROFILE_V10_PROMPT_CATEGORIES = frozenset(
         "barbecue",
     }
 )
+FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
+    {"fried_chicken", "burger_hotdog", "pizza"}
+)
 HASH_LOCKED_PROMPT_CATEGORIES = (
     FROZEN_V11_PROMPT_CATEGORIES
     | FROZEN_PROFILE_V10_PROMPT_CATEGORIES
+    | FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES
 )
 
 MIXED_SCENE = "复合餐饮菜单场景，中性商业摄影台面，兼容深碗、浅盘和餐盒轮廓"
@@ -155,7 +159,11 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
         color = colors[color_index] if colors else "低饱和中性色"
         if (
             style_id == "style-2"
-            and normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES
+            and (
+                normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES
+                or normalized_category
+                in FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES
+            )
         ):
             single_color_prompt = slot.prompt.replace(
                 "单一低饱和辅色",

@@ -146,3 +146,7 @@
 - The second seamless-solid slot uses the second palette color for unapproved
   categories. This avoids treating a third palette value such as `浅木色` or
   `深木色` as a physical wood panel or decorative arch.
+- `fried_chicken`, `burger_hotdog`, and `pizza` use the profile-v11 single-hue
+  solid-slot contract. Their exact approved prompt bytes are immutable along
+  with the earlier 12 approved categories; future tuning may affect only
+  unapproved categories.

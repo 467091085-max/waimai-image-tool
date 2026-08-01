@@ -170,6 +170,7 @@ def test_approved_profile_v10_cool_prompt_hashes_remain_frozen() -> None:
     assert background_profiles.HASH_LOCKED_PROMPT_CATEGORIES == (
         background_profiles.FROZEN_V11_PROMPT_CATEGORIES
         | set(expected)
+        | background_profiles.FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES
     )
     for category_id, expected_hash in expected.items():
         prompt = background_profiles.pure_background_prompt(
@@ -177,6 +178,47 @@ def test_approved_profile_v10_cool_prompt_hashes_remain_frozen() -> None:
             "style-2",
         )
         assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
+
+
+def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
+    expected = {
+        "fried_chicken": {
+            "style-1": "5368db1dd2b05384ed146a436f309f7aef51c9880b758155713886668716b109",
+            "style-2": "465ea7c11d4d667ddd21be6f6814131fe747cdd7960eb0a030f932e90d95310b",
+            "style-3": "cd95f65ed958e79a3d08f72f6de679a5f080df77f2e083744cf4fb73027a1914",
+            "style-4": "c167fc495793853cff6e102b709fb168fe756deb40c20a8b5c6851104650f58c",
+            "style-5": "b75b91ffc6383e63848c1ef5339a6603e582f6df0e2872425802580b35db4554",
+            "style-6": "927ba8c3f87f79c90b1c5584ff44e4b2c32b8e30e819b31a9d2a6150d1413018",
+        },
+        "burger_hotdog": {
+            "style-1": "9e73a0430750a905479218c6c800870430f3542774d87397d34e722c7bd3d02f",
+            "style-2": "79c253c472f030eab9600092553632e485a33a752c77852eed09306cde7ca3fd",
+            "style-3": "8acd78ba9cbb35116c6e85c1c41b1c388e4ae99690c18246c0a8560f71db18a2",
+            "style-4": "60cf9409ed6ce7084ad3e0dd77633cbffe47f9ac5ca7bdff5b2f3393de58cfea",
+            "style-5": "867c011194e0d9444528be1d1e91f75c5e60f4b6edeccb6e0db88f132b9645d4",
+            "style-6": "c78deecf92e6a19592a54687685d244b0c66d838de610e6688db6eb198823836",
+        },
+        "pizza": {
+            "style-1": "50c283741524f8a3b2cfbce4827c4d7ef9e1a5131cffbe3b762048ea3f1234a7",
+            "style-2": "e43a90a8b559ea65f74d43a88a9d79d6b9dfc161247a16372eb8abd2a796e40e",
+            "style-3": "46a68962bdf246c040050760e1cdc4ad4852f0bbfb33c4fb007dccc5514fe97d",
+            "style-4": "735f9fd4ffc501bc8e829594e51f5d3b596b7946339d4202498af0deed73154b",
+            "style-5": "21db73106c31e20ca6bc1a30d33be6c6ee15e02b595db71bec7191609f241c1f",
+            "style-6": "7c6f5416abf68f8920198a94426df0887019ba9bf324fc63f197cf761fafbfe1",
+        },
+    }
+
+    assert (
+        background_profiles.FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES
+        == set(expected)
+    )
+    for category_id, hashes in expected.items():
+        for style_id, expected_hash in hashes.items():
+            prompt = background_profiles.pure_background_prompt(
+                category_id,
+                style_id,
+            )
+            assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:
