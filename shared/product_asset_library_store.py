@@ -307,6 +307,32 @@ ORDER BY
 LIMIT %s
 """
 
+_SELECT_BACKGROUND_CATALOG_SQL = f"""
+/* product_asset_library_store:select_background_catalog */
+SELECT {_ASSET_COLUMNS}
+FROM product_asset_library_entries AS asset
+WHERE tenant_id = %s
+  AND taxonomy_version = %s
+  AND category_id = %s
+  AND asset_kind = 'background'
+  AND pipeline_version = %s
+  AND style_id = ANY(%s::text[])
+  AND status = 'approved'
+  AND review_status = 'approved'
+  AND (
+        (reuse_scope = 'owner' AND owner_user_id = %s)
+        OR (%s AND reuse_scope = 'tenant')
+  )
+ORDER BY
+    style_id ASC,
+    CASE
+        WHEN reuse_scope = 'owner' AND owner_user_id = %s THEN 0
+        ELSE 1
+    END,
+    created_at DESC,
+    id DESC
+"""
+
 
 def tenant_bound_asset_id(tenant_id: str, idempotency_key: str) -> str:
     """Derive the only accepted asset id from server-owned tenant context."""
@@ -866,6 +892,52 @@ def find_reusable_assets(
     return [_decode_record(row) for row in _fetchall_dicts(cursor)]
 
 
+def list_approved_background_catalog(
+    cursor: CursorLike,
+    *,
+    tenant_id: str,
+    owner_user_id: str,
+    taxonomy_version: str,
+    category_id: str,
+    pipeline_version: str,
+    style_ids: Sequence[str],
+    include_tenant_scope: bool = False,
+) -> list[dict[str, Any]]:
+    """Return all approved records for an exact category catalog."""
+
+    tenant = _tenant_id(tenant_id)
+    owner = _identifier(owner_user_id, "owner_user_id")
+    taxonomy = _version(taxonomy_version, "taxonomy_version")
+    category = _category_id(category_id)
+    pipeline = _version(pipeline_version, "pipeline_version")
+    if isinstance(style_ids, (str, bytes)):
+        raise InvalidProductAssetInput("style_ids must be a sequence")
+    styles = tuple(_style_id(style_id) for style_id in style_ids)
+    if not styles or len(styles) > 100:
+        raise InvalidProductAssetInput("style_ids count is invalid")
+    if len(set(styles)) != len(styles):
+        raise InvalidProductAssetInput("style_ids must be unique")
+    if not isinstance(include_tenant_scope, bool):
+        raise InvalidProductAssetInput(
+            "include_tenant_scope must be a boolean"
+        )
+
+    cursor.execute(
+        _SELECT_BACKGROUND_CATALOG_SQL,
+        (
+            tenant,
+            taxonomy,
+            category,
+            pipeline,
+            list(styles),
+            owner,
+            include_tenant_scope,
+            owner,
+        ),
+    )
+    return [_decode_record(row) for row in _fetchall_dicts(cursor)]
+
+
 class ProductAssetLibraryStore:
     """Short-transaction wrapper around the external-cursor asset APIs."""
 
@@ -911,6 +983,13 @@ class ProductAssetLibraryStore:
     def find_reusable_assets(self, **kwargs: Any) -> list[dict[str, Any]]:
         with self._transaction() as cursor:
             return find_reusable_assets(cursor, **kwargs)
+
+    def list_approved_background_catalog(
+        self,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        with self._transaction() as cursor:
+            return list_approved_background_catalog(cursor, **kwargs)
 
     @contextmanager
     def _transaction(self) -> Iterator[CursorLike]:

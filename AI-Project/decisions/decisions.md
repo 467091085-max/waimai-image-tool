@@ -96,3 +96,14 @@
 - Cross-taxonomy fuzzy library reuse is forbidden.
 - `unknown` items may reuse an asset only when normalized dish names are exactly equal; otherwise they require generation.
 - Combo product reuse requires the complete normalized component fingerprint, including staple and drink components. Component images are composition inputs, never a complete combo product image.
+
+## Background Catalog Taxonomy
+- The background catalog uses the existing 40 leaf taxonomy IDs directly; the
+  proposed 25-category intermediate layer is superseded and must not coexist.
+- Each taxonomy has exactly six versioned background style slots, for a total
+  target of 240 approved assets.
+- `mixed` and low-confidence classification mean manual review; they are not a
+  41st catalog category and must not trigger arbitrary background reuse.
+- Customer requests may read only a complete approved six-slot manifest.
+  Missing slots are created by an offline/admin batch, never synchronously
+  filled by the customer Web request.

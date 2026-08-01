@@ -5,7 +5,7 @@
 
 ## Current Step
 Step 91 in progress: replace per-menu live background generation with a
-reviewed 25-category x 6-style background catalog. Provider transport is live,
+reviewed 40-category x 6-style background catalog. Provider transport is live,
 but the current prompt/quality gate accepted raised plinth and color-block-like
 backgrounds, so visual acceptance is intentionally failed pending the catalog
 and prompt redesign.
@@ -21,10 +21,13 @@ and prompt redesign.
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
 - Full regression after private-media staging fix: done, 1284 passed / 20 skipped
+- Private-media staging fix deployed: done, commit `d6cbf15`
+- Real browser upload/background display after deploy: done; 6/6 background cards and 6/6 blob images, no Hunyuan/media failure text, no console errors
+- Current light-food background content acceptance: failed; raised plinths plus forbidden cup/flowers/cloth remain
 - Sanitized Pro package: `/tmp/waimai-background-architecture-8f9afd6db1ea.zip`, SHA-256 `5394b3f88d938412ea37575112e4e40e5882c27283ca32a51b181a0a819825a6`
 - ChatGPT Pro architecture review: in progress, `https://chatgpt.com/c/6a6dc7fa-9140-83e8-84ff-3f038953ce8b`
 - ChatGPT Pro provider/UI failure review: in progress, `https://chatgpt.com/c/6a6dc81d-0b38-83e8-bfa2-5fb67fde2e94`
-- ChatGPT Pro 25-category visual prompt review: in progress, `https://chatgpt.com/c/6a6dc847-c370-83e8-bb28-93b3f3191a66`
+- ChatGPT Pro visual prompt review: requires 40-category course correction, `https://chatgpt.com/c/6a6dc847-c370-83e8-bb28-93b3f3191a66`
 - Chroma residual false-success root cause: done
 - Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
 - Lossless RGB PNG chroma intermediate: done locally
@@ -797,3 +800,43 @@ and prompt redesign.
 - Complete default regression after the reserved-character, 40-category, and taxonomy-edge fixes passed `1221 passed, 20 skipped`.
 - The first PostgreSQL+Redis run found one stale test expectation for `style-background.v2`; production registration correctly used v3. The protocol test now asks `product_asset_pipeline_version("category_background")` instead of pinning an obsolete version.
 - Focused real PostgreSQL library-import protocol passed `1 passed`; complete disposable PostgreSQL plus real Redis regression then passed `1241 passed in 28.52s` with zero skips.
+- The user superseded the proposed 25-category background layer. The existing
+  40 leaf taxonomies are now the canonical background catalog keys as well as
+  the dish/combo recognition categories; the target catalog is `40 x 6 = 240`
+  reviewed assets.
+- Contradictory or insufficient menu evidence must return `mixed/review` rather
+  than choose an unsafe catalog. `mixed` does not create a 41st background set.
+- Added the versioned 40-by-6 catalog contract: 240 exact category/style pairs,
+  two seamless-solid slots, four edge-to-edge flat-table slots, immutable COS
+  object keys, and fail-closed complete-manifest validation.
+- Reworked all 40 prompt palettes to describe only color, light, and flat
+  materials. Raised plinths, platforms, boards, trays, cloth, cups, plants,
+  frames, and blurred picture-in-picture layouts are explicitly prohibited.
+- Catalog, prompt, and taxonomy focused verification passed `27 passed`.
+- Added one-request approved catalog retrieval from the shared PostgreSQL asset
+  tenant. Customer UI now loads the six-slot manifest as a group; incomplete,
+  duplicate, unavailable, or low-confidence categories never fall back to live
+  Hunyuan generation when approved-only mode is enabled.
+- Added `scripts/build_background_catalog.py`: dry-run proves 40 categories,
+  six slots, and 240 targets; execute mode supports prompt-bound resume,
+  bounded retries, quality checks, immutable COS upload/read-back, pending-only
+  PostgreSQL registration, and per-category manifest upload.
+- Related runtime/catalog/customer UI verification passed `114 passed, 2 skipped`.
+- Background-catalog builder contract verification passed `12 passed`; the
+  default plan is exactly 40 categories, six slots, and 240 assets, and every
+  generated asset enters review as `pending` rather than auto-approval.
+- Menu-level classification no longer lets an uncorroborated store-name hit
+  override strongly conflicting item evidence; such menus fail closed to
+  `mixed/review`, while store/file or store/item agreement remains usable.
+- Full regression after the 40-by-6 catalog and classification gate passed
+  `1300 passed, 20 skipped`; scoped Python compilation, JavaScript syntax, and
+  `git diff --check` also passed.
+- Real local menu classification audit passed for 24/24 Excel workbooks with
+  zero `mixed` results. This proves deterministic taxonomy routing for those
+  fixtures, not paid image quality or provider acceptance.
+- Durable catalog contract and operator sequence saved at
+  `AI-Project/handoffs/2026-08-01/BACKGROUND_CATALOG_40X6.md`.
+- Next action: review the three independent ChatGPT Pro deliverables, then add
+  any evidence-backed corrections, push the staging branch, and regenerate
+  only the light-food category for six-image visual acceptance before any
+  40-category paid batch.

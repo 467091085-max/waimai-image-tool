@@ -74,6 +74,7 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertNotIn("generate=1", load_preview_body)
         self.assertEqual(self.script.count("/api/style-preview?"), 1)
         self.assertEqual(self.script.count("/api/style-background?"), 1)
+        self.assertEqual(self.script.count("/api/background-catalog?"), 1)
         self.assertEqual(self.script.count("/api/style-preview-sample?"), 1)
         self.assertIn("await loadStylePreviewSample(styleId, index)", load_preview_body)
         self.assertIn("PREVIEW_SAMPLE_MAX_ATTEMPTS", self.script)

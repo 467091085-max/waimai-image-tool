@@ -165,6 +165,15 @@ function styleSampleBlocked(sample, styleId = "") {
 
 function styleGenerationFailureText(sample) {
   const errorCode = String(sample?.generationErrorCode || "");
+  if (sample?.generationAction === "CategoryReviewRequired" || errorCode === "background_category_review_required") {
+    return "菜单品类待确认";
+  }
+  if (sample?.generationAction === "CatalogIncomplete" || errorCode === "background_catalog_incomplete") {
+    return "该品类背景图库准备中";
+  }
+  if (sample?.generationAction === "CatalogUnavailable" || errorCode === "background_catalog_unavailable") {
+    return "背景图库暂时不可用";
+  }
   if (sample?.generationAction === "MediaLoadError" || errorCode.startsWith("private_media_")) {
     return "背景图片加载失败";
   }
@@ -176,6 +185,9 @@ function styleGenerationFailureText(sample) {
 
 function styleGenerationFailureDetail(sample) {
   const label = styleGenerationFailureText(sample);
+  if (label === "菜单品类待确认") return "系统没有足够证据判断整店品类，需要先确认品类后再选择背景。";
+  if (label === "该品类背景图库准备中") return "这个品类的 6 张背景尚未全部通过审核，系统不会用未审核图片或临时色块代替。";
+  if (label === "背景图库暂时不可用") return "已审核背景图库暂时无法读取，请稍后重试。";
   if (label === "背景图片加载失败") return "背景已经生成，但私有图片加载失败，请刷新或重新登录后重试。";
   if (label === "混元资源不足") return "混元资源不足，请开通资源包或后付费后重试。";
   if (label === "混元鉴权失败") return "混元鉴权失败，请检查腾讯云密钥配置。";
@@ -185,6 +197,7 @@ function styleGenerationFailureDetail(sample) {
 function styleSampleBlockText(sample, styleId = "") {
   if (state.backgroundLoading.has(styleId)) return "正在生成背景";
   if (!sample) return "等待真实背景";
+  if (["CategoryReviewRequired", "CatalogIncomplete", "CatalogUnavailable"].includes(sample.generationAction)) return styleGenerationFailureText(sample);
   if (sample.generationAction === "ProviderError" || sample.generationStatus === "failed") return styleGenerationFailureText(sample);
   if (sample.generationAction === "WaitingForProvider") return "混元未配置";
   if (sample.generationAction === "PendingGeneration") return "等待生成背景";
@@ -1594,6 +1607,43 @@ async function loadStyleBackground(styleId, planRef) {
 }
 
 async function loadStyleBackgrounds(planRef = state.plan) {
+  try {
+    const catalog = await api(`/api/background-catalog?${menuUploadQuery()}`);
+    if (catalog?.mode === "approved") {
+      const catalogStyles = Array.isArray(catalog.styles) ? catalog.styles : [];
+      for (const updated of catalogStyles) {
+        const styleId = updated.id || updated.styleId;
+        if (!styleId) continue;
+        state.backgroundRequested.add(styleId);
+        if (state.plan === planRef) updatePlanStyleSample(styleId, updated);
+      }
+      renderStyles();
+      renderStylePreview();
+      setControls();
+      return;
+    }
+  } catch (error) {
+    if (planRef?.pipeline?.approvedBackgroundCatalog) {
+      for (const style of styleChoices(planRef)) {
+        state.backgroundRequested.add(style.id);
+        updatePlanStyleSample(style.id, {
+          sample: {
+            url: "",
+            generationAction: "CatalogUnavailable",
+            generationStatus: "pending",
+            generationProvider: "asset-library",
+            generationError: error.message || "背景图库暂时不可用",
+            generationErrorCode: "background_catalog_unavailable",
+            retryable: true
+          }
+        });
+      }
+      renderStyles();
+      renderStylePreview();
+      setControls();
+      return;
+    }
+  }
   const pending = styleChoices(planRef)
     .filter(style => !style.sample?.url)
     .filter(style => style.sample?.generationAction !== "WaitingForProvider")

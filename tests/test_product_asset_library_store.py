@@ -886,6 +886,69 @@ def test_reuse_query_requires_exact_style_and_excludes_keywords() -> None:
     assert parameters[16] is False
 
 
+def test_background_catalog_query_returns_all_approved_exact_slots() -> None:
+    rows = [
+        background_row(
+            tenant_id="waimai-shared",
+            idempotency_key=f"background-{index}",
+            style_id=f"style-{index}",
+            taxonomy_version="2026-07-30.v2",
+            category_id="light_food",
+            pipeline_version="style-background.v8",
+            reuse_scope="tenant",
+        )
+        for index in range(1, 7)
+    ]
+    connection = ScriptedConnection(select_background_catalog=[rows])
+
+    result = library.list_approved_background_catalog(
+        connection.cursor(),
+        tenant_id="waimai-shared",
+        owner_user_id="customer-1",
+        taxonomy_version="2026-07-30.v2",
+        category_id="light_food",
+        pipeline_version="style-background.v8",
+        style_ids=[f"style-{index}" for index in range(1, 7)],
+        include_tenant_scope=True,
+    )
+
+    assert [row["style_id"] for row in result] == [
+        f"style-{index}" for index in range(1, 7)
+    ]
+    name, sql, parameters = connection.calls[0]
+    assert name == "select_background_catalog"
+    assert "asset_kind = 'background'" in sql
+    assert "status = 'approved'" in sql
+    assert "review_status = 'approved'" in sql
+    assert "style_id = ANY(%s::text[])" in sql
+    assert parameters[:5] == (
+        "waimai-shared",
+        "2026-07-30.v2",
+        "light_food",
+        "style-background.v8",
+        [f"style-{index}" for index in range(1, 7)],
+    )
+
+
+def test_background_catalog_query_rejects_duplicate_style_ids() -> None:
+    connection = ScriptedConnection()
+    with pytest.raises(
+        library.InvalidProductAssetInput,
+        match="must be unique",
+    ):
+        library.list_approved_background_catalog(
+            connection.cursor(),
+            tenant_id="waimai-shared",
+            owner_user_id="customer-1",
+            taxonomy_version="2026-07-30.v2",
+            category_id="light_food",
+            pipeline_version="style-background.v8",
+            style_ids=["style-1", "style-1"],
+            include_tenant_scope=True,
+        )
+    assert connection.calls == []
+
+
 def test_combo_reuse_requires_components_not_a_bare_digest() -> None:
     cursor = ScriptedConnection().cursor()
     with pytest.raises(

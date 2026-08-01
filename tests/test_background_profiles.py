@@ -34,26 +34,33 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         assert len(set(prompts)) == 6
         assert all(prompt.startswith("纯背景场景商业摄影") for prompt in prompts)
         assert all("EMPTY SET ONLY" in prompt for prompt in prompts)
-        assert all("PROPS OF ANY KIND" in prompt for prompt in prompts)
-        assert all("禁止菜品、饮料、果蔬、植物、叶片、花、装饰物、道具" in prompt for prompt in prompts)
+        assert all("PROPS, PODIUMS OR PLINTHS" in prompt for prompt in prompts)
+        assert all("禁止菜品、饮料、果蔬、植物、花、布料" in prompt for prompt in prompts)
         assert all("中央、边缘、前景和后景全部无物" in prompt for prompt in prompts)
-        assert all("中央保留宽阔摆放区" in prompt for prompt in prompts)
+        assert all("中央下半部保留宽阔连续摆放区" in prompt for prompt in prompts)
+        assert all("展示台、底座、台座、方台、圆台、台阶" in prompt for prompt in prompts)
+        assert all("表面铺满画幅并延伸到边缘" in prompt for prompt in prompts)
         assert all("适合大浅碗轮廓" not in prompt for prompt in prompts)
         assert all("餐盒轮廓" not in prompt for prompt in prompts)
         assert all("轻食沙拉场景" not in prompt for prompt in prompts)
         assert all("轻食/沙拉商品" not in prompt for prompt in prompts)
         assert all("点缀" not in prompt for prompt in prompts)
-        assert all(len(prompt) <= 250 for prompt in prompts)
+        assert all(len(prompt) <= 520 for prompt in prompts)
 
 
-def test_style_three_uses_an_empty_studio_cyclorama() -> None:
+def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None:
+    seamless = background_profiles.pure_background_prompt(
+        "light_food",
+        "style-1",
+    )
     prompt = background_profiles.pure_background_prompt(
         "light_food",
         "style-3",
     )
 
-    assert "无缝白灰摄影棚弧面" in prompt
-    assert "空无一物" in prompt
+    assert "暖色单色无缝摄影棚弧面" in seamless
+    assert "平整浅色石材桌面" in prompt
+    assert "从左右与下边缘连续铺满" in prompt
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:
@@ -75,6 +82,26 @@ def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None
     assert context["category"] == "烧烤"
     assert context["selectionReason"] == "store_taxonomy"
     assert context["confidence"] >= 78
+
+
+def test_store_name_does_not_override_a_conflicting_menu_without_support() -> None:
+    context = background_profiles.menu_background_context(
+        {
+            "store": "咖啡故事餐厅",
+            "file": "午餐菜单.xlsx",
+            "items": [
+                menu_item("鸡胸能量碗", "light_food"),
+                menu_item("牛肉沙拉", "light_food"),
+                menu_item("鲜虾藜麦沙拉", "light_food"),
+                menu_item("低脂谷物碗", "light_food"),
+            ],
+        }
+    )
+
+    assert context["taxonomyId"] == background_profiles.MIXED_CATEGORY_ID
+    assert context["selectionReason"] == "insufficient_or_conflicting_evidence"
+    assert context["storeTaxonomyId"] == "coffee_cocoa"
+    assert context["fileTaxonomyId"] == ""
 
 
 def test_menu_context_uses_dish_and_combo_component_evidence() -> None:
@@ -124,6 +151,26 @@ def test_reserved_marketing_phrases_do_not_create_menu_category_evidence() -> No
     )
 
     assert context["taxonomyId"] == background_profiles.MIXED_CATEGORY_ID
+
+
+def test_balanced_menu_categories_require_review_instead_of_guessing() -> None:
+    context = background_profiles.menu_background_context(
+        {
+            "store": "综合餐厅",
+            "file": "menu.xlsx",
+            "items": [
+                menu_item("鸡胸能量碗", "light_food"),
+                menu_item("牛肉沙拉", "light_food"),
+                menu_item("黑椒牛排", "pasta_steak"),
+                menu_item("奶油意面", "pasta_steak"),
+            ],
+        }
+    )
+
+    assert context["taxonomyId"] == background_profiles.MIXED_CATEGORY_ID
+    assert context["selectionReason"] == "insufficient_or_conflicting_evidence"
+    assert context["confidence"] == 35
+    assert len(context["candidates"]) >= 2
 
 
 def test_profile_lookup_accepts_taxonomy_label() -> None:

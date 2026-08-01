@@ -32,6 +32,7 @@ import admin_actions
 import ai_asset_repository
 import auth_rules
 import auth_service
+import background_catalog
 import background_profiles
 import billing
 import asset_security
@@ -218,7 +219,7 @@ AI_ASSET_SCHEMA_VERSION = 1
 AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
-STYLE_BACKGROUND_PROMPT_VERSION = 7
+STYLE_BACKGROUND_PROMPT_VERSION = 8
 DISH_GENERATION_PROMPT_VERSION = 1
 EXACT_BACKGROUND_PIPELINE_VERSION = 4
 CHROMA_FOREGROUND_PROMPT_VERSION = 1
@@ -561,6 +562,10 @@ def local_final_fallback_enabled() -> bool:
 
 def local_background_fallback_enabled() -> bool:
     return env_truthy("ALLOW_LOCAL_BACKGROUND_FALLBACK", default=False)
+
+
+def approved_background_catalog_enabled() -> bool:
+    return env_truthy("BACKGROUND_CATALOG_APPROVED_ONLY", default=False)
 
 
 def is_safe_style_id(style_id: str) -> bool:
@@ -5852,12 +5857,15 @@ def materialize_reusable_product_asset(
 def materialize_reusable_background_asset(
     style_id: str,
     target: Path,
+    *,
+    record: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     try:
-        record = postgres_reusable_asset_record(
-            kind="category_background",
-            style_id=style_id,
-        )
+        if record is None:
+            record = postgres_reusable_asset_record(
+                kind="category_background",
+                style_id=style_id,
+            )
         if record is None:
             return None
         fingerprint = materialize_postgres_asset_record(record, target)
@@ -5879,6 +5887,139 @@ def materialize_reusable_background_asset(
     }
     write_ai_output_metadata(target, metadata)
     return record, metadata
+
+
+def approved_background_catalog_manifest() -> dict[str, Any]:
+    context = active_category_context()
+    category_id = str(context.get("taxonomyId") or "")
+    prompt_version = product_asset_prompt_version("category_background")
+    base = {
+        "mode": "approved",
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": TAXONOMY_VERSION,
+        "categoryId": category_id,
+        "categoryName": str(context.get("category") or "复合餐饮"),
+        "categoryConfidence": int(context.get("confidence") or 0),
+        "categorySelectionReason": str(
+            context.get("selectionReason") or ""
+        ),
+        "promptVersion": prompt_version,
+    }
+    if category_id not in background_catalog.CATEGORY_LABELS:
+        return {
+            **base,
+            "status": "classification_review",
+            "ready": False,
+            "code": "background_category_review_required",
+            "approvedCount": 0,
+            "missingStyleIds": list(background_catalog.STYLE_IDS),
+            "duplicateStyleIds": [],
+            "assets": [],
+            "_recordsByStyle": {},
+        }
+    if not postgres_product_runtime_enabled() or not ai_asset_library_enabled():
+        return {
+            **base,
+            "status": "unavailable",
+            "ready": False,
+            "code": "background_catalog_unavailable",
+            "approvedCount": 0,
+            "missingStyleIds": list(background_catalog.STYLE_IDS),
+            "duplicateStyleIds": [],
+            "assets": [],
+            "_recordsByStyle": {},
+        }
+
+    owner_user_id = current_asset_owner_user_id()
+    try:
+        with postgres_connection() as connection:
+            records = product_asset_library_store.ProductAssetLibraryStore(
+                connection
+            ).list_approved_background_catalog(
+                tenant_id=product_shared_asset_tenant_id(),
+                owner_user_id=owner_user_id,
+                taxonomy_version=TAXONOMY_VERSION,
+                category_id=category_id,
+                pipeline_version=product_asset_pipeline_version(
+                    "category_background"
+                ),
+                style_ids=background_catalog.STYLE_IDS,
+                include_tenant_scope=True,
+            )
+    except Exception as exc:
+        app.logger.error(
+            "Approved background catalog lookup failed for %s: %s",
+            category_id,
+            type(exc).__name__,
+        )
+        return {
+            **base,
+            "status": "unavailable",
+            "ready": False,
+            "code": "background_catalog_unavailable",
+            "approvedCount": 0,
+            "missingStyleIds": list(background_catalog.STYLE_IDS),
+            "duplicateStyleIds": [],
+            "assets": [],
+            "_recordsByStyle": {},
+        }
+
+    entries = []
+    records_by_style: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        style_id = str(record.get("style_id") or "")
+        records_by_style.setdefault(style_id, []).append(record)
+        prompt = background_profiles.pure_background_prompt(
+            category_id,
+            style_id,
+        )
+        entries.append(
+            {
+                "catalogVersion": background_catalog.CATALOG_VERSION,
+                "taxonomyVersion": str(
+                    record.get("taxonomy_version") or ""
+                ),
+                "categoryId": str(record.get("category_id") or ""),
+                "categoryName": str(record.get("category_name") or ""),
+                "styleId": style_id,
+                "styleSlotId": background_catalog.style_slot(
+                    style_id
+                ).slot_id,
+                "promptVersion": str(record.get("prompt_version") or ""),
+                "promptSha256": hashlib.sha256(
+                    prompt.encode("utf-8")
+                ).hexdigest(),
+                "pipelineVersion": str(
+                    record.get("pipeline_version") or ""
+                ),
+                "provider": str(record.get("source_provider") or ""),
+                "model": str(record.get("model_name") or ""),
+                "assetRecordId": str(record.get("id") or ""),
+                "sha256": str(record.get("original_sha256") or ""),
+                "fileSize": int(record.get("original_size_bytes") or 0),
+                "reviewStatus": str(record.get("review_status") or ""),
+                "reviewedAt": record.get("reviewed_at"),
+                "createdAt": record.get("created_at"),
+            }
+        )
+
+    status = background_catalog.category_manifest_status(
+        entries,
+        category_id=category_id,
+        prompt_version=prompt_version,
+    )
+    unique_records = {
+        style_id: matches[0]
+        for style_id, matches in records_by_style.items()
+        if len(matches) == 1
+    }
+    return {
+        **base,
+        **status,
+        "code": "" if status["ready"] else "background_catalog_incomplete",
+        "_recordsByStyle": unique_records,
+    }
 
 
 def image_file_fingerprint(path: Path) -> dict[str, Any]:
@@ -6939,6 +7080,7 @@ def style_background_prompt_metadata(style_id: str) -> dict[str, Any]:
         category_id,
         style_id,
     )
+    slot = background_catalog.style_slot(style_id)
     return {
         "category": str(context.get("category") or "复合餐饮"),
         "categoryId": category_id,
@@ -6946,6 +7088,11 @@ def style_background_prompt_metadata(style_id: str) -> dict[str, Any]:
             background_profiles.BACKGROUND_PROFILE_VERSION
         ),
         "promptVersion": STYLE_BACKGROUND_PROMPT_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": TAXONOMY_VERSION,
+        "styleSlotId": slot.slot_id,
+        "styleSlotName": slot.name,
+        "styleSceneType": slot.scene_type,
         "promptSha256": hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest(),
@@ -6967,7 +7114,92 @@ def pending_style_background_candidate(style_id: str, action: str = "PendingGene
     return candidate
 
 
+def catalog_status_background_candidate(
+    style_id: str,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    target = style_background_target(style_id)
+    candidate = candidate_from_path(
+        target,
+        "背景风格样图",
+        style_id,
+        "approved-background-catalog",
+        0.0,
+    )
+    candidate["url"] = ""
+    action = {
+        "classification_review": "CategoryReviewRequired",
+        "incomplete": "CatalogIncomplete",
+        "unavailable": "CatalogUnavailable",
+    }.get(str(manifest.get("status") or ""), "CatalogIncomplete")
+    metadata = {
+        "status": "pending",
+        "provider": "asset-library",
+        "action": action,
+        "styleId": style_id,
+        "errorCode": str(
+            manifest.get("code") or "background_catalog_incomplete"
+        ),
+        "retryable": str(manifest.get("status") or "") == "unavailable",
+        **style_background_prompt_metadata(style_id),
+    }
+    candidate_generation_metadata(candidate, metadata)
+    return candidate
+
+
+def materialize_approved_background_candidate(
+    style_id: str,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    target = style_background_target(style_id)
+    reused_background = materialize_reusable_background_asset(
+        style_id,
+        target,
+        record=record,
+    )
+    if reused_background is None:
+        raise ProductAssetRuntimeError("background_catalog_asset_missing")
+    _record, metadata = reused_background
+    persist_private_preview_asset(target)
+    candidate = candidate_from_path(
+        target,
+        "背景风格样图",
+        style_id,
+        "approved-background-asset",
+        100.0,
+    )
+    asset = build_selected_background_asset(style_id, target)
+    attach_selected_background(candidate, asset)
+    candidate_generation_metadata(candidate, metadata)
+    candidate["assetRecordId"] = str(metadata["assetRecordId"])
+    return candidate
+
+
 def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, Any]:
+    if approved_background_catalog_enabled():
+        manifest = approved_background_catalog_manifest()
+        if not manifest.get("ready"):
+            return catalog_status_background_candidate(style_id, manifest)
+        record = (manifest.get("_recordsByStyle") or {}).get(style_id)
+        if not isinstance(record, dict):
+            return catalog_status_background_candidate(
+                style_id,
+                {
+                    **manifest,
+                    "status": "incomplete",
+                    "code": "background_catalog_incomplete",
+                },
+            )
+        try:
+            return materialize_approved_background_candidate(
+                style_id,
+                record,
+            )
+        except ProductAssetRuntimeError as exc:
+            raise PreviewObjectStorageError(
+                exc.code,
+                "已审核背景资产暂时不可用，请稍后重试",
+            ) from exc
     target = style_background_target(style_id)
     ensure_private_preview_asset(target)
     metadata = load_ai_output_metadata(target) if target.exists() else None
@@ -8912,6 +9144,10 @@ def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str,
     candidate["generationProvider"] = str(metadata.get("provider") or "")
     if metadata.get("error"):
         candidate["generationError"] = str(metadata.get("error"))
+    if metadata.get("errorCode"):
+        candidate["generationErrorCode"] = str(metadata.get("errorCode"))
+    if metadata.get("retryable") is not None:
+        candidate["retryable"] = bool(metadata.get("retryable"))
     for key in (
         "assetRecordId",
         "backgroundAssetId",
@@ -9727,6 +9963,7 @@ def pipeline_payload() -> dict[str, Any]:
         "localPreviewFallback": local_preview_fallback_enabled(),
         "localFinalFallback": local_final_fallback_enabled(),
         "localBackgroundFallback": local_background_fallback_enabled(),
+        "approvedBackgroundCatalog": approved_background_catalog_enabled(),
         "objectStorageReady": bool(tencent.get("cosReady") or os.environ.get("OBJECT_STORAGE_BUCKET")),
         "expectedEnv": [
             "TENCENT_HUNYUAN_ENABLED",
@@ -10365,6 +10602,74 @@ def api_style_background():
             "name": style_name_for(style),
             "sample": sample,
         }))
+
+
+@app.get("/api/background-catalog")
+def api_background_catalog():
+    menu_path, principal, menu_upload_id, menu_error = (
+        resolve_customer_preview_menu()
+    )
+    if menu_error is not None:
+        return menu_error
+    assert principal is not None
+    with customer_preview_menu_path(
+        menu_path,
+        principal,
+        menu_upload_id,
+    ):
+        if not approved_background_catalog_enabled():
+            return jsonify(
+                {
+                    "mode": "live-generation",
+                    "status": "disabled",
+                    "ready": False,
+                    "styles": [],
+                }
+            )
+        manifest = approved_background_catalog_manifest()
+        styles = []
+        records_by_style = manifest.get("_recordsByStyle") or {}
+        for index, style_id in enumerate(
+            background_catalog.STYLE_IDS,
+            start=1,
+        ):
+            try:
+                sample = (
+                    materialize_approved_background_candidate(
+                        style_id,
+                        records_by_style[style_id],
+                    )
+                    if manifest.get("ready")
+                    and isinstance(records_by_style.get(style_id), dict)
+                    else catalog_status_background_candidate(
+                        style_id,
+                        manifest,
+                    )
+                )
+            except ProductAssetRuntimeError as exc:
+                return preview_object_storage_error_response(
+                    PreviewObjectStorageError(
+                        exc.code,
+                        "已审核背景资产暂时不可用，请稍后重试",
+                    )
+                )
+            styles.append(
+                public_style_payload(
+                    {
+                        "id": style_id,
+                        "styleId": style_id,
+                        "name": BACKGROUND_LABELS[index - 1],
+                        "rawName": style_name_for(style_id),
+                        "slot": background_catalog.style_slot(
+                            style_id
+                        ).public_payload(),
+                        "sample": sample,
+                    }
+                )
+            )
+        public_manifest = strip_sensitive_public_payload(manifest)
+        public_manifest["styles"] = styles
+        return jsonify(public_manifest)
 
 
 def requested_selected_background(
