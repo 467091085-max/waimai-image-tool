@@ -10,10 +10,13 @@ private COS, for 90 of the 240 target assets. The latest approved groups are
 `fried_chicken`, `burger_hotdog`, and `pizza`; their corrected same-hue solid
 slots and complete six-image contact sheets passed exact COS visual review.
 Render deploy `dep-d9mvpm2jnfac73a32hvg` re-read every object and wrote all
-three approved manifests. The next action is to freeze these approved prompt
-bytes, restore the normal web start command, and generate the next five
-categories: `sandwich_bagel`, `pasta_steak`, `japanese`, `korean`, and
-`southeast_asian`.
+three approved manifests. The next five-category batch completed 30/30 with
+zero provider failures. Exact COS review passed `pasta_steak`, `korean`, and
+`southeast_asian`. Only `sandwich_bagel/style-2` and `japanese/style-2` failed:
+material-like palette terms `浅木` and `原木` produced wood walls, and the
+Japanese image added a stepped plane. Profile v12 maps material-like palette
+terms to plain color names before selective replacement of only those two
+slots.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -150,6 +153,10 @@ categories: `sandwich_bagel`, `pasta_steak`, `japanese`, `korean`, and
   `dep-d9mvpm2jnfac73a32hvg` reported `reviewStatus=approved` at
   `2026-08-01T14:04:59Z`, `2026-08-01T14:05:38Z`, and
   `2026-08-01T14:06:11Z`. The catalog checkpoint is 15 categories / 90 assets.
+- Five-category deploy `dep-d9mvthnlk1mc73dgkn3g` completed 30/30 real paid
+  images with `failureCount=0`. COS visual review passed `pasta_steak`,
+  `korean`, and `southeast_asian`; `sandwich_bagel/style-2` and
+  `japanese/style-2` remain rejected pending profile-v12 selective replacement.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

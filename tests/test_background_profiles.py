@@ -206,6 +206,30 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "21db73106c31e20ca6bc1a30d33be6c6ee15e02b595db71bec7191609f241c1f",
             "style-6": "7c6f5416abf68f8920198a94426df0887019ba9bf324fc63f197cf761fafbfe1",
         },
+        "pasta_steak": {
+            "style-1": "ffb4cabf6ca7fa7065f55e12688fd5b6bbfc93f3a825b59168eb94922cfacce3",
+            "style-2": "bb0e03fd065918b6701b543dd31267fc721ed16aeb9a740156b10e2ef4303937",
+            "style-3": "f5b8fc44704d6f623c6025083d17dffc2b41f19718adfd13c242bae4820e381c",
+            "style-4": "9e56c698ce0b8b84a0751c28f20276a5f2248b6ecd4ba3ea51af77d706da4e8b",
+            "style-5": "ed48ed4cfeac049df2353a33bbf1add11aed31bc4efd0c58d3bafecc37fbcb29",
+            "style-6": "70332535090a724bd9ce40ca27d3418fc68220a2cc26d88878dcfb4a6c84dc16",
+        },
+        "korean": {
+            "style-1": "fb9bc0f51542c92433dd1731daab1c72926bb5cae0889b18db7572742dbdb5a6",
+            "style-2": "227aa8b0eb6aa98a619d1e214931a3d238dfd08ffb347d09f4c585b36543ac52",
+            "style-3": "e68712deafc5cdccc424a5b4ba1a31a3511bae7884bcaf7ef7db6c5e941fca1d",
+            "style-4": "2d15bd9bc7719236509b34d8a916f20aaef469990c81ce0a32b26ed940802889",
+            "style-5": "fe3a850f62f821a3ebe3c2776b04a5d1be8d8dac64861b7d06091469ead2f2b6",
+            "style-6": "a532bbe7096c46067ed6423f5b4ab27db1ee6ef27495f68b063db0eb1287afed",
+        },
+        "southeast_asian": {
+            "style-1": "5578a6c8545786150def4dbc3e62e82e1c0a957a835ffe91eabc4148bf97a08f",
+            "style-2": "28a458a03fedde1d768ab87d37d7da83ab67ef971b35577dd538d76b4a185ce7",
+            "style-3": "e9c5061b6ffcbc45780bd43f85e398784d4dfa4744f57105936699ad7c7c035e",
+            "style-4": "50899a5f74c2d00916f7bc9216cd13b7d9d1dcdaa4ff8b40f9e0a4fd6a0f1f8a",
+            "style-5": "4fe3e70858c9188dc1e0bfba42f21682e1fb7fb1737ba8d38a736bdf51a9b1d3",
+            "style-6": "6baccb98f90b0f1bafc23669360f4e017295c9ae316070c947255cffa0364473",
+        },
     }
 
     assert (
@@ -219,6 +243,28 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
                 style_id,
             )
             assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == expected_hash
+
+
+def test_material_like_palette_terms_become_plain_solid_colors() -> None:
+    sandwich_prompt = background_profiles.pure_background_prompt(
+        "sandwich_bagel",
+        "style-2",
+    )
+    japanese_prompt = background_profiles.pure_background_prompt(
+        "japanese",
+        "style-2",
+    )
+    northeast_prompt = background_profiles.pure_background_prompt(
+        "northeast_chinese",
+        "style-1",
+    )
+
+    assert "浅暖米色" in sandwich_prompt
+    assert "浅木" not in sandwich_prompt
+    assert "浅焦糖棕" in japanese_prompt
+    assert "原木" not in japanese_prompt
+    assert "暖焦糖棕" in northeast_prompt
+    assert "暖木" not in northeast_prompt
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:

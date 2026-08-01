@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v11"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v12"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -76,6 +76,20 @@ BACKGROUND_SCENES = {
     "fruit": "水果果切场景，冷白、清水蓝与嫩绿配色，明亮清凉矿物材质",
 }
 
+SEAMLESS_SOLID_COLOR_ALIASES = {
+    "浅木": "浅暖米色",
+    "浅木色": "浅暖米色",
+    "原木": "浅焦糖棕",
+    "原木色": "浅焦糖棕",
+    "暖木": "暖焦糖棕",
+    "胡桃木": "深焦糖棕",
+    "竹木色": "浅麦芽棕",
+    "深木色": "深焦糖棕",
+    "金属灰": "中性冷灰",
+    "冷石色": "浅冷灰",
+    "沙岩色": "浅沙金色",
+}
+
 # These v11 prompt bytes already back hash-locked approved COS manifests.
 FROZEN_V11_PROMPT_CATEGORIES = frozenset(
     {"light_food", "topped_rice", "mixed_rice"}
@@ -94,7 +108,14 @@ FROZEN_PROFILE_V10_PROMPT_CATEGORIES = frozenset(
     }
 )
 FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
-    {"fried_chicken", "burger_hotdog", "pizza"}
+    {
+        "fried_chicken",
+        "burger_hotdog",
+        "pizza",
+        "pasta_steak",
+        "korean",
+        "southeast_asian",
+    }
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (
     FROZEN_V11_PROMPT_CATEGORIES
@@ -157,6 +178,8 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
         else:
             color_index = 1 if len(colors) > 1 else -1
         color = colors[color_index] if colors else "低饱和中性色"
+        if normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES:
+            color = SEAMLESS_SOLID_COLOR_ALIASES.get(color, color)
         if (
             style_id == "style-2"
             and (

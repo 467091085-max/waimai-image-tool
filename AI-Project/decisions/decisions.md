@@ -150,3 +150,7 @@
   solid-slot contract. Their exact approved prompt bytes are immutable along
   with the earlier 12 approved categories; future tuning may affect only
   unapproved categories.
+- Seamless-solid prompts must translate material-like palette labels such as
+  `浅木`, `原木`, `暖木`, `胡桃木`, `金属灰`, and `冷石色` into plain color names.
+  These labels are visual palette intent, not permission to render wood, metal,
+  stone texture, wall panels, or stepped display planes.
