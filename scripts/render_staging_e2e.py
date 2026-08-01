@@ -42,6 +42,7 @@ STYLE_INDEX_ENV = "WAIMAI_STAGING_E2E_STYLE_INDEX"
 GET_MAX_ATTEMPTS = 4
 GET_RETRY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 GET_RETRY_BASE_DELAY_SECONDS = 0.25
+RETRYABLE_GET_PATH_PREFIXES = ("/api/generation-jobs/",)
 
 
 class RemoteResponse:
@@ -86,9 +87,12 @@ class RemoteClient:
         *,
         headers: dict[str, str] | None = None,
     ) -> RemoteResponse:
+        retry_allowed = path.startswith(RETRYABLE_GET_PATH_PREFIXES)
+        max_attempts = GET_MAX_ATTEMPTS if retry_allowed else 1
         request_headers = dict(headers or {})
-        request_headers.setdefault("Connection", "close")
-        for attempt in range(1, GET_MAX_ATTEMPTS + 1):
+        if retry_allowed:
+            request_headers.setdefault("Connection", "close")
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = self.session.get(
                     self._url(path),
@@ -96,12 +100,12 @@ class RemoteClient:
                     timeout=self.timeout_seconds,
                 )
             except (requests.ConnectionError, requests.Timeout):
-                if attempt >= GET_MAX_ATTEMPTS:
+                if attempt >= max_attempts:
                     raise
             else:
                 if (
                     response.status_code not in GET_RETRY_STATUS_CODES
-                    or attempt >= GET_MAX_ATTEMPTS
+                    or attempt >= max_attempts
                 ):
                     return RemoteResponse(response)
                 response.close()

@@ -13,11 +13,12 @@ customer-ready checkpoint is 40 approved categories / 240 approved assets.
 Step 93 in progress: fast-path acceptance generated and SHA-verified all six
 representative dish/combo samples against one approved mixed-rice background.
 The formal job was accepted, but the HTTP acceptance client stopped after one
-transient loopback connection reset while polling status. Render is restored
-to normal Gunicorn in live deploy `dep-d9n329bl550s7397if5g`. A local minimal
-patch now retries only idempotent GET requests; formal generation, billing,
-manifest, and export must be rerun. Production remains fail-closed without
-Redis and an independent worker.
+transient loopback connection reset while polling status. A first retry patch
+was rejected because sample generation is a side-effecting GET. The corrected
+local patch retries only `/api/generation-jobs/...` reads. Render is restored
+to normal Gunicorn in live deploy `dep-d9n39fflk1mc73dllnt0`; formal
+generation, billing, manifest, and export must be rerun. Production remains
+fail-closed without Redis and an independent worker.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -110,11 +111,21 @@ Redis and an independent worker.
   `generated/acceptance/render-staging/20260801T173449Z/report-9e113340a8ad19a9.json`.
 - Stopped the unmonitored in-process task by restoring normal Gunicorn. Restore
   deploy `dep-d9n329bl550s7397if5g` is live.
-- The acceptance client now retries only GET requests after connection resets,
-  timeouts, or bounded transient HTTP statuses. POST submission and debit paths
-  remain single-attempt. Focused runner/acceptance/staging tests passed `11
-  passed`; complete regression passed `1333 passed, 20 skipped`; scoped Python
-  compilation and `git diff --check` passed.
+- The first local patch retried all GET requests after connection resets,
+  timeouts, or bounded transient HTTP statuses while leaving POST single-attempt.
+  Its tests passed, but the next real run proved that boundary was too broad.
+- Rejected that first retry boundary before completing a rerun: the legacy
+  `/api/style-preview-sample` GET performs a paid generation side effect. If a
+  request crossed its five-minute timeout, a generic GET retry could duplicate
+  a provider call before the first server thread finished.
+- Stopped the rerun after two successful samples and before the long third
+  sample reached the retry boundary. Restored normal Gunicorn in live deploy
+  `dep-d9n39fflk1mc73dllnt0`.
+- The corrected retry allowlist contains only
+  `/api/generation-jobs/...` status/manifest reads. Sample generation,
+  background generation, exports, and every POST remain single-attempt.
+  Focused verification passed `12 passed`; complete regression passed `1334
+  passed, 20 skipped`; scoped compilation and `git diff --check` passed.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

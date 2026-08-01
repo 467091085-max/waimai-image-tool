@@ -23,7 +23,7 @@ def response(status_code: int, body: bytes = b"{}") -> requests.Response:
     return result
 
 
-def test_get_retries_connection_reset_without_changing_request() -> None:
+def test_job_status_get_retries_connection_reset_without_changing_request() -> None:
     client = runner.RemoteClient(
         "http://127.0.0.1:10000",
         username="staging-user",
@@ -63,6 +63,24 @@ def test_get_retries_transient_status_but_returns_terminal_status() -> None:
     assert result.status_code == 200
     transient.close.assert_called_once_with()
     assert client.session.get.call_count == 2
+
+
+def test_generation_trigger_get_is_never_retried() -> None:
+    client = runner.RemoteClient(
+        "http://127.0.0.1:10000",
+        username="staging-user",
+        password="staging-password",
+        timeout_seconds=30,
+    )
+    client.session.get = mock.Mock(
+        side_effect=requests.ConnectionError("reset")
+    )
+
+    with pytest.raises(requests.ConnectionError, match="reset"):
+        client.get("/api/style-preview-sample?style=style-3&index=2")
+
+    assert client.session.get.call_count == 1
+    assert "Connection" not in client.session.get.call_args.kwargs["headers"]
 
 
 def test_post_is_not_retried_after_connection_failure() -> None:
