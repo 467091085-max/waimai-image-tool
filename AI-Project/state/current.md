@@ -10,13 +10,14 @@ manually reviewed, hash-lock approved in private COS, frozen in commit
 `dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
 customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 93 in progress: the first real 60-row Render run correctly stopped before
-provider calls because post-upload taxonomy was wrong. The root cause is fixed
-locally and verified against the same workbook. Deploy the filename-provenance
-patch, rerun taxonomy routing, then continue through six approved backgrounds,
-six free samples, selected-background generation, all dish/combo generation,
-Meituan export, and server-owned point debit/refund verification. Production
-remains fail-closed without Redis and an independent worker.
+Step 93 in progress: the third real 60-row Render acceptance run passed
+preflight, exact `mixed_rice` routing, approved-catalog lookup, and the first
+paid sample call. It then exposed that free previews selected the first six
+single-item rows, which were promotions instead of representative dishes. The
+run was stopped before formal generation, the test site was restored, and the
+minimal representative-sample patch passed complete regression. Commit and
+deploy it, then rerun all six samples, every dish/combo, billing, and export.
+Production remains fail-closed without Redis and an independent worker.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -58,6 +59,34 @@ remains fail-closed without Redis and an independent worker.
   `mixed_rice` with confidence 96. Snapshot/category and related focused
   regression passed `78 passed`; scoped compilation and `git diff --check`
   passed.
+- Second real Render acceptance reached `plan` with the corrected taxonomy but
+  failed closed because the test environment had not enabled approved-catalog
+  reads. No paid provider call or point debit occurred. Its private-COS report
+  is `generated/acceptance/render-staging/20260801T171145Z/report-5437934a2057da25.json`.
+- The test environment now explicitly sets
+  `BACKGROUND_CATALOG_APPROVED_ONLY=true` and
+  `BACKGROUND_CATALOG_MANIFEST_BACKEND=object-storage`.
+- Third real acceptance deploy `dep-d9n2ik3m8hqs73df3cu0` is live. It passed
+  the 60-row upload, exact `mixed_rice` plan, all six approved-background COS
+  reads and SHA checks, then selected `style-3` with SHA prefix
+  `b432ea0bcb2a`. Paid six-sample generation is the active stage.
+- The first paid sample returned HTTP 200 in about 113 seconds, proving the
+  configured TokenHub generation path works. Its selected item was the
+  non-food row `祝顾客:马年行大运,万事皆顺意`, exposing a deterministic
+  preview-selection defect rather than a provider failure.
+- Root cause: `preview_sample_entries()` discarded all combos and selected the
+  first six single rows. In this workbook those rows are an announcement and
+  low-price promotional add-ons, not representative mixed-rice products.
+- Stopped the paid run before formal generation and restored normal Gunicorn
+  with deploy `dep-d9n2l2bl550s7396t2o0`, which is live.
+- Minimal correction selects two primary-category combos first, then
+  primary-category singles and remaining real combos, deduplicates normalized
+  names, and excludes explicit announcement rows. Formal generation and Excel
+  parsing are unchanged.
+- The corrected selector returned six unique non-announcement products for all
+  24 local Excel menus. The exact mixed-rice workbook now selects five main
+  combos and one mixed-rice dish. Complete regression passed `1330 passed, 20
+  skipped`; scoped compilation and `git diff --check` passed.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

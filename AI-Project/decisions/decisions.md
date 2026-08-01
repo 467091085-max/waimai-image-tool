@@ -201,3 +201,15 @@
 - When a frozen worker contract lacks `originalFilename`, recover the sanitized
   source basename from the private object key. Do not hardcode a category or
   silently choose a background from repeated add-on ingredient words.
+
+## Free Preview Product Selection
+- The six free samples must be six distinct normalized product names from the
+  uploaded menu. Explicit announcements such as customer greetings, order
+  notices, support instructions, or `勿拍` rows may not occupy a sample slot.
+- Prefer up to two combos containing the selected menu taxonomy, then matching
+  single dishes, remaining matching combos, and other real combos before
+  unrelated single items. This keeps the preview representative while proving
+  that combo-image generation is supported.
+- Sample selection changes neither Excel row inclusion nor the formal
+  generation manifest; filtering formal products is a separate product
+  decision and must not be inferred from the preview rule.

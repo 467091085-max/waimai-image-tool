@@ -850,6 +850,59 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(manifest["previewFreeImages"], app_module.PREVIEW_SAMPLE_COUNT)
         self.assertEqual(manifest["samples"][0]["generation"]["status"], "pending")
 
+    def test_preview_samples_prioritize_category_dishes_and_combos_over_announcements(self) -> None:
+        def item(
+            row: int,
+            name: str,
+            kind: str,
+            taxonomy: str,
+            components: list[str] | None = None,
+        ) -> dict[str, object]:
+            return {
+                "row": row,
+                "category": "测试",
+                "name": name,
+                "norm": app_module.normalize(name),
+                "kind": kind,
+                "taxonomy": taxonomy,
+                "components": components or [],
+            }
+
+        menu = {
+            "items": [
+                item(1, "祝顾客马年行大运,万事皆顺意", "单品", "unknown"),
+                item(2, "0.01元热狗肠1根", "单品", "burger_hotdog"),
+                item(3, "蜜汁烤肉拌饭+黑椒烤排套餐", "套餐/组合", "combo", ["蜜汁烤肉拌饭", "黑椒烤排"]),
+                item(4, "黑椒烤排拌饭+时蔬套餐", "套餐/组合", "combo", ["黑椒烤排拌饭", "时蔬"]),
+                item(5, "招牌蜜汁烤肉拌饭", "单品", "mixed_rice"),
+                item(6, "双椒鸡排拌饭", "单品", "mixed_rice"),
+                item(9, "招牌蜜汁烤肉拌饭", "单品", "mixed_rice"),
+                item(7, "烤肉拌饭双拼套餐", "套餐/组合", "combo", ["鸡排"]),
+                item(8, "黑椒烤排三拼套餐", "套餐/组合", "combo", ["烤排"]),
+            ]
+        }
+
+        with mock.patch.object(
+            app_module,
+            "category_report",
+            return_value={"taxonomyId": "mixed_rice"},
+        ):
+            selected = app_module.select_preview_sample_items(menu)
+
+        self.assertEqual(
+            [row["name"] for row in selected],
+            [
+                "蜜汁烤肉拌饭+黑椒烤排套餐",
+                "黑椒烤排拌饭+时蔬套餐",
+                "招牌蜜汁烤肉拌饭",
+                "双椒鸡排拌饭",
+                "烤肉拌饭双拼套餐",
+                "黑椒烤排三拼套餐",
+            ],
+        )
+        self.assertNotIn("祝顾客马年行大运,万事皆顺意", [row["name"] for row in selected])
+        self.assertNotIn("0.01元热狗肠1根", [row["name"] for row in selected])
+
     def test_style_preview_batch_preserves_successes_when_one_sample_raises(self) -> None:
         entries = [
             {"item": menu_row(index + 1, f"菜品{index + 1}", "单品", []), "candidates": []}

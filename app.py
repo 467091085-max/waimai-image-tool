@@ -10252,21 +10252,107 @@ def pipeline_payload() -> dict[str, Any]:
     }
 
 
+PREVIEW_ANNOUNCEMENT_RE = re.compile(
+    r"(?:祝(?:顾客|您)|温馨提示|下单须知|门店公告|联系客服|勿拍|不要下单|仅供展示|图片仅供参考)"
+)
+
+
+def preview_item_taxonomies(item: dict[str, Any]) -> set[str]:
+    taxonomies = {str(item.get("taxonomy") or "").strip()}
+    for component in item.get("components") or []:
+        taxonomy_id = classify_taxonomy(str(component or ""))
+        if taxonomy_id:
+            taxonomies.add(taxonomy_id)
+    return {value for value in taxonomies if value}
+
+
+def preview_item_is_announcement(item: dict[str, Any]) -> bool:
+    return bool(PREVIEW_ANNOUNCEMENT_RE.search(str(item.get("name") or "")))
+
+
+def select_preview_sample_items(
+    menu: dict[str, Any],
+    limit: int = PREVIEW_SAMPLE_COUNT,
+) -> list[dict[str, Any]]:
+    items = [
+        item
+        for item in menu.get("items", [])
+        if str(item.get("name") or "").strip()
+        and not preview_item_is_announcement(item)
+    ]
+    target_taxonomy = str(category_report(menu).get("taxonomyId") or "").strip()
+    if target_taxonomy in {TAXONOMY_UNKNOWN, TAXONOMY_COMBO, background_profiles.MIXED_CATEGORY_ID}:
+        target_taxonomy = ""
+
+    primary_singles = [
+        item
+        for item in items
+        if item.get("kind") == "单品"
+        and target_taxonomy
+        and str(item.get("taxonomy") or "") == target_taxonomy
+    ]
+    primary_combos = [
+        item
+        for item in items
+        if item.get("kind") == "套餐/组合"
+        and target_taxonomy
+        and target_taxonomy in preview_item_taxonomies(item)
+    ]
+    other_combos = [item for item in items if item.get("kind") == "套餐/组合"]
+    known_singles = [
+        item
+        for item in items
+        if item.get("kind") == "单品"
+        and str(item.get("taxonomy") or "") not in {"", TAXONOMY_UNKNOWN, TAXONOMY_COMBO}
+    ]
+    known_combos = [
+        item
+        for item in items
+        if item.get("kind") == "套餐/组合"
+        and preview_item_taxonomies(item) - {TAXONOMY_UNKNOWN, TAXONOMY_COMBO}
+    ]
+    other_singles = [item for item in items if item.get("kind") == "单品"]
+    other_items = [item for item in items if item.get("kind") != "单品"]
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(pool: list[dict[str, Any]]) -> None:
+        for item in pool:
+            norm = str(item.get("norm") or normalize(str(item.get("name") or "")))
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            selected.append(item)
+            if len(selected) >= limit:
+                return
+
+    add(primary_combos[:2])
+    add(primary_singles)
+    add(primary_combos[2:])
+    add(other_combos)
+    add(known_singles)
+    add(known_combos)
+    add(other_singles)
+    add(other_items)
+    return selected[:limit]
+
+
 def preview_sample_entries() -> list[dict[str, Any]]:
     menu = parse_menu()
     library = library_images()
-    single_items = [item for item in menu["items"] if item.get("kind") == "单品"]
-    seen_norms = {item.get("norm") for item in single_items}
-    if len(single_items) < PREVIEW_SAMPLE_COUNT:
+    sample_items = select_preview_sample_items(menu)
+    seen_norms = {item.get("norm") for item in sample_items}
+    if len(sample_items) < PREVIEW_SAMPLE_COUNT:
         for item in demo_menu_items():
             if item.get("kind") != "单品" or item.get("norm") in seen_norms:
                 continue
-            single_items.append({**item, "category": "风格样图"})
+            sample_items.append({**item, "category": "风格样图"})
             seen_norms.add(item.get("norm"))
-            if len(single_items) >= PREVIEW_SAMPLE_COUNT:
+            if len(sample_items) >= PREVIEW_SAMPLE_COUNT:
                 break
     entries = []
-    for item in single_items[:PREVIEW_SAMPLE_COUNT]:
+    for item in sample_items[:PREVIEW_SAMPLE_COUNT]:
         if not item.get("norm"):
             item = {**item, "norm": normalize(str(item.get("name") or ""))}
         candidates = top_candidates(item, library)
