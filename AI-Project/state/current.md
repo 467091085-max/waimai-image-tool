@@ -10,14 +10,14 @@ manually reviewed, hash-lock approved in private COS, frozen in commit
 `dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
 customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 93 in progress: the third real 60-row Render acceptance run passed
-preflight, exact `mixed_rice` routing, approved-catalog lookup, and the first
-paid sample call. It then exposed that free previews selected the first six
-single-item rows, which were promotions instead of representative dishes. The
-run was stopped before formal generation, the test site was restored, and the
-minimal representative-sample patch passed complete regression. Commit and
-deploy it, then rerun all six samples, every dish/combo, billing, and export.
-Production remains fail-closed without Redis and an independent worker.
+Step 93 in progress: fast-path acceptance generated and SHA-verified all six
+representative dish/combo samples against one approved mixed-rice background.
+The formal job was accepted, but the HTTP acceptance client stopped after one
+transient loopback connection reset while polling status. Render is restored
+to normal Gunicorn in live deploy `dep-d9n329bl550s7397if5g`. A local minimal
+patch now retries only idempotent GET requests; formal generation, billing,
+manifest, and export must be rerun. Production remains fail-closed without
+Redis and an independent worker.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -87,6 +87,34 @@ Production remains fail-closed without Redis and an independent worker.
   24 local Excel menus. The exact mixed-rice workbook now selects five main
   combos and one mixed-rice dish. Complete regression passed `1330 passed, 20
   skipped`; scoped compilation and `git diff --check` passed.
+- A fourth run proved the corrected first sample is a main mixed-rice combo,
+  but it remained in the request for more than four minutes because the exact
+  background pipeline was still using two serial cloud operations: foreground
+  generation and cloud mask extraction. The run was stopped before a formal
+  job.
+- Enabled the existing tested staging fast path with
+  `EXACT_BACKGROUND_CHROMA_FAST_PATH=true`. Normal success now uses one
+  TokenHub foreground call plus local chroma mask extraction; invalid chroma
+  output still falls back to the cloud mask and all outside-mask background
+  pixel checks remain required.
+- Fast-path real acceptance deploy `dep-d9n2s9flk1mc73dl0gqg` completed the
+  six-sample stage and stopped at the formal-job status-poll transport failure.
+- Fast-path acceptance generated six distinct, representative mixed-rice
+  dish/combo samples in 68-94 seconds each. All six returned HTTP 200, used the
+  selected `style-3` background SHA `b432ea0bcb2a`, and passed downloaded-output
+  SHA verification plus exact-background identity checks.
+- The formal job `generation-a31ace122ac40eab84e60a00` was accepted, but the
+  acceptance client received one `ConnectionResetError(104)` on its third
+  idempotent status poll. The server remained reachable; the failure report is
+  private-COS object
+  `generated/acceptance/render-staging/20260801T173449Z/report-9e113340a8ad19a9.json`.
+- Stopped the unmonitored in-process task by restoring normal Gunicorn. Restore
+  deploy `dep-d9n329bl550s7397if5g` is live.
+- The acceptance client now retries only GET requests after connection resets,
+  timeouts, or bounded transient HTTP statuses. POST submission and debit paths
+  remain single-attempt. Focused runner/acceptance/staging tests passed `11
+  passed`; complete regression passed `1333 passed, 20 skipped`; scoped Python
+  compilation and `git diff --check` passed.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

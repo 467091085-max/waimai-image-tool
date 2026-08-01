@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,6 +39,9 @@ MAX_ROWS_ENV = "WAIMAI_STAGING_E2E_MAX_ROWS"
 HTTP_TIMEOUT_ENV = "WAIMAI_STAGING_E2E_HTTP_TIMEOUT"
 FLOW_TIMEOUT_ENV = "WAIMAI_STAGING_E2E_FLOW_TIMEOUT"
 STYLE_INDEX_ENV = "WAIMAI_STAGING_E2E_STYLE_INDEX"
+GET_MAX_ATTEMPTS = 4
+GET_RETRY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+GET_RETRY_BASE_DELAY_SECONDS = 0.25
 
 
 class RemoteResponse:
@@ -82,13 +86,27 @@ class RemoteClient:
         *,
         headers: dict[str, str] | None = None,
     ) -> RemoteResponse:
-        return RemoteResponse(
-            self.session.get(
-                self._url(path),
-                headers=headers,
-                timeout=self.timeout_seconds,
-            )
-        )
+        request_headers = dict(headers or {})
+        request_headers.setdefault("Connection", "close")
+        for attempt in range(1, GET_MAX_ATTEMPTS + 1):
+            try:
+                response = self.session.get(
+                    self._url(path),
+                    headers=request_headers,
+                    timeout=self.timeout_seconds,
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt >= GET_MAX_ATTEMPTS:
+                    raise
+            else:
+                if (
+                    response.status_code not in GET_RETRY_STATUS_CODES
+                    or attempt >= GET_MAX_ATTEMPTS
+                ):
+                    return RemoteResponse(response)
+                response.close()
+            time.sleep(GET_RETRY_BASE_DELAY_SECONDS * attempt)
+        raise RuntimeError("unreachable GET retry state")
 
     def post(
         self,
@@ -144,8 +162,6 @@ def positive_int_env(name: str, default: int) -> int:
 
 
 def wait_for_web(client: RemoteClient, timeout_seconds: float = 180.0) -> None:
-    import time
-
     deadline = time.monotonic() + timeout_seconds
     last_error = ""
     while time.monotonic() < deadline:
