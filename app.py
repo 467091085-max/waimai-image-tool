@@ -231,9 +231,14 @@ STYLE_BACKGROUND_PROMPT_VERSION = 11
 DISH_GENERATION_PROMPT_VERSION = 1
 EXACT_BACKGROUND_PIPELINE_VERSION = 4
 CHROMA_FOREGROUND_PROMPT_VERSION = 1
+EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
+STAGING_E2E_INSTANCE_NONCE_PATH = Path(
+    "/tmp/waimai-staging-e2e-instance-nonce"
+)
 AI_ASSET_MANIFEST_LOCK = threading.Lock()
 TENCENT_TOKENHUB_GENERATION_LOCK = threading.Lock()
 TENCENT_MASK_EXTRACTION_LOCK = threading.Lock()
+EXACT_FOREGROUND_CACHE_LOCKS = tuple(threading.Lock() for _ in range(64))
 GENERATION_BATCH_SUBMIT_LOCK = threading.Lock()
 REVISION_BATCH_SUBMIT_LOCK = threading.Lock()
 LOCAL_ASSET_NONCE_CONSUMER = download_guard.InMemoryNonceConsumer()
@@ -693,6 +698,27 @@ def require_staging_test_access():
         status=401,
         headers={"WWW-Authenticate": 'Basic realm="Waimai Image Tool Staging"'},
     )
+
+
+@app.get("/api/staging-e2e-instance")
+def api_staging_e2e_instance():
+    if not staging_in_process_generation_allowed():
+        return jsonify({"error": "not found"}), 404
+    try:
+        nonce = STAGING_E2E_INSTANCE_NONCE_PATH.read_text(
+            encoding="ascii"
+        ).strip()
+    except OSError:
+        nonce = ""
+    supplied = str(
+        request.headers.get("X-Waimai-Staging-Instance") or ""
+    ).strip()
+    if not (
+        re.fullmatch(r"[0-9a-f]{64}", nonce)
+        and hmac.compare_digest(supplied, nonce)
+    ):
+        return jsonify({"instanceMatched": False}), 409
+    return jsonify({"instanceMatched": True})
 
 
 def local_demo_auth_allowed() -> bool:
@@ -3586,6 +3612,9 @@ def read_remote_image(url: str, timeout: int = 60) -> Image.Image:
 
 def save_result_image(result_image: str, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(
+        f".{target.name}.{secrets.token_hex(8)}.tmp"
+    )
     if result_image.startswith("http://") or result_image.startswith("https://"):
         img = read_remote_image(result_image)
     else:
@@ -3598,11 +3627,13 @@ def save_result_image(result_image: str, target: Path) -> None:
             source.close()
     try:
         if target.suffix.lower() == ".png":
-            img.save(target, "PNG", optimize=True)
+            img.save(temporary, "PNG", optimize=True)
         else:
-            img.save(target, "JPEG", quality=92, optimize=True)
+            img.save(temporary, "JPEG", quality=92, optimize=True)
+        os.replace(temporary, target)
     finally:
         img.close()
+        temporary.unlink(missing_ok=True)
 
 
 def provider_mask_image(result_image: str) -> Image.Image:
@@ -3634,7 +3665,16 @@ def provider_mask_image(result_image: str) -> Image.Image:
 
 def save_result_mask(result_image: str, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    provider_mask_image(result_image).save(target, "PNG", optimize=True)
+    temporary = target.with_name(
+        f".{target.name}.{secrets.token_hex(8)}.tmp"
+    )
+    mask = provider_mask_image(result_image)
+    try:
+        mask.save(temporary, "PNG", optimize=True)
+        os.replace(temporary, target)
+    finally:
+        mask.close()
+        temporary.unlink(missing_ok=True)
 
 
 def require_generated_output_quality(target: Path) -> dict[str, Any]:
@@ -3977,6 +4017,24 @@ def prompt_for_chroma_foreground(
     )[:250]
 
 
+def exact_product_identity(row: dict[str, Any]) -> str:
+    def exact_text(value: Any) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        return " ".join(normalized.casefold().split())
+
+    payload = {
+        "schemaVersion": 1,
+        "name": exact_text(row.get("name")),
+        "kind": exact_text(row.get("kind")),
+        "components": [
+            exact_text(value)
+            for value in row.get("components") or []
+            if exact_text(value)
+        ],
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def tencent_chroma_foreground(
     row: dict[str, Any],
     quality: str | None,
@@ -4021,8 +4079,16 @@ def foreground_cache_targets(
         / selected_background.sha256[:16]
         / quality_id
     )
-    stem = f"{int(row['row']):04d}_{safe_filename(str(row.get('name') or 'dish'))}"
-    return folder / f"{stem}.png", folder / f"{stem}.mask.png"
+    identity = exact_product_identity(row)
+    return folder / f"{identity}.png", folder / f"{identity}.mask.png"
+
+
+def exact_foreground_cache_lock(target: Path) -> threading.Lock:
+    digest = hashlib.sha256(str(target).encode("utf-8")).digest()
+    index = int.from_bytes(digest[:4], "big") % len(
+        EXACT_FOREGROUND_CACHE_LOCKS
+    )
+    return EXACT_FOREGROUND_CACHE_LOCKS[index]
 
 
 def tencent_extract_foreground_mask(
@@ -4097,7 +4163,46 @@ def tencent_exact_background_image(
     selected_background: SelectedBackgroundAsset,
     quality: str | None,
     target: Path,
+    *,
+    _foreground_lock_held: bool = False,
+    _batch_failure_cache: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
+    if not _foreground_lock_held:
+        foreground_target, _ = foreground_cache_targets(
+            row,
+            selected_background,
+            quality,
+        )
+        with exact_foreground_cache_lock(foreground_target):
+            failure_key = str(foreground_target)
+            cached_failure = (
+                _batch_failure_cache.get(failure_key)
+                if _batch_failure_cache is not None
+                else None
+            )
+            if cached_failure is not None:
+                raise SelectedBackgroundError(*cached_failure)
+            try:
+                return tencent_exact_background_image(
+                    row,
+                    selected_background,
+                    quality,
+                    target,
+                    _foreground_lock_held=True,
+                    _batch_failure_cache=_batch_failure_cache,
+                )
+            except Exception as exc:
+                if _batch_failure_cache is not None:
+                    code = (
+                        exc.code
+                        if isinstance(exc, SelectedBackgroundError)
+                        else "exact_product_generation_failed"
+                    )
+                    _batch_failure_cache[failure_key] = (
+                        str(code),
+                        str(exc)[:220] or "同款菜品生成失败",
+                    )
+                raise
     validate_selected_background_snapshot(selected_background)
     fast_chroma_enabled = chroma_foreground_fast_path_enabled()
     foreground_mode = (
@@ -4105,7 +4210,16 @@ def tencent_exact_background_image(
         if fast_chroma_enabled
         else "reference-conditioned.v1"
     )
+    mask_cache_version = (
+        f"selected-background-mask.v{EXACT_BACKGROUND_MASK_CACHE_VERSION}:"
+        + (
+            f"chroma.v{CHROMA_EXTRACTION_VERSION}"
+            if fast_chroma_enabled
+            else "cloud.v1"
+        )
+    )
     foreground_target, mask_target = foreground_cache_targets(row, selected_background, quality)
+    product_identity = exact_product_identity(row)
     foreground_metadata = load_ai_output_metadata(foreground_target) if foreground_target.exists() else None
     try:
         foreground_fingerprint = image_file_fingerprint(foreground_target) if foreground_target.exists() else None
@@ -4117,7 +4231,12 @@ def tencent_exact_background_image(
         and foreground_metadata
         and foreground_metadata.get("provider") == "tencent-hunyuan"
         and foreground_metadata.get("pipelineVersion") == EXACT_BACKGROUND_PIPELINE_VERSION
+        and foreground_metadata.get("dishPromptVersion") == DISH_GENERATION_PROMPT_VERSION
         and foreground_metadata.get("foregroundMode") == foreground_mode
+        and hmac.compare_digest(
+            str(foreground_metadata.get("exactProductIdentity") or ""),
+            product_identity,
+        )
         and hmac.compare_digest(
             str(foreground_metadata.get("foregroundSha256") or ""),
             str(foreground_fingerprint["sha256"]),
@@ -4146,7 +4265,9 @@ def tencent_exact_background_image(
             "status": "foreground_ready",
             "provider": "tencent-hunyuan",
             "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
+            "dishPromptVersion": DISH_GENERATION_PROMPT_VERSION,
             "foregroundMode": foreground_mode,
+            "exactProductIdentity": product_identity,
             "action": foreground_detail.get("action"),
             "promptType": foreground_detail.get("promptType"),
             "row": row.get("row"),
@@ -4165,6 +4286,8 @@ def tencent_exact_background_image(
         mask_fingerprint
         and foreground_cached
         and isinstance((foreground_metadata or {}).get("maskExtraction"), dict)
+        and (foreground_metadata or {}).get("maskCacheVersion")
+        == mask_cache_version
         and hmac.compare_digest(
             str((foreground_metadata or {}).get("maskSha256") or ""),
             str(mask_fingerprint["sha256"]),
@@ -4178,7 +4301,19 @@ def tencent_exact_background_image(
                 with Image.open(foreground_target) as foreground_image:
                     chroma_result = extract_chroma_mask(foreground_image)
                 mask_target.parent.mkdir(parents=True, exist_ok=True)
-                chroma_result.mask.save(mask_target, "PNG", optimize=True)
+                mask_temporary = mask_target.with_name(
+                    f".{mask_target.name}.{secrets.token_hex(8)}.tmp"
+                )
+                try:
+                    chroma_result.mask.save(
+                        mask_temporary,
+                        "PNG",
+                        optimize=True,
+                    )
+                    os.replace(mask_temporary, mask_target)
+                finally:
+                    chroma_result.mask.close()
+                    mask_temporary.unlink(missing_ok=True)
                 mask_detail = {
                     **chroma_result.metadata,
                     "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
@@ -4205,6 +4340,7 @@ def tencent_exact_background_image(
         foreground_metadata = {
             **(foreground_metadata or {}),
             "maskExtraction": mask_detail,
+            "maskCacheVersion": mask_cache_version,
             "maskSha256": mask_fingerprint["sha256"],
         }
         write_ai_output_metadata(foreground_target, foreground_metadata)
@@ -4227,7 +4363,18 @@ def tencent_exact_background_image(
                     "lossless_master_required",
                     "所选背景规范母版必须使用无损 PNG",
                 )
-            composition.image.save(target, "PNG", optimize=True)
+            output_temporary = target.with_name(
+                f".{target.name}.{secrets.token_hex(8)}.tmp"
+            )
+            try:
+                composition.image.save(
+                    output_temporary,
+                    "PNG",
+                    optimize=True,
+                )
+                os.replace(output_temporary, target)
+            finally:
+                output_temporary.unlink(missing_ok=True)
     except CompositionError as exc:
         raise SelectedBackgroundError(exc.code, str(exc)) from exc
     with Image.open(target) as persisted_output:
@@ -4256,6 +4403,7 @@ def tencent_exact_background_image(
         "backgroundIdentityVerified": True,
         "persistedOutputBackgroundVerified": True,
         "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
+        "dishPromptVersion": DISH_GENERATION_PROMPT_VERSION,
         "outputSha256": output_fingerprint["sha256"],
         "qualityReport": quality_report,
         "composition": {
@@ -7653,6 +7801,11 @@ def verified_exact_output_metadata(
         and metadata.get("backgroundIdentityVerified") is True
         and metadata.get("persistedOutputBackgroundVerified") is True
         and metadata.get("pipelineVersion") == EXACT_BACKGROUND_PIPELINE_VERSION
+        and (
+            metadata.get("provider") == "asset-library"
+            or metadata.get("dishPromptVersion")
+            == DISH_GENERATION_PROMPT_VERSION
+        )
     ):
         return False
     try:
@@ -7674,6 +7827,11 @@ def verified_exact_candidate(
         and candidate.get("backgroundIdentityVerified") is True
         and candidate.get("persistedOutputBackgroundVerified") is True
         and candidate.get("pipelineVersion") == EXACT_BACKGROUND_PIPELINE_VERSION
+        and (
+            candidate.get("generationProvider") == "asset-library"
+            or candidate.get("dishPromptVersion")
+            == DISH_GENERATION_PROMPT_VERSION
+        )
         and hmac.compare_digest(str(candidate.get("backgroundAssetId") or ""), selected_background.asset_id)
         and hmac.compare_digest(str(candidate.get("backgroundSha256") or "").lower(), selected_background.sha256)
         and str(candidate.get("backgroundMenuKey") or "") == selected_background.menu_key
@@ -7882,6 +8040,11 @@ def materialize_preview_candidate(
                     detail.get("persistedOutputBackgroundVerified")
                 ),
                 "pipelineVersion": detail.get("pipelineVersion"),
+                "dishPromptVersion": (
+                    DISH_GENERATION_PROMPT_VERSION
+                    if selected_background is not None
+                    else detail.get("dishPromptVersion")
+                ),
                 "outputSha256": detail.get("outputSha256"),
                 "qualityReport": detail.get("qualityReport"),
             }
@@ -8010,7 +8173,14 @@ def write_ai_output_metadata(target: Path, metadata: dict[str, Any]) -> None:
         )
     meta_path = ai_output_metadata_path(target)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_bytes(raw)
+    temporary = meta_path.with_name(
+        f".{meta_path.name}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        temporary.write_bytes(raw)
+        os.replace(temporary, meta_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def existing_ai_output_candidate(
@@ -9430,6 +9600,7 @@ def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str,
         "backgroundIdentityVerified",
         "persistedOutputBackgroundVerified",
         "pipelineVersion",
+        "dishPromptVersion",
         "outputSha256",
     ):
         if metadata.get(key) not in (None, ""):
@@ -9479,6 +9650,28 @@ def merge_generation_row_result(generation: dict[str, Any], result: dict[str, An
             bump_generation_action(generation, action)
 
 
+def publish_generation_progress(
+    callback: Callable[[int, int, int], None] | None,
+    items_by_index: dict[int, dict[str, Any]],
+    requested: int,
+) -> None:
+    if callback is None:
+        return
+    completed_statuses = {"succeeded", "cached", "reused", "fallback"}
+    completed = sum(
+        1
+        for item in items_by_index.values()
+        if str(item.get("status") or "") in completed_statuses
+    )
+    failed = sum(
+        1
+        for item in items_by_index.values()
+        if str(item.get("status") or "") == "failed"
+    )
+    pending = max(0, int(requested) - completed - failed)
+    callback(completed, failed, pending)
+
+
 def materialize_final_row(
     row: dict[str, Any],
     selected_style: str,
@@ -9489,6 +9682,7 @@ def materialize_final_row(
     item_result: dict[str, Any],
     selected_background: SelectedBackgroundAsset | None = None,
     execution_guard: Callable[[], None] | None = None,
+    exact_failure_cache: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     _, target = ai_output_candidate(row, selected_style, quality, "generated-final", selected_background)
     metrics = {
@@ -9511,7 +9705,13 @@ def materialize_final_row(
             if execution_guard is not None:
                 execution_guard()
             if selected_background is not None:
-                detail = tencent_exact_background_image(row, selected_background, quality, target)
+                detail = tencent_exact_background_image(
+                    row,
+                    selected_background,
+                    quality,
+                    target,
+                    _batch_failure_cache=exact_failure_cache,
+                )
             elif ai_first_generation_enabled():
                 detail = tencent_text_to_image(row, selected_style, quality, target)
             elif source_candidate:
@@ -9579,6 +9779,11 @@ def materialize_final_row(
                     detail.get("persistedOutputBackgroundVerified")
                 ),
                 "pipelineVersion": detail.get("pipelineVersion"),
+                "dishPromptVersion": (
+                    DISH_GENERATION_PROMPT_VERSION
+                    if selected_background is not None
+                    else detail.get("dishPromptVersion")
+                ),
                 "outputSha256": detail.get("outputSha256"),
                 "qualityReport": detail.get("qualityReport"),
             }
@@ -9756,6 +9961,7 @@ def materialize_final_images(
     quality: str | None = "standard",
     selected_background: SelectedBackgroundAsset | None = None,
     execution_guard: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
     if execution_guard is not None:
         execution_guard()
@@ -9786,6 +9992,7 @@ def materialize_final_images(
     live_budget = TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT >= 0 else 0
     items_by_index: dict[int, dict[str, Any]] = {}
     tasks: list[tuple[int, dict[str, Any], str, dict[str, Any] | None, dict[str, Any]]] = []
+    exact_failure_cache: dict[str, tuple[str, str]] = {}
     for index, row in enumerate(plan["results"]):
         strip_nonfinal_generated_candidates(row)
         reason = materialization_reason(row, selected_style, selected_background)
@@ -9945,6 +10152,11 @@ def materialize_final_images(
         assert reason is not None
         tasks.append((index, row, reason, source_candidate, item_result))
 
+    publish_generation_progress(
+        progress_callback,
+        items_by_index,
+        len(plan["results"]),
+    )
     if tasks:
         worker_count = min(FINAL_GENERATION_WORKERS, len(tasks))
         if worker_count == 1:
@@ -9961,9 +10173,15 @@ def materialize_final_images(
                     item_result,
                     selected_background,
                     execution_guard,
+                    exact_failure_cache,
                 )
                 merge_generation_row_result(generation, result)
                 items_by_index[index] = result["item"]
+                publish_generation_progress(
+                    progress_callback,
+                    items_by_index,
+                    len(plan["results"]),
+                )
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 future_map = {}
@@ -9987,6 +10205,7 @@ def materialize_final_images(
                         item_result,
                         selected_background,
                         execution_guard,
+                        exact_failure_cache,
                     )
                     future_map[future] = index
                 for future in as_completed(future_map):
@@ -9994,6 +10213,11 @@ def materialize_final_images(
                     result = future.result()
                     merge_generation_row_result(generation, result)
                     items_by_index[index] = result["item"]
+                    publish_generation_progress(
+                        progress_callback,
+                        items_by_index,
+                        len(plan["results"]),
+                    )
     if execution_guard is not None:
         execution_guard()
     generation["items"] = [items_by_index[index] for index in sorted(items_by_index)]
@@ -16761,6 +16985,7 @@ def execute_generation_batch_job(
     contract: dict[str, Any],
     *,
     execution_guard: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
     if execution_guard is not None:
         execution_guard()
@@ -16824,6 +17049,7 @@ def execute_generation_batch_job(
                     quality,
                     selected_background,
                     execution_guard,
+                    progress_callback,
                 )
     finally:
         ACTIVE_PREVIEW_MENU_UPLOAD_ID.reset(menu_upload_token)
@@ -16848,11 +17074,43 @@ def execute_generation_batch_job(
     }
 
 
-def run_generation_batch_job(contract: dict[str, Any]) -> dict[str, Any]:
+def local_generation_progress_callback(
+    job_id: str,
+) -> Callable[[int, int, int], None]:
+    def update(completed: int, failed: int, pending: int) -> None:
+        try:
+            generation_queue.progress(
+                job_id,
+                result={
+                    "rowProgress": {
+                        "processed": completed + failed,
+                        "succeeded": completed,
+                        "failed": failed,
+                        "pending": pending,
+                    }
+                },
+            )
+        except Exception:
+            app.logger.exception(
+                "Local generation progress update failed for %s",
+                job_id,
+            )
+
+    return update
+
+
+def run_generation_batch_job(
+    contract: dict[str, Any],
+    *,
+    progress_callback: Callable[[int, int, int], None] | None = None,
+) -> dict[str, Any]:
     job_id = str(contract["jobId"])
     try:
         update_persisted_generation_job(job_id, status="running")
-        execution = execute_generation_batch_job(contract)
+        execution = execute_generation_batch_job(
+            contract,
+            progress_callback=progress_callback,
+        )
         generation = execution["generation"]
         refunded_points = int(execution["refundPoints"])
         refund_generation_batch(
@@ -16911,6 +17169,12 @@ def refresh_generation_timeouts() -> None:
 
 def generation_job_payload(job: Any) -> dict[str, Any]:
     data = job.to_dict()
+    row_progress = None
+    if isinstance(data.get("result"), dict) and isinstance(
+        data["result"].get("rowProgress"),
+        dict,
+    ):
+        row_progress = dict(data["result"]["rowProgress"])
     try:
         timing = job.timing(limits=generation_queue.limits)
     except Exception:
@@ -16926,6 +17190,7 @@ def generation_job_payload(job: Any) -> dict[str, Any]:
         "completed": data["completed"],
         "failed": data["failed"],
         "canceled": data["canceled"],
+        "rowProgress": row_progress,
         "result": data["result"],
         "error": data["error"],
         "createdAt": data["created_at"],
@@ -19675,6 +19940,9 @@ def api_generation_jobs():
                     job_id,
                     run_generation_batch_job,
                     contract,
+                    progress_callback=local_generation_progress_callback(
+                        job_id
+                    ),
                     requested=int(contract["billing"]["imageCount"]),
                     metadata={
                         "style": style,

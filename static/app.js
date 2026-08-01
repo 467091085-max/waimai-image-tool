@@ -886,6 +886,17 @@ function updateGenerationJobProgress(job, token) {
     return;
   }
   if (status === "running") {
+    const rowProgress = job?.rowProgress;
+    const requested = Math.max(0, Number(job?.requested || 0));
+    const processed = Math.max(0, Number(rowProgress?.processed || 0));
+    if (rowProgress && requested > 0) {
+      const succeeded = Math.max(0, Number(rowProgress.succeeded || 0));
+      const failed = Math.max(0, Number(rowProgress.failed || 0));
+      const detail = `已处理 ${Math.min(processed, requested)}/${requested} 张，成功 ${succeeded} 张${failed ? `，失败 ${failed} 张` : ""}`;
+      updateBusy(token, "confirm-generate", "正在生成正式图", `${detail}，已用时 ${elapsed}`);
+      setProgress(84 + Math.round((Math.min(processed, requested) / requested) * 12), detail, 4);
+      return;
+    }
     updateBusy(token, "confirm-generate", "正在生成正式图", `任务运行中，已用时 ${elapsed}`);
     setProgress(90, `正式图生成中，已用时 ${elapsed}`, 4);
     return;

@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 import requests
+import object_storage_service
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -99,6 +100,191 @@ def test_post_is_not_retried_after_connection_failure() -> None:
         client.post("/api/generation-jobs", json={"quality": "standard"})
 
     assert client.session.post.call_count == 1
+
+
+def test_remote_client_runs_keepalive_guard_before_request() -> None:
+    client = runner.RemoteClient(
+        "http://127.0.0.1:10000",
+        username="staging-user",
+        password="staging-password",
+        timeout_seconds=30,
+    )
+    guard = mock.Mock()
+    client.request_guard = guard
+    client.session.get = mock.Mock(return_value=response(200))
+
+    result = client.get("/")
+
+    assert result.status_code == 200
+    guard.assert_called_once_with()
+
+
+def test_keepalive_origin_rejects_unconfigured_host_before_auth_is_used() -> None:
+    with mock.patch.dict(
+        runner.os.environ,
+        {
+            "RENDER_EXTERNAL_URL": "https://waimai-image-tool-1.onrender.com",
+            runner.KEEPALIVE_URL_ENV: "https://attacker.example",
+        },
+        clear=True,
+    ):
+        with pytest.raises(RuntimeError, match="must match"):
+            runner.staging_keepalive_origin()
+
+
+def test_staging_loopback_origin_accepts_only_current_render_process() -> None:
+    with mock.patch.dict(
+        runner.os.environ,
+        {"WAIMAI_STAGING_E2E_BASE_URL": "http://127.0.0.1:10000/"},
+        clear=True,
+    ):
+        assert runner.staging_loopback_origin(10000) == "http://127.0.0.1:10000"
+
+
+def test_e2e_run_claim_blocks_restart_before_paid_work(tmp_path: Path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    with mock.patch.object(
+        object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        object_key, record = runner.claim_e2e_run(
+            "final-run-20260801",
+            instance_nonce="a" * 64,
+            menu_sha256="b" * 64,
+            expected_category="mixed_rice",
+        )
+        with pytest.raises(RuntimeError, match="already claimed"):
+            runner.claim_e2e_run(
+                "final-run-20260801",
+                instance_nonce="c" * 64,
+                menu_sha256="b" * 64,
+                expected_category="mixed_rice",
+            )
+        runner.finalize_e2e_run_claim(
+            object_key,
+            record,
+            status=runner.PASS,
+            report_artifact={"sha256": "d" * 64},
+        )
+
+    final_record = json.loads(storage.read_bytes(object_key))
+    assert final_record["status"] == runner.PASS
+    assert final_record["reportArtifact"]["sha256"] == "d" * 64
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://waimai-image-tool-1.onrender.com",
+        "http://attacker.example:10000",
+        "http://user:secret@127.0.0.1:10000",
+        "http://127.0.0.1:10001",
+        "http://127.0.0.1:10000/api",
+    ],
+)
+def test_staging_loopback_origin_rejects_remote_or_ambiguous_urls(
+    value: str,
+) -> None:
+    with mock.patch.dict(
+        runner.os.environ,
+        {"WAIMAI_STAGING_E2E_BASE_URL": value},
+        clear=True,
+    ):
+        with pytest.raises(RuntimeError, match="current loopback"):
+            runner.staging_loopback_origin(10000)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://waimai-image-tool-1.onrender.com",
+        "https://user:secret@waimai-image-tool-1.onrender.com",
+        "https://waimai-image-tool-1.onrender.com/health",
+        "https://127.0.0.1",
+    ],
+)
+def test_keepalive_origin_rejects_unsafe_urls(value: str) -> None:
+    with pytest.raises(RuntimeError):
+        runner.https_origin(value)
+
+
+def test_public_keepalive_probes_without_following_redirects() -> None:
+    instance_nonce = "a" * 64
+    keepalive = runner.PublicKeepAlive(
+        "https://waimai-image-tool-1.onrender.com/",
+        hostname="waimai-image-tool-1.onrender.com",
+        username="staging-user",
+        password="staging-password",
+        instance_nonce=instance_nonce,
+        interval_seconds=60,
+        startup_timeout_seconds=0,
+    )
+    keepalive.session.get = mock.Mock(
+        return_value=response(200, b'{"instanceMatched":true}')
+    )
+
+    keepalive.start()
+    try:
+        keepalive.assert_healthy()
+        report = keepalive.report()
+    finally:
+        keepalive.stop()
+
+    assert report == {
+        "hostname": "waimai-image-tool-1.onrender.com",
+        "instanceMatched": True,
+        "probeCount": 1,
+        "consecutiveFailures": 0,
+    }
+    assert keepalive.session.auth == ("staging-user", "staging-password")
+    assert keepalive.session.get.call_args.kwargs["allow_redirects"] is False
+    assert (
+        keepalive.session.get.call_args.kwargs["headers"][
+            "X-Waimai-Staging-Instance"
+        ]
+        == instance_nonce
+    )
+
+
+def test_public_keepalive_fails_closed_on_first_non_200_response() -> None:
+    keepalive = runner.PublicKeepAlive(
+        "https://waimai-image-tool-1.onrender.com/",
+        hostname="waimai-image-tool-1.onrender.com",
+        username="staging-user",
+        password="staging-password",
+        instance_nonce="a" * 64,
+        interval_seconds=60,
+        startup_timeout_seconds=0,
+    )
+    keepalive.session.get = mock.Mock(return_value=response(302))
+
+    with pytest.raises(RuntimeError, match="HTTP 302"):
+        keepalive.start()
+
+    assert keepalive.report()["probeCount"] == 0
+    keepalive.stop()
+
+
+def test_public_keepalive_rejects_200_from_a_different_instance() -> None:
+    keepalive = runner.PublicKeepAlive(
+        "https://waimai-image-tool-1.onrender.com/",
+        hostname="waimai-image-tool-1.onrender.com",
+        username="staging-user",
+        password="staging-password",
+        instance_nonce="a" * 64,
+        interval_seconds=60,
+        startup_timeout_seconds=0,
+    )
+    keepalive.session.get = mock.Mock(
+        return_value=response(200, b'{"instanceMatched":false}')
+    )
+
+    with pytest.raises(RuntimeError, match="different Render instance"):
+        keepalive.start()
+
+    assert keepalive.report()["probeCount"] == 0
+    keepalive.stop()
 
 
 def test_runtime_generation_capacity_accepts_sufficient_limit() -> None:

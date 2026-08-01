@@ -902,8 +902,44 @@ def validate_manifest(
     output_digests: list[str] = []
     background_shas: set[str] = set()
     identity_verified = 0
+    foreground_provider_calls = 0
+    exact_product_reuses = 0
+    preview_reuses = 0
+    final_cache_reuses = 0
+    asset_reuses = 0
+    unclassified_generation_rows = 0
     for row in rows:
         candidate = manifest_candidate(row)
+        row_generation = (
+            row.get("generation")
+            if isinstance(row.get("generation"), dict)
+            else {}
+        )
+        row_status = str(row_generation.get("status") or "")
+        row_action = str(row_generation.get("action") or "")
+        if row_action == "PreviewReuse":
+            preview_reuses += 1
+        elif row_action == "ApprovedAssetReuse":
+            asset_reuses += 1
+        elif row_status in {"cached", "reused"}:
+            final_cache_reuses += 1
+        else:
+            provider_detail = (
+                candidate.get("tencent")
+                if isinstance(candidate.get("tencent"), dict)
+                else {}
+            )
+            composition = (
+                provider_detail.get("composition")
+                if isinstance(provider_detail.get("composition"), dict)
+                else {}
+            )
+            if composition.get("foregroundCached") is True:
+                exact_product_reuses += 1
+            elif composition.get("foregroundCached") is False:
+                foreground_provider_calls += 1
+            else:
+                unclassified_generation_rows += 1
         url = required_text(
             candidate.get("url"),
             stage=stage,
@@ -944,6 +980,15 @@ def validate_manifest(
         output_digests.append(actual_output_sha)
         output_sizes[f"{size[0]}x{size[1]}"] += 1
 
+    if unclassified_generation_rows:
+        raise AcceptanceError(
+            stage,
+            (
+                "formal provider-call evidence is incomplete for "
+                f"{unclassified_generation_rows} row(s)"
+            ),
+        )
+
     return {
         "summary": (
             f"{len(rows)} formal images; selected background SHA consistent"
@@ -954,6 +999,20 @@ def validate_manifest(
             "succeeded": succeeded,
             "failed": failed,
             "pending": pending,
+        },
+        "generationEvidence": {
+            "foregroundProviderCalls": foreground_provider_calls,
+            "exactProductReuseCount": exact_product_reuses,
+            "previewReuseCount": preview_reuses,
+            "finalCacheReuseCount": final_cache_reuses,
+            "approvedAssetReuseCount": asset_reuses,
+            "accountedRowCount": (
+                foreground_provider_calls
+                + exact_product_reuses
+                + preview_reuses
+                + final_cache_reuses
+                + asset_reuses
+            ),
         },
         "assetDownloadCount": len(output_digests),
         "assetShaVerifiedCount": len(output_digests),

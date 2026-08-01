@@ -130,6 +130,8 @@ def test_deterministic_acceptance_runs_all_routes_without_production_claim(
         "pending": 0,
         "succeeded": 2,
     }
+    assert manifest["generationEvidence"]["accountedRowCount"] == 2
+    assert manifest["generationEvidence"]["foregroundProviderCalls"] <= 2
     assert manifest["assetShaVerifiedCount"] == 2
     assert manifest["backgroundIdentityVerifiedCount"] == 2
     assert len(manifest["manifestBackgroundSha256Values"]) == 1

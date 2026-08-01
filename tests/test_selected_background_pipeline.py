@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from PIL import Image, ImageDraw
+import pytest
 
 import app as app_module
 
@@ -61,7 +64,190 @@ def test_algorithm_intermediate_png_preserves_canonical_rgb_pixels() -> None:
             assert persisted.convert("RGB").tobytes() == source.tobytes()
 
 
+def test_provider_image_write_failure_keeps_previous_complete_file() -> None:
+    source = Image.new("RGB", (128, 128), (0, 245, 245))
+    raw = io.BytesIO()
+    source.save(raw, "PNG")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "foreground.png"
+        target.write_bytes(b"previous-complete-file")
+        with mock.patch.object(
+            Image.Image,
+            "save",
+            side_effect=OSError("interrupted"),
+        ):
+            with pytest.raises(OSError, match="interrupted"):
+                app_module.save_result_image(
+                    base64.b64encode(raw.getvalue()).decode(),
+                    target,
+                )
+
+        assert target.read_bytes() == b"previous-complete-file"
+        assert not list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
 class SelectedBackgroundPipelineTests(unittest.TestCase):
+    def test_exact_product_identity_keeps_similar_combo_names_separate(self) -> None:
+        first = menu_row(1, "【霸气任选】 三拼饭+赠品五选一")
+        second = menu_row(2, "【超值自选】 双拼饭+赠品五选一")
+        first["kind"] = second["kind"] = "套餐/组合"
+        first["components"] = second["components"] = ["饭", "赠品五选一"]
+
+        self.assertNotEqual(
+            app_module.exact_product_identity(first),
+            app_module.exact_product_identity(second),
+        )
+
+        duplicate = dict(first)
+        duplicate["row"] = 99
+        duplicate["name"] = "【霸气任选】   三拼饭+赠品五选一"
+        self.assertEqual(
+            app_module.exact_product_identity(first),
+            app_module.exact_product_identity(duplicate),
+        )
+
+    def test_exact_duplicate_rows_share_one_foreground_under_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (800, 600), (35, 90, 145))
+            background = selected_background(background_path)
+            rows = [menu_row(1), menu_row(99)]
+            calls = {"foreground": 0, "mask": 0}
+
+            def fake_foreground(
+                item: dict[str, object],
+                style_id: str,
+                quality: str | None,
+                target: Path,
+                selected: app_module.SelectedBackgroundAsset,
+            ) -> dict[str, object]:
+                calls["foreground"] += 1
+                time.sleep(0.05)
+                save_image(target, (640, 480), (190, 55, 35))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "TokenHubImageV3",
+                    "promptType": "text_to_image",
+                    "requestId": "foreground-shared",
+                    "referenceConditioned": True,
+                    "backgroundIdentityVerified": False,
+                }
+
+            def fake_mask(
+                item: dict[str, object],
+                foreground: Path,
+                target: Path,
+            ) -> dict[str, object]:
+                calls["mask"] += 1
+                mask = Image.new("L", (640, 480), 0)
+                ImageDraw.Draw(mask).ellipse((120, 70, 520, 440), fill=255)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                mask.save(target)
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "ReplaceBackgroundMask",
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "chroma_foreground_fast_path_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_text_to_image",
+                    side_effect=fake_foreground,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_extract_foreground_mask",
+                    side_effect=fake_mask,
+                ),
+            ):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(
+                            app_module.tencent_exact_background_image,
+                            row,
+                            background,
+                            "standard",
+                            root / f"output-{index}.png",
+                        )
+                        for index, row in enumerate(rows)
+                    ]
+                    results = [future.result() for future in futures]
+
+            self.assertEqual(calls, {"foreground": 1, "mask": 1})
+            self.assertEqual(
+                sorted(
+                    result["composition"]["foregroundCached"]
+                    for result in results
+                ),
+                [False, True],
+            )
+
+    def test_exact_duplicate_failure_is_shared_without_second_provider_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (800, 600), (35, 90, 145))
+            background = selected_background(background_path)
+            rows = [menu_row(1), menu_row(99)]
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(app_module, "FINAL_GENERATION_WORKERS", 2),
+                mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 5),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={
+                        "provider": "tencent-hunyuan",
+                        "configured": True,
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "chroma_foreground_fast_path_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_text_to_image",
+                    side_effect=RuntimeError("provider failed"),
+                ) as foreground,
+                mock.patch.object(
+                    app_module,
+                    "ai_asset_library_enabled",
+                    return_value=False,
+                ),
+            ):
+                generation = app_module.materialize_final_images(
+                    {"results": rows},
+                    "style-2",
+                    "standard",
+                    background,
+                )
+
+            foreground.assert_called_once()
+            self.assertEqual(generation["succeeded"], 0)
+            self.assertEqual(generation["failed"], 2)
+            self.assertEqual(generation["pending"], 2)
+
     def test_failed_quality_gate_deletes_placeholder_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "placeholder.jpg"
@@ -167,8 +353,32 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 Image.new("L", (640, 480), 255).save(mask_target)
                 third_target = root / "third.png"
                 third = app_module.tencent_exact_background_image(row, background, "standard", third_target)
+                with mock.patch.object(
+                    app_module,
+                    "EXACT_BACKGROUND_MASK_CACHE_VERSION",
+                    2,
+                ):
+                    fourth_target = root / "fourth.png"
+                    fourth = app_module.tencent_exact_background_image(
+                        row,
+                        background,
+                        "standard",
+                        fourth_target,
+                    )
+                with mock.patch.object(
+                    app_module,
+                    "DISH_GENERATION_PROMPT_VERSION",
+                    999,
+                ):
+                    fifth_target = root / "fifth.png"
+                    fifth = app_module.tencent_exact_background_image(
+                        row,
+                        background,
+                        "standard",
+                        fifth_target,
+                    )
 
-            self.assertEqual(calls, {"foreground": 1, "mask": 2})
+            self.assertEqual(calls, {"foreground": 2, "mask": 4})
             self.assertTrue(first["backgroundIdentityVerified"])
             self.assertTrue(first["persistedOutputBackgroundVerified"])
             self.assertEqual(first_target.suffix, ".png")
@@ -179,6 +389,10 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertTrue(second["composition"]["maskCached"])
             self.assertTrue(third["composition"]["foregroundCached"])
             self.assertFalse(third["composition"]["maskCached"])
+            self.assertTrue(fourth["composition"]["foregroundCached"])
+            self.assertFalse(fourth["composition"]["maskCached"])
+            self.assertFalse(fifth["composition"]["foregroundCached"])
+            self.assertFalse(fifth["composition"]["maskCached"])
             with Image.open(second_target) as result:
                 self.assertEqual(result.size, (800, 600))
 
@@ -195,6 +409,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 selected: app_module.SelectedBackgroundAsset,
                 quality: str | None,
                 target: Path,
+                **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
                 return {
@@ -393,6 +608,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 selected: app_module.SelectedBackgroundAsset,
                 quality: str | None,
                 target: Path,
+                **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
                 return {
@@ -433,6 +649,73 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertTrue(row["candidates"][0]["backgroundIdentityVerified"])
             self.assertEqual(Path(str(row["candidates"][0]["path"])).suffix, ".png")
 
+    def test_formal_generation_reports_progress_after_each_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (120, 90), (35, 90, 145))
+            background = selected_background(background_path)
+            rows = [menu_row(1, "招牌牛肉饭"), menu_row(2, "香辣鸡肉饭")]
+            progress: list[tuple[int, int, int]] = []
+
+            def fake_exact(
+                item: dict[str, object],
+                selected: app_module.SelectedBackgroundAsset,
+                quality: str | None,
+                target: Path,
+                **_kwargs: object,
+            ) -> dict[str, object]:
+                save_image(target, (120, 90), (80, 120, 60))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "DeterministicBackgroundComposite",
+                    "promptType": "text_to_image",
+                    "backgroundIdentityVerified": True,
+                    "persistedOutputBackgroundVerified": True,
+                    "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "outputSha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(app_module, "FINAL_GENERATION_WORKERS", 1),
+                mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 5),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={
+                        "provider": "tencent-hunyuan",
+                        "configured": True,
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_exact_background_image",
+                    side_effect=fake_exact,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_asset_library_enabled",
+                    return_value=False,
+                ),
+            ):
+                app_module.materialize_final_images(
+                    {"results": rows},
+                    "style-2",
+                    "standard",
+                    background,
+                    progress_callback=lambda completed, failed, pending: (
+                        progress.append((completed, failed, pending))
+                    ),
+                )
+
+            self.assertEqual(progress, [(0, 0, 2), (1, 0, 1), (2, 0, 0)])
+
     def test_formal_standard_reuses_verified_free_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -446,6 +729,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 selected: app_module.SelectedBackgroundAsset,
                 quality: str | None,
                 target: Path,
+                **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
                 return {
@@ -530,6 +814,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 selected: app_module.SelectedBackgroundAsset,
                 quality: str | None,
                 target: Path,
+                **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
                 return {
@@ -596,6 +881,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 "backgroundIdentityVerified": True,
                 "persistedOutputBackgroundVerified": True,
                 "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                "dishPromptVersion": app_module.DISH_GENERATION_PROMPT_VERSION,
                 "outputSha256": output_sha,
                 **app_module.selected_background_metadata(background),
             }
@@ -608,6 +894,25 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 app_module.verified_exact_output_metadata(metadata, output_path, background)
             )
             self.assertTrue(app_module.verified_exact_candidate(candidate, background))
+
+            with mock.patch.object(
+                app_module,
+                "DISH_GENERATION_PROMPT_VERSION",
+                999,
+            ):
+                self.assertFalse(
+                    app_module.verified_exact_output_metadata(
+                        metadata,
+                        output_path,
+                        background,
+                    )
+                )
+                self.assertFalse(
+                    app_module.verified_exact_candidate(
+                        candidate,
+                        background,
+                    )
+                )
 
             save_image(output_path, (800, 600), (170, 40, 35))
 

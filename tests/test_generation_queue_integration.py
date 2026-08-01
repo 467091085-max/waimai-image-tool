@@ -57,6 +57,56 @@ class GenerationQueueIntegrationTests(unittest.TestCase):
         self.assertFalse(completed["timedOut"])
         self.assertFalse(completed["stale"])
 
+    def test_local_batch_progress_callback_keeps_terminal_counts_uncommitted(self) -> None:
+        queue = self.make_queue()
+        queue.store.reserve("batch-progress", requested=3)
+        queue.store.start("batch-progress")
+
+        with mock.patch.object(app_module, "generation_queue", queue):
+            progress = app_module.local_generation_progress_callback(
+                "batch-progress"
+            )
+            progress(1, 0, 2)
+            first = queue.get("batch-progress")
+            progress(2, 1, 0)
+            final = queue.get("batch-progress")
+
+        assert first is not None
+        assert final is not None
+        self.assertEqual(
+            (first.completed, first.failed, first.pending),
+            (0, 0, 3),
+        )
+        self.assertEqual(
+            (final.completed, final.failed, final.pending),
+            (0, 0, 3),
+        )
+        self.assertEqual(
+            first.result["rowProgress"],
+            {
+                "processed": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "pending": 2,
+            },
+        )
+        self.assertEqual(
+            final.result["rowProgress"],
+            {
+                "processed": 3,
+                "succeeded": 2,
+                "failed": 1,
+                "pending": 0,
+            },
+        )
+
+        failed_job = queue.fail("batch-progress", "manifest write failed")
+        self.assertEqual(failed_job.status, rules.STATUS_FAILED)
+        self.assertEqual(
+            (failed_job.completed, failed_job.failed, failed_job.pending),
+            (0, 3, 0),
+        )
+
     def test_get_refreshes_timeout_and_returns_explicit_timeout_payload(self) -> None:
         queue = self.make_queue()
         client = app_module.app.test_client()

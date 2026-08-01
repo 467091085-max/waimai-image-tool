@@ -123,6 +123,39 @@ def test_staging_queue_override_never_applies_to_production(
     assert app_module.product_redis_required() is True
 
 
+def test_staging_instance_probe_requires_current_nonce(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _configure_staging(monkeypatch)
+    monkeypatch.setenv("ALLOW_STAGING_IN_PROCESS_GENERATION", "true")
+    nonce_path = tmp_path / "instance-nonce"
+    nonce_path.write_text("a" * 64, encoding="ascii")
+    monkeypatch.setattr(
+        app_module,
+        "STAGING_E2E_INSTANCE_NONCE_PATH",
+        nonce_path,
+    )
+    client = app_module.app.test_client()
+    headers = _basic_header("staging-user", "staging-password")
+
+    wrong = client.get(
+        "/api/staging-e2e-instance",
+        headers={**headers, "X-Waimai-Staging-Instance": "b" * 64},
+        environ_base={"REMOTE_ADDR": "198.51.100.8"},
+    )
+    matched = client.get(
+        "/api/staging-e2e-instance",
+        headers={**headers, "X-Waimai-Staging-Instance": "a" * 64},
+        environ_base={"REMOTE_ADDR": "198.51.100.8"},
+    )
+
+    assert wrong.status_code == 409
+    assert wrong.get_json() == {"instanceMatched": False}
+    assert matched.status_code == 200
+    assert matched.get_json() == {"instanceMatched": True}
+
+
 def test_configured_generation_queue_limits_are_applied() -> None:
     queue = app_module.generation_queue
 

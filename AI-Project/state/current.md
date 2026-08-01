@@ -10,17 +10,15 @@ manually reviewed, hash-lock approved in private COS, frozen in commit
 `dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
 customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 93 in progress: fast-path acceptance generated and SHA-verified all six
-representative dish/combo samples against one approved mixed-rice background.
-The formal job was accepted, but the HTTP acceptance client stopped after one
-transient loopback connection reset while polling status. A first retry patch
-was rejected because sample generation is a side-effecting GET. The corrected
-patch retries only `/api/generation-jobs/...` reads. A verified same-run
-free-preview reuse path is ready and fully regression-tested to avoid six
-duplicate standard provider calls. Render is restored to normal Gunicorn in
-live deploy `dep-d9n39fflk1mc73dllnt0`; formal generation, billing, manifest,
-and export must be rerun. Production remains fail-closed without Redis and an
-independent worker.
+Step 93 in progress: the 60-row real-Excel acceptance is ready for one final
+guarded Render run. The patch now keeps the Free instance awake through a
+public exact-instance nonce probe, prevents a restarted acceptance entrypoint
+from repeating paid work through a persistent run record, exposes nonterminal
+per-row progress, and reuses only strict exact-product foregrounds. Post-review
+regression passed `1362 passed, 20 skipped`; Render remains on the normal
+Gunicorn command until the patch and a unique run ID are deployed. Production
+still requires Redis, an independent worker, and durable distributed
+single-flight/provider recovery before this staging exception can be promoted.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -1297,3 +1295,87 @@ independent worker.
 - Next action: deploy this preflight guard to the isolated staging branch, then
   run the same 60-row acceptance. The first log proof must show runtime limit
   60 before any of the six paid samples starts.
+- Preflight guard commit `ca6ab38` is pushed only to the isolated staging
+  branch and Render deploy `dep-d9n43ntbedkc73er93sg` is live. Third controlled
+  acceptance deploy `dep-d9n44rajnfac73abn6v0` has started.
+- Third-run runtime-capacity preflight passed for all 60 rows. Upload, plan,
+  approved-background SHA checks, and all six paid free samples passed without
+  retries; selected style-3 SHA remains `b432ea0bcb2a`. Formal job
+  `generation-e9e7f968f4b464477150a305` started, but did not finish.
+- Render sent Gunicorn `SIGTERM` at 12:16:54 PM, about 15 minutes after the
+  E2E deploy became live. The Render event timeline contains no later deploy or
+  configuration change. The current root-cause hypothesis is Free-instance
+  inactivity spin-down because the embedded E2E runner polls only
+  `127.0.0.1`, so its traffic does not keep the public service awake.
+- Next action: prove the inactivity hypothesis without paid generation, then
+  add public keep-alive plus restart-safe E2E execution before rerunning the
+  60-row paid acceptance. Do not restart another paid run until that guard is
+  verified.
+- Render's official Free-service documentation confirms the root cause: a Web
+  Service spins down after 15 minutes without inbound HTTP/WebSocket traffic,
+  and local filesystem state is lost on spin-down. The observed 15-minute
+  termination therefore matches the documented behavior.
+- Implemented a staging E2E public keep-alive guard. Paid and side-effecting
+  flow calls remain pinned to localhost/new-instance; a separate HTTPS-origin
+  probe targets only the configured public Render hostname, does not follow
+  redirects, and must return HTTP 200 before any paid call can start.
+- Implemented exact-product foreground reuse using full NFKC/casefold/space
+  normalized name, exact kind, and ordered components. Cache metadata binds
+  the identity SHA, and striped locks prevent concurrent duplicate provider
+  calls. Similar combo names remain distinct.
+- Added per-row in-process queue progress updates without changing the Redis
+  worker path. Focused keep-alive, exact-background, and queue tests passed
+  `46 passed`.
+- The real 60-row Excel audit remains 42 strict product identities and 18 safe
+  duplicate rows, with 26 combos. Next action: review the external engineer's
+  response, run the full regression, then deploy this isolated patch with the
+  normal start command before one final paid acceptance.
+- Complete regression after the keep-alive, strict-identity reuse, and local
+  per-row progress patch passed `1351 passed, 20 skipped` in 22.59 seconds.
+  Scoped Python compilation, JavaScript syntax, and `git diff --check` also
+  passed.
+- Render deploy `dep-d9n4mvrm8hqs73dj8bb0` is live with commit `ca6ab38` and
+  only the normal Gunicorn command. No paid E2E entrypoint ran while restoring
+  this safe baseline.
+- Next action: finish the two independent reviews, address only confirmed
+  defects, push the isolated staging patch, wait for its normal deploy, and
+  then start exactly one guarded real-Excel acceptance run.
+- Independent review found that provisional row progress must not mutate the
+  queue's terminal `completed/failed` counters before delivery assets and the
+  manifest are durable. Local progress now lives under `rowProgress`; a later
+  manifest failure can still atomically finish the queue as fully failed and
+  remain consistent with refund settlement.
+- Public keep-alive now proves instance identity, not only HTTP 200. The E2E
+  process writes a per-instance 256-bit nonce; the Basic-Auth-protected staging
+  endpoint must verify that nonce through the public Render hostname before
+  paid work starts. All side-effecting flow calls are restricted to the exact
+  current `127.0.0.1:$PORT` origin.
+- Final exact-background metadata now binds the dish prompt version, and mask
+  reuse binds a dedicated extraction cache version. Focused verification for
+  these review corrections passed `60 passed`.
+- The real-acceptance manifest now accounts for each formal row as a paid
+  foreground call, strict-product foreground reuse, verified free-preview
+  reuse, final-cache reuse, or approved-asset reuse. Missing evidence fails
+  acceptance instead of making an unverified speed claim.
+- Complete regression after all review corrections passed `1359 passed, 20
+  skipped` in 24.58 seconds. Python compilation, JavaScript syntax, and
+  `git diff --check` passed. The only warning is the pre-existing local
+  urllib3/LibreSSL compatibility warning.
+- ChatGPT Pro completed its architecture review, but reviewed an older source
+  archive and therefore did not independently verify the final queue/E2E
+  patch. Confirmed findings were applied locally: exact-instance keep-alive,
+  restart duplicate-work guard, batch failure fan-out, atomic image/metadata
+  writes, and evidence-scoped foreground-call accounting.
+- The persistent COS run record is a controlled single-instance staging
+  restart guard, not a production distributed lease. Process locks also do not
+  coordinate multiple workers, and synchronous Tencent foreground generation
+  does not provide durable provider-job recovery after process loss.
+- Post-review focused verification passed `65 passed`; final complete
+  regression passed `1362 passed, 20 skipped` in 22.09 seconds. Python
+  compilation, JavaScript syntax, and `git diff --check` all passed. The only
+  warning remains the pre-existing local urllib3/LibreSSL compatibility
+  warning.
+- Next action: commit and push only this isolated staging patch, verify its
+  normal Render deploy, set one unique `WAIMAI_STAGING_E2E_RUN_ID`, and run the
+  60-row real Excel acceptance once. Restore normal startup and remove all
+  temporary E2E variables immediately after the result is persisted.
