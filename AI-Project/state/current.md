@@ -5,22 +5,18 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Thirty categories are now hash-lock approved in
-private COS, for 180 of the 240 target assets. Render generation deploy
-`dep-d9n0vq942hec73emdrng` completed all 30 paid assets for `northern_lu`,
-`fujian_taiwan`, `home_stir_fry`, `fish_seafood`, and `beef_lamb_pot` with
-`failureCount=0`. Exact COS contact-sheet review passed all five groups under
-the product gate: two seamless solid scenes and four broad full-size
-dining-table scenes are valid, while food, props, small central plinths,
-isolated slabs, mats, and inset frames remain forbidden. Approval deploy
-`dep-d9n17djl550s7394dt70` re-read and hash-locked all 30 reviewed objects and
-finished with sentinel `CATALOG_BATCH_26_30_APPROVED`. The five exact six-style
-prompt sets are now locally frozen. Focused verification passed `15 passed`,
-full regression passed `1324 passed, 20 skipped`, maximum prompt length is
-588, and scoped compilation plus `git diff --check` passed. Render restore
-deploy `dep-d9n1b90ae00c73alqhr0` is live with the exact normal Gunicorn command
-and no paid generation or approval process. Commit and push remain before
-categories 31 through 35 start.
+6-style background catalog. Thirty-five categories are now hash-lock approved
+in private COS, for 210 of the 240 target assets. Generation deploy
+`dep-d9n1com417fc73cf9hog` completed all 30 paid assets for
+`braised_cooked_food`, `soup_stew`, `steamed_claypot`, `milk_fruit_tea`, and
+`coffee_cocoa` with `failureCount=0`; all five exact COS contact sheets passed
+manual product-gate review. Approval deploy `dep-d9n1j9m417fc73cfmii0`
+re-read and hash-lock approved all 30 objects. Their prompt bytes are locally
+frozen; focused verification passed `15 passed`, full regression passed `1324
+passed, 20 skipped`, maximum prompt length is 588, and scoped compilation plus
+`git diff --check` passed. Normal-Gunicorn restore deploy
+`dep-d9n1lsp42hec73eno410` is live. Commit and push this checkpoint, then run
+the final five categories 36 through 40.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -196,6 +192,45 @@ categories 31 through 35 start.
 - Restored the Render start command to normal Gunicorn after approval. Restore
   deploy `dep-d9n1b90ae00c73alqhr0` is live; its running command contains no
   paid catalog-generation or approval process.
+- Pushed prompt-freeze commit `2246870`; auto-deploy
+  `dep-d9n1bvk9v7es73c359u0` is live with normal Gunicorn.
+- Started paid generation deploy `dep-d9n1com417fc73cf9hog` for
+  `braised_cooked_food`, `soup_stew`, `steamed_claypot`, `milk_fruit_tea`, and
+  `coffee_cocoa`; all resulting assets must remain pending until exact COS
+  visual review and six-hash approval.
+- `braised_cooked_food` contact sheet
+  `contact-sheet-bb28df8a67c88ff8837f2adafcf2700984c5a092cb98564d540dbcf0331e1699.jpg`
+  passed manual review: two seamless empty scenes and four broad full-size
+  tables, with no food, prop, small plinth, isolated slab, mat, or inset frame.
+- `soup_stew` contact sheet
+  `contact-sheet-6c1264c7fa33e3883dc2eac72f75b65b4c4a54efcc67658b7616f79cb8cab75b.jpg`
+  passed the same manual product gate and remains pending.
+- `steamed_claypot` contact sheet
+  `contact-sheet-daccad121081500c5067cbedb57f7c71151a20542972f5360797c9b107dff30a.jpg`
+  passed manual review and remains pending.
+- `milk_fruit_tea` contact sheet
+  `contact-sheet-ec01e9d5e1d1c98b7cd916c29b53b5b780efe51e770c96603820c7f784768eff.jpg`
+  passed manual review and remains pending.
+- `coffee_cocoa` contact sheet
+  `contact-sheet-f5055aacdc40761b6598131bbcfbdc89d6cdd46a32fc58958bbca0f2995fb8ec.jpg`
+  passed manual review and remains pending.
+- Generation deploy `dep-d9n1com417fc73cf9hog` finished with
+  `complete=true`, `completedAssetCount=30`, `failureCount=0`, and sentinel
+  `CATALOG_BATCH_31_35_COMPLETE`.
+- Started approval deploy `dep-d9n1j9m417fc73cfmii0` with all 30 exact
+  manually reviewed image hashes.
+- Approval deploy `dep-d9n1j9m417fc73cfmii0` approved
+  `braised_cooked_food` at `2026-08-01T16:07:39Z`, `soup_stew` at
+  `2026-08-01T16:08:06Z`, `steamed_claypot` at `2026-08-01T16:08:41Z`,
+  `milk_fruit_tea` at `2026-08-01T16:09:11Z`, and `coffee_cocoa` at
+  `2026-08-01T16:09:39Z`; sentinel `CATALOG_BATCH_31_35_APPROVED` completed.
+- Catalog checkpoint: 35 approved categories / 210 approved assets.
+- Added exact prompt-hash compatibility coverage for the five new categories.
+  Focused verification passed `15 passed`; full regression passed `1324
+  passed, 20 skipped`; maximum prompt length is 588, scoped compilation and
+  `git diff --check` passed.
+- Restored normal Gunicorn startup; deploy `dep-d9n1lsp42hec73eno410` is live
+  with no paid generation or approval process in the running command.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -1038,6 +1073,6 @@ categories 31 through 35 start.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: deploy the retry patch with normal Gunicorn startup, regenerate
-  the incomplete `hotpot_skewers` category, then review all five second-batch
-  contact sheets and hash-lock only the exact passing six-image sets.
+- Next action: commit and push the 35-category prompt freeze, then generate,
+  visually review, and hash-lock categories 36 through 40 before real Excel
+  end-to-end verification.

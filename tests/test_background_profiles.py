@@ -326,6 +326,46 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "cdd6b46dc1e9813d1b260079191c3ab6918ce44cf822acbdaf21a725273643e8",
             "style-6": "bb0ceef29cb3f3ab14eb14cdac1fa816c0788eb0a6e3eb499535abe71115d5d2",
         },
+        "braised_cooked_food": {
+            "style-1": "4b217f5f04e6deeeb16ba6d342754af448aace9411b8c7383d6c03fadbeb77d1",
+            "style-2": "262933c253b125c49fb4beb4d0653b4390921930287c2399e56186ecc4471839",
+            "style-3": "7064a67ffafbde1d132976877296cafb2c535a0abd1ae82c2504ef19bbd669b5",
+            "style-4": "07c9ca3922b6b7d1e644312d123428c1c35ba1e051a2827655947551b484c5dc",
+            "style-5": "7c951fadf7788f3fcbe5f14f470fd99bf91b1df5947aa4fadfed5fd184499b1c",
+            "style-6": "114f0dd8ad495e109b1f5a2bffae162cc106ae63a0def39c99d77baba4ff6da0",
+        },
+        "soup_stew": {
+            "style-1": "d89cdb64cffba02dcbffa05c789302cc9d48387429f2694a05920bee64b1a98e",
+            "style-2": "f37136e999605c69298cf217dfa826c01eedc317611a951fb6a16dea22d6c099",
+            "style-3": "3883347046cca3ee09c622a09a5e6a29066a80560aa1be1775013ef1207c077f",
+            "style-4": "5989f1708b22e5ad3f93bf1e78e8f9406196b0982ae310fe241800e8a5af4faa",
+            "style-5": "bd1159267e39dfd519c418d33f54ff1bb9bd9106508f5f38d05caba68dfd44fa",
+            "style-6": "f6c20c57fe6958f835f73db63b9abaeda38025e9be93dc776d6c207775458893",
+        },
+        "steamed_claypot": {
+            "style-1": "d9f73da9ebd9c01bf4b2b73e712c4822e267c8febab357a0c4a8d387f2ec2a22",
+            "style-2": "2a877c58ff7866e1221fa4f16452c213bcd293c8280ade5f372d22b546932992",
+            "style-3": "f28a0471b50728e9f82155fb78d08da471c03218ae1630ade348e08522ace5ce",
+            "style-4": "c4271dd438dbdc90eacd13369a6f9cd04cef9a7f0e5ce7336fd84b8bb04bfa05",
+            "style-5": "98a01744873d1a5727f8ecad0e5802b7ece4b75deeb87a2cb35cb1530d66d12c",
+            "style-6": "725ee501f8d658eb3b639a5b2d2391f17688b1a9b9a8027b057b818de075d70c",
+        },
+        "milk_fruit_tea": {
+            "style-1": "95d67a0a5ed17d0f23eb77b6f0f2c25398c11db05cf026850d3040280c711662",
+            "style-2": "e47533bddee30c6c086e0cf64a26fdf8da2270aab2581b79c2c332d135e97b4a",
+            "style-3": "bd4fb5aa105db07c2b80ad980114acb8b0bf0909d158451a17bda638360d1b56",
+            "style-4": "370605bb5e94fa03cfed59924718669fc34f3e4397dce89a697108ed88506900",
+            "style-5": "c45260a040d1fc5d275cba19fca828f787c9ff3ac45083205dcaceb439cd6674",
+            "style-6": "643c1c3f20267dc5198641fc262202cf6c8e976291eea98c132629e1a76dda79",
+        },
+        "coffee_cocoa": {
+            "style-1": "2fd15d871babaeaef9bf89d88f90a051c616f53c51b6322147563f2428f87064",
+            "style-2": "e43a90a8b559ea65f74d43a88a9d79d6b9dfc161247a16372eb8abd2a796e40e",
+            "style-3": "d162794eba6a72032a04c76db69c2ea4c8a6c4d4df60a3f2f7c6d363b10d0a72",
+            "style-4": "8fa8acb0962112d1d45573d6f53b9f868b4b69e4fcf88fab1a7e9ae485af97a1",
+            "style-5": "c188c3232f516f190a508844b29eb3d8fa4faaebfa7b5180379bcee7c1aa4bbc",
+            "style-6": "926752ac248acca330daf6363d0d70dc523dbe89a35df0615bb385848c26a2a0",
+        },
     }
 
     assert (
@@ -347,6 +387,11 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "home_stir_fry",
             "fish_seafood",
             "beef_lamb_pot",
+            "braised_cooked_food",
+            "soup_stew",
+            "steamed_claypot",
+            "milk_fruit_tea",
+            "coffee_cocoa",
         }
     )
     for category_id, hashes in expected.items():

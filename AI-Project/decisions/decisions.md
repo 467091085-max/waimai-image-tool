@@ -168,3 +168,8 @@
   compatibility path keeps the same single-hue seamless rule and material
   label normalization active, bringing the frozen checkpoint to 30 categories
   / 180 approved assets.
+- The exact approved prompt bytes for `braised_cooked_food`, `soup_stew`,
+  `steamed_claypot`, `milk_fruit_tea`, and `coffee_cocoa` are immutable. Their
+  compatibility path preserves the single-hue seamless rule and material
+  label normalization, bringing the frozen checkpoint to 35 categories / 210
+  approved assets.

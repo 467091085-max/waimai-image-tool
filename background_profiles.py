@@ -127,6 +127,11 @@ FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
         "home_stir_fry",
         "fish_seafood",
         "beef_lamb_pot",
+        "braised_cooked_food",
+        "soup_stew",
+        "steamed_claypot",
+        "milk_fruit_tea",
+        "coffee_cocoa",
     }
 )
 FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
@@ -143,6 +148,11 @@ FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
         "home_stir_fry",
         "fish_seafood",
         "beef_lamb_pot",
+        "braised_cooked_food",
+        "soup_stew",
+        "steamed_claypot",
+        "milk_fruit_tea",
+        "coffee_cocoa",
     }
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (
