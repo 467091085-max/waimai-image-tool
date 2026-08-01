@@ -65,7 +65,7 @@ def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:
     assert entry["reviewStatus"] == "pending"
     assert entry["categoryId"] == "light_food"
     assert entry["styleId"] == "style-1"
-    assert entry["promptVersion"] == "style-background.v9"
+    assert entry["promptVersion"] == "style-background.v10"
     assert len(entry["promptSha256"]) == 64
     assert entry["width"] == 1024
     assert entry["height"] == 768
@@ -165,7 +165,7 @@ def test_register_entry_writes_shared_private_object_pending(
     assert call["asset_kind"] == "background"
     assert call["category_id"] == "light_food"
     assert call["style_id"] == "style-1"
-    assert call["pipeline_version"] == "style-background.v9"
+    assert call["pipeline_version"] == "style-background.v10"
 
 
 def test_upload_pending_entry_writes_cos_object_without_registration(

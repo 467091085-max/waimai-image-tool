@@ -4,7 +4,7 @@
 
 - Catalog version: `background-catalog.v1`
 - Taxonomy version: `2026-07-30.v2`
-- Prompt/pipeline version: `style-background.v9`
+- Prompt/pipeline version: `style-background.v10`
 - Total target: 40 categories x 6 fixed slots = 240 approved assets
 - `mixed` is a review state, not a 41st catalog category.
 - Customer Web reads a complete approved six-slot category manifest only. It
@@ -133,9 +133,14 @@ taxonomy, and top-level approval before exposing any asset.
 ## Verified Local Evidence
 
 - Exact dry plan: 40 categories, 6 slots, 240 assets.
-- Builder/catalog focused tests: 21 passed after classification hardening.
-- Full default regression: 1300 passed, 20 skipped.
+- Builder/catalog focused tests after v10 hardening: 61 passed, 1 skipped.
+- Full default regression after v10 hardening: 1304 passed, 20 skipped.
 - Real local Excel classification: 24/24 workbooks resolved to explicit leaf
   taxonomies, with zero `mixed` results after the store/menu conflict gate.
-- These checks do not claim that any `style-background.v9` paid image has been
-  generated, visually approved, uploaded to real COS, or deployed.
+- A real `style-background.v9` `light_food` pilot generated six assets and
+  uploaded them to private COS with SHA-256 read-back. Visual review rejected
+  the set: styles 1, 2, and 4 contain raised plinths; style 5 contains a white
+  rectangular mat; only styles 3 and 6 are usable. All six remain `pending`.
+- Prompt v10 removes the display-stage cues found in that pilot. No v10 paid
+  image is visually approved yet, so the remaining 39-category batch remains
+  intentionally gated.

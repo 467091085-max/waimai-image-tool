@@ -32,17 +32,20 @@ def test_all_40_taxonomies_have_six_unique_background_prompts() -> None:
         ]
         assert len(prompts) == 6
         assert len(set(prompts)) == 6
-        assert all(prompt.startswith("纯背景场景商业摄影") for prompt in prompts)
+        assert all(prompt.startswith("真实空景摄影") for prompt in prompts)
         assert all("EMPTY SET ONLY" in prompt for prompt in prompts)
-        assert all("PROPS, PODIUMS OR PLINTHS" in prompt for prompt in prompts)
-        assert all("禁止菜品、饮料、果蔬、植物、花、布料" in prompt for prompt in prompts)
+        assert all(
+            "PODIUMS, PLINTHS, RISERS OR DISPLAY SURFACES" in prompt
+            for prompt in prompts
+        )
+        assert all("禁止菜品、饮料、食材、植物、布料" in prompt for prompt in prompts)
         assert all("中央、边缘、前景和后景全部无物" in prompt for prompt in prompts)
-        assert all("中央下半部承载安全区至少占画面60%宽" in prompt for prompt in prompts)
-        assert all("50%高" in prompt for prompt in prompts)
+        assert all("中央约60%区域只保持连续材质" in prompt for prompt in prompts)
+        assert all("承载安全区" not in prompt for prompt in prompts)
         assert all("镜头约25度轻俯视" in prompt for prompt in prompts)
         assert all("不能出现无来源阴影" in prompt for prompt in prompts)
-        assert all("展示台、底座、台座、方台、圆台、台阶" in prompt for prompt in prompts)
-        assert all("表面铺满画幅并延伸到边缘" in prompt for prompt in prompts)
+        assert all("展示台、台座、垫板" in prompt for prompt in prompts)
+        assert all("不能为了放商品而创造任何矩形" in prompt for prompt in prompts)
         assert all("适合大浅碗轮廓" not in prompt for prompt in prompts)
         assert all("餐盒轮廓" not in prompt for prompt in prompts)
         assert all("轻食沙拉场景" not in prompt for prompt in prompts)
@@ -61,9 +64,11 @@ def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None
         "style-3",
     )
 
-    assert "暖色单色无缝摄影棚弧面" in seamless
-    assert "平整浅色石材桌面" in prompt
-    assert "从左右与下边缘连续铺满" in prompt
+    assert "暖色低饱和单色无缝影棚纸" in seamless
+    assert "不得创建水平矩形、独立平面" in seamless
+    assert "一张普通浅色石材餐桌的连续桌面" in prompt
+    assert "从左右与下边缘铺满" in prompt
+    assert "桌面前沿和厚度位于画幅下方不可见" in prompt
 
 
 def test_menu_context_prefers_explicit_store_category_over_side_dishes() -> None:

@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v7"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v8"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -24,6 +24,8 @@ PURE_BACKGROUND_NEGATIVE_PROMPT = (
     "枝条，装饰物，道具，花瓶，玻璃器皿，餐具，餐盘，碗，杯子，餐盒，"
     "筷子，刀叉，布料，桌布，餐巾，纸张，木板，砧板，托盘，展示台，"
     "展台，底座，台座，方台，圆台，台阶，层板，垫板，边框，画框，"
+    "可见桌沿，桌面厚度，第二层桌面，独立水平面，矩形留白区域，白色矩形，"
+    "色卡，色块，几何块，"
     "文字，价格，菜单，logo，品牌名，水印，人物，手，低清晰度，"
     "模糊，畸变，拼贴，画中画，中央小图，背景虚化，暗角，强景深虚化，"
     "无来源阴影，悬浮阴影，不存在物体产生的投影"
@@ -124,17 +126,29 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
 def pure_background_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
     slot = background_catalog.style_slot(style_id)
+    if slot.scene_type == "seamless-solid":
+        geometry = (
+            "CONTINUOUS CYCLORAMA ONLY. 只允许一张连续无缝弧面材料从下边缘"
+            "自然延伸至背景，底部和中央同高；不得创建水平矩形、独立平面或"
+            "任何有边缘和厚度的形状。"
+        )
+    else:
+        geometry = (
+            "ONE ORDINARY TABLETOP ONLY. TABLETOP FRONT EDGE OUTSIDE FRAME. "
+            "只允许一张普通桌面的连续纹理从左、右、下三边延伸到画外；"
+            "桌沿和厚度必须在画幅下方不可见，不得出现第二层表面或中央矩形。"
+        )
     return (
-        "纯背景场景商业摄影，4:3横图。EMPTY SET ONLY. NO FOOD, CONTAINERS, "
-        "PROPS, PODIUMS OR PLINTHS. 禁止菜品、饮料、果蔬、植物、花、布料、"
-        "餐具、容器、托盘、砧板、展示台、底座、台座、方台、圆台、台阶、"
-        "垫板、文字、logo、水印、人物或手。画面只允许连续平整的地面或台面"
-        "与简洁背景墙；中央、边缘、前景和后景全部无物。供后期商品抠图合成；"
-        "不能出现中央小框、画中画、边框或虚化外框；"
+        "真实空景摄影，4:3横图。EMPTY SET ONLY. NO FOOD, PROPS, "
+        "PODIUMS, PLINTHS, RISERS OR DISPLAY SURFACES. 禁止菜品、饮料、"
+        "食材、植物、布料、餐具、容器、托盘、砧板、展示台、台座、垫板、"
+        "桌垫、纸张、文字、logo、水印、人物或手。"
+        f"{geometry}"
+        "中央、边缘、前景和后景全部无物；"
         f"{pure_background_style_prompt(normalized_category, style_id)}；"
-        f"固定风格槽位：{slot.name}；"
-        "镜头约25度轻俯视，透视自然；中央下半部承载安全区至少占画面60%宽、"
-        "50%高，表面铺满画幅并延伸到边缘；只允许一个明确主光方向，不能出现"
+        "镜头约25度轻俯视，透视自然；中央约60%区域只保持连续材质和安静留白，"
+        "不能为了放商品而创造任何矩形、平台、垫板或单独亮区；只允许一个明确"
+        "主光方向，不能出现"
         "无来源阴影或不存在物体产生的投影，真实商业摄影光影。"
     )
 

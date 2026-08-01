@@ -107,3 +107,16 @@
 - Customer requests may read only a complete approved six-slot manifest.
   Missing slots are created by an offline/admin batch, never synchronously
   filled by the customer Web request.
+
+## Background Catalog Visual Gate
+- Real provider success and COS upload do not mean visual approval. Every
+  generated asset starts as `pending`, and a category remains unavailable
+  until exactly six reviewed assets form a complete approved manifest.
+- Prompt v9 is rejected for the `light_food` pilot: four of six outputs created
+  a raised platform or rectangular mat even though the negative prompt named
+  those objects.
+- Prompt v10 removes product-display wording, requires one continuous surface,
+  requires table texture through the center, and puts any table front edge and
+  thickness outside the crop. v9 assets must not be mixed into a v10 manifest.
+- Do not spend the remaining 39-category batch until the six-slot v10 pilot
+  passes exact-object visual review.

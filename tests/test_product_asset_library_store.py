@@ -894,7 +894,7 @@ def test_background_catalog_query_returns_all_approved_exact_slots() -> None:
             style_id=f"style-{index}",
             taxonomy_version="2026-07-30.v2",
             category_id="light_food",
-            pipeline_version="style-background.v9",
+            pipeline_version="style-background.v10",
             reuse_scope="tenant",
         )
         for index in range(1, 7)
@@ -907,7 +907,7 @@ def test_background_catalog_query_returns_all_approved_exact_slots() -> None:
         owner_user_id="customer-1",
         taxonomy_version="2026-07-30.v2",
         category_id="light_food",
-        pipeline_version="style-background.v9",
+        pipeline_version="style-background.v10",
         style_ids=[f"style-{index}" for index in range(1, 7)],
         include_tenant_scope=True,
     )
@@ -925,7 +925,7 @@ def test_background_catalog_query_returns_all_approved_exact_slots() -> None:
         "waimai-shared",
         "2026-07-30.v2",
         "light_food",
-        "style-background.v9",
+        "style-background.v10",
         [f"style-{index}" for index in range(1, 7)],
     )
 
@@ -942,7 +942,7 @@ def test_background_catalog_query_rejects_duplicate_style_ids() -> None:
             owner_user_id="customer-1",
             taxonomy_version="2026-07-30.v2",
             category_id="light_food",
-            pipeline_version="style-background.v9",
+            pipeline_version="style-background.v10",
             style_ids=["style-1", "style-1"],
             include_tenant_scope=True,
         )

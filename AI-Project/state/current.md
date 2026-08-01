@@ -6,9 +6,10 @@
 ## Current Step
 Step 91 in progress: replace per-menu live background generation with a
 reviewed 40-category x 6-style background catalog. Provider transport is live,
-but the current prompt/quality gate accepted raised plinth and color-block-like
-backgrounds, so visual acceptance is intentionally failed pending the catalog
-and prompt redesign.
+and the catalog/COS contract is implemented. The first real `light_food` v9
+pilot is intentionally rejected because four of six images contain a raised
+plinth or rectangular mat. Prompt v10 is locally verified and awaits a new
+six-image paid staging pilot before the remaining 39 categories may run.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -17,6 +18,16 @@ and prompt redesign.
 - 2026-08-01 frontend-equivalent two-at-a-time six-background probe: passed, 6/6 HTTP 200
 - 2026-08-01 downloaded six-background visual review: failed; multiple outputs contain raised rectangular plinths/color-block-like slabs
 - Root cause split: provider transport currently works; prompt design, content QA, and reusable catalog architecture remain blocking
+- Real `light_food` catalog pilot: generated and SHA-verified in private COS as
+  six `pending` assets; no asset was auto-approved
+- v9 pilot visual result: `style-3` and `style-6` usable; `style-1`, `style-2`,
+  and `style-4` contain raised plinths, while `style-5` contains a white
+  rectangular mat; category remains unavailable to customers
+- Prompt v10 root cause correction: removed product-display cues such as
+  `承载安全区`, requires continuous material through the center, puts the
+  tabletop front edge outside the crop, and explicitly forbids a second plane
+- Prompt/catalog focused verification after v10: `61 passed, 1 skipped`
+- Full local regression after v10: `1304 passed, 20 skipped`
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -684,9 +695,14 @@ and prompt redesign.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. 由用户在隔离测试链接复测上传菜单、六张背景和六张免费样图。
-2. 单独解决全店正式出图的 durable Worker、进度和 56 行限额；在完成前不得声称整店正式图已验收。
-3. 图片主链路稳定后再实现微信支付 Native Pay 的 fail-closed 接口；没有商户凭据时不接真实支付、不迁移数据库、不改生产环境。
+1. Commit and deploy prompt v10 to the isolated Render test service only.
+2. Regenerate all six `light_food` slots under v10 and visually review every
+   exact COS object; rejected assets must remain pending and unavailable.
+3. Only after the pilot passes, generate the remaining 39 categories in
+   bounded batches, review all 240 assets, and publish complete approved
+   category manifests.
+4. Upload a real Excel menu and verify taxonomy routing, six free previews,
+   selected-background identity, formal generation, export, and billing.
 
 ## Latest Verified Checkpoint
 - Render image staging acceptance: commit `37429f9`, real 56-row Excel parsed with zero errors, six pipeline-v4 paid samples passed visual/SHA/background checks, and the formal compositor probe passed one row. Evidence: `AI-Project/handoffs/2026-07-31/RENDER_IMAGE_STAGING_ACCEPTANCE.md`.
