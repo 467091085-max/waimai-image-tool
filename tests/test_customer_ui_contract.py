@@ -334,7 +334,7 @@ class CustomerUiContractTests(unittest.TestCase):
         self.assertIn("return await materializePrivateMediaUrls(data)", api_body)
         self.assertNotIn('pathname.startsWith("/download/")', helpers)
 
-    def test_private_media_fetch_is_authenticated_cached_and_fail_closed(self) -> None:
+    def test_private_media_fetch_supports_bearer_or_same_origin_staging_auth(self) -> None:
         fetch_start = self.script.index("function privateMediaObjectUrl")
         fetch_end = self.script.index("async function materializePrivateMediaUrls", fetch_start)
         fetch_body = self.script[fetch_start:fetch_end]
@@ -345,22 +345,37 @@ class CustomerUiContractTests(unittest.TestCase):
             "privateMediaObjectUrlCache.set(signedUrl, objectUrl)",
             "privateMediaObjectUrlCache.delete(signedUrl)",
             "state.auth.token",
-            'headers.set("Authorization", `Bearer ${token}`)',
-            'fetch(target.toString(), { headers, redirect: "error" })',
+            'if (token) headers.set("Authorization", `Bearer ${token}`)',
+            'credentials: "same-origin"',
             "response.ok",
             'response.headers.get("Content-Type")',
             'startsWith("image/")',
             "response.blob()",
             "URL.createObjectURL(blob)",
-            "登录状态已失效，无法加载私有图片",
+            'error.code = "private_media_url_invalid"',
+            'wrapped.code = "private_media_network_error"',
             "私有图片加载失败",
             "私有图片响应格式错误",
         ]:
             self.assertIn(required, fetch_body)
 
         self.assertNotIn("return signedUrl", fetch_body)
+        self.assertNotIn("if (!token)", fetch_body)
         self.assertIn("clearPrivateMediaObjectUrlCache()", self.script)
         self.assertIn("URL.revokeObjectURL(objectUrl)", self.script)
+
+    def test_background_media_failures_are_not_reported_as_hunyuan_failures(self) -> None:
+        failure_start = self.script.index("function styleGenerationFailureText")
+        failure_end = self.script.index("function allStyleBackgroundsBlocked", failure_start)
+        failure_body = self.script[failure_start:failure_end]
+        loader_start = self.script.index("async function loadStyleBackground")
+        loader_end = self.script.index("async function loadStyleBackgrounds", loader_start)
+        loader_body = self.script[loader_start:loader_end]
+
+        self.assertIn('errorCode.startsWith("private_media_")', failure_body)
+        self.assertIn('return "背景图片加载失败"', failure_body)
+        self.assertIn('mediaLoadError ? "MediaLoadError" : "ProviderError"', loader_body)
+        self.assertIn("generationErrorCode: errorCode", loader_body)
 
     def test_admin_has_productized_dashboard_containers(self) -> None:
         for required in [

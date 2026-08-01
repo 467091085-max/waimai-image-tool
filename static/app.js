@@ -164,6 +164,10 @@ function styleSampleBlocked(sample, styleId = "") {
 }
 
 function styleGenerationFailureText(sample) {
+  const errorCode = String(sample?.generationErrorCode || "");
+  if (sample?.generationAction === "MediaLoadError" || errorCode.startsWith("private_media_")) {
+    return "背景图片加载失败";
+  }
   const error = String(sample?.generationError || "");
   if (/ResourceInsufficient|资源不足/.test(error)) return "混元资源不足";
   if (/AuthFailure|Unauthorized|Secret|鉴权|密钥/.test(error)) return "混元鉴权失败";
@@ -172,6 +176,7 @@ function styleGenerationFailureText(sample) {
 
 function styleGenerationFailureDetail(sample) {
   const label = styleGenerationFailureText(sample);
+  if (label === "背景图片加载失败") return "背景已经生成，但私有图片加载失败，请刷新或重新登录后重试。";
   if (label === "混元资源不足") return "混元资源不足，请开通资源包或后付费后重试。";
   if (label === "混元鉴权失败") return "混元鉴权失败，请检查腾讯云密钥配置。";
   return "混元生成失败，请稍后重试或检查混元接口错误。";
@@ -266,11 +271,15 @@ function privateMediaTarget(value) {
 
 async function privateMediaHttpError(response) {
   let detail = "";
+  let code = "private_media_http_error";
   try {
     const text = await response.text();
     if (text) {
       try {
         const payload = JSON.parse(text);
+        code = typeof payload.code === "string" && payload.code
+          ? payload.code
+          : code;
         detail = typeof payload.error === "string"
           ? payload.error
           : payload.error?.message || payload.message || "";
@@ -282,7 +291,11 @@ async function privateMediaHttpError(response) {
     // The HTTP status remains enough to report a useful private-media error.
   }
   const suffix = detail ? `：${detail}` : "";
-  return new Error(`私有图片加载失败（HTTP ${response.status}）${suffix}`);
+  const error = new Error(`私有图片加载失败（HTTP ${response.status}）${suffix}`);
+  error.code = code;
+  error.status = response.status;
+  error.retryable = TRANSIENT_HTTP_STATUSES.has(response.status);
+  return error;
 }
 
 function privateMediaObjectUrl(signedUrl) {
@@ -291,27 +304,37 @@ function privateMediaObjectUrl(signedUrl) {
 
   const pending = (async () => {
     const token = state.auth.token;
-    if (!token) {
-      throw new Error("登录状态已失效，无法加载私有图片，请重新登录。");
-    }
     const target = privateMediaTarget(signedUrl);
     if (!target) {
-      throw new Error("私有图片地址无效，无法安全加载。");
+      const error = new Error("私有图片地址无效，无法安全加载。");
+      error.code = "private_media_url_invalid";
+      error.retryable = false;
+      throw error;
     }
 
     const headers = new Headers();
-    headers.set("Authorization", `Bearer ${token}`);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
     let response;
     try {
-      response = await fetch(target.toString(), { headers, redirect: "error" });
+      response = await fetch(target.toString(), {
+        headers,
+        credentials: "same-origin",
+        redirect: "error"
+      });
     } catch (error) {
-      throw new Error(`私有图片加载失败：${error?.message || "网络连接异常"}`);
+      const wrapped = new Error(`私有图片加载失败：${error?.message || "网络连接异常"}`);
+      wrapped.code = "private_media_network_error";
+      wrapped.retryable = true;
+      throw wrapped;
     }
     if (!response.ok) throw await privateMediaHttpError(response);
 
     const contentType = response.headers.get("Content-Type") || "";
     if (!contentType.toLowerCase().startsWith("image/")) {
-      throw new Error("私有图片响应格式错误：服务器未返回图片内容。");
+      const error = new Error("私有图片响应格式错误：服务器未返回图片内容。");
+      error.code = "private_media_content_type_invalid";
+      error.retryable = false;
+      throw error;
     }
     const blob = await response.blob();
     return URL.createObjectURL(blob);
@@ -379,6 +402,7 @@ async function api(url, opt = {}) {
       : data.error?.message || "请求失败";
     const error = new Error(errorMessage);
     error.status = res.status;
+    error.code = typeof data.code === "string" ? data.code : "";
     error.retryable = typeof data.retryable === "boolean"
       ? data.retryable
       : TRANSIENT_HTTP_STATUSES.has(res.status);
@@ -1547,13 +1571,17 @@ async function loadStyleBackground(styleId, planRef) {
     if (state.plan === planRef) updatePlanStyleSample(styleId, updated);
   } catch (error) {
     if (state.plan === planRef) {
+      const errorCode = String(error?.code || error?.payload?.code || "");
+      const mediaLoadError = errorCode.startsWith("private_media_");
       updatePlanStyleSample(styleId, {
         sample: {
           url: "",
-          generationAction: "ProviderError",
+          generationAction: mediaLoadError ? "MediaLoadError" : "ProviderError",
           generationStatus: "failed",
           generationProvider: "tencent-hunyuan",
-          generationError: error.message || "背景图生成失败"
+          generationError: error.message || "背景图生成失败",
+          generationErrorCode: errorCode || (mediaLoadError ? "private_media_error" : "provider_error"),
+          retryable: error?.retryable === true
         }
       });
     }

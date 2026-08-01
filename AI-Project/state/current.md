@@ -4,11 +4,27 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 90 complete: the calibrated pipeline v4 is deployed to the protected
-Render test service and passed the paid six-sample visual acceptance. The next
-separate step is full-store formal generation, which remains capped in staging.
+Step 91 in progress: replace per-menu live background generation with a
+reviewed 25-category x 6-style background catalog. Provider transport is live,
+but the current prompt/quality gate accepted raised plinth and color-block-like
+backgrounds, so visual acceptance is intentionally failed pending the catalog
+and prompt redesign.
 
 ## Status
+- 2026-08-01 Render TokenHub readiness: confirmed ready
+- 2026-08-01 real Excel upload: 56 rows / 0 parse errors
+- 2026-08-01 single background transport probe: passed, HTTP 200
+- 2026-08-01 frontend-equivalent two-at-a-time six-background probe: passed, 6/6 HTTP 200
+- 2026-08-01 downloaded six-background visual review: failed; multiple outputs contain raised rectangular plinths/color-block-like slabs
+- Root cause split: provider transport currently works; prompt design, content QA, and reusable catalog architecture remain blocking
+- Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
+- Private-media failures now remain distinct from Hunyuan provider failures: done locally
+- Focused staging/customer UI contract verification: done, 27 passed
+- Full regression after private-media staging fix: done, 1284 passed / 20 skipped
+- Sanitized Pro package: `/tmp/waimai-background-architecture-8f9afd6db1ea.zip`, SHA-256 `5394b3f88d938412ea37575112e4e40e5882c27283ca32a51b181a0a819825a6`
+- ChatGPT Pro architecture review: in progress, `https://chatgpt.com/c/6a6dc7fa-9140-83e8-84ff-3f038953ce8b`
+- ChatGPT Pro provider/UI failure review: in progress, `https://chatgpt.com/c/6a6dc81d-0b38-83e8-bfa2-5fb67fde2e94`
+- ChatGPT Pro 25-category visual prompt review: in progress, `https://chatgpt.com/c/6a6dc847-c370-83e8-bb28-93b3f3191a66`
 - Chroma residual false-success root cause: done
 - Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
 - Lossless RGB PNG chroma intermediate: done locally
