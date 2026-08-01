@@ -213,3 +213,16 @@
 - Sample selection changes neither Excel row inclusion nor the formal
   generation manifest; filtering formal products is a separate product
   decision and must not be inferred from the preview rule.
+
+## Verified Free Preview Reuse
+- A `standard` formal image may reuse the exact free-preview PNG only when the
+  normalized row, selected style, selected-background asset/SHA/menu identity,
+  pipeline version, persisted output SHA-256, and exact-background verification
+  all match.
+- `premium` generation never reuses a standard free preview. It must execute
+  the premium provider path.
+- Preview reuse is an optional speed optimization. An unavailable private
+  preview cache falls back to normal exact-background generation rather than
+  failing the formal row or retrying the paid preview endpoint.
+- A verified preview reused as a formal output counts as a successful cached
+  result for manifest completion and billing settlement.

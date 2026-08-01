@@ -15,10 +15,12 @@ representative dish/combo samples against one approved mixed-rice background.
 The formal job was accepted, but the HTTP acceptance client stopped after one
 transient loopback connection reset while polling status. A first retry patch
 was rejected because sample generation is a side-effecting GET. The corrected
-local patch retries only `/api/generation-jobs/...` reads. Render is restored
-to normal Gunicorn in live deploy `dep-d9n39fflk1mc73dllnt0`; formal
-generation, billing, manifest, and export must be rerun. Production remains
-fail-closed without Redis and an independent worker.
+patch retries only `/api/generation-jobs/...` reads. A verified same-run
+free-preview reuse path is ready and fully regression-tested to avoid six
+duplicate standard provider calls. Render is restored to normal Gunicorn in
+live deploy `dep-d9n39fflk1mc73dllnt0`; formal generation, billing, manifest,
+and export must be rerun. Production remains fail-closed without Redis and an
+independent worker.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -126,6 +128,17 @@ fail-closed without Redis and an independent worker.
   background generation, exports, and every POST remain single-attempt.
   Focused verification passed `12 passed`; complete regression passed `1334
   passed, 20 skipped`; scoped compilation and `git diff --check` passed.
+- Implemented a local formal-generation speed path: `standard` rows reuse the
+  exact same-run free-preview PNG only after selected-background identity,
+  pipeline version, persisted output SHA-256, and pixel-preservation metadata
+  all verify. `premium` rows still call the provider.
+- Formal cached, approved-asset, and preview-reuse outputs now count as both
+  cached and succeeded, so a fully reused manifest can complete correctly.
+  Private preview cache unavailability is treated as a cache miss and falls
+  back to normal exact-background generation; the paid preview GET is never
+  retried. Focused selected-background verification passed `16 passed`; full
+  regression passed `1336 passed, 20 skipped` in 26.81 seconds. Scoped Python
+  compilation and `git diff --check` passed; deployment remains pending.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

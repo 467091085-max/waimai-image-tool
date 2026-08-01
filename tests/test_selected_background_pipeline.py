@@ -433,6 +433,154 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertTrue(row["candidates"][0]["backgroundIdentityVerified"])
             self.assertEqual(Path(str(row["candidates"][0]["path"])).suffix, ".png")
 
+    def test_formal_standard_reuses_verified_free_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (120, 90), (35, 90, 145))
+            background = selected_background(background_path)
+            row = menu_row()
+
+            def fake_exact(
+                item: dict[str, object],
+                selected: app_module.SelectedBackgroundAsset,
+                quality: str | None,
+                target: Path,
+            ) -> dict[str, object]:
+                save_image(target, (120, 90), (80, 120, 60))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "DeterministicBackgroundComposite",
+                    "promptType": "text_to_image",
+                    "backgroundIdentityVerified": True,
+                    "persistedOutputBackgroundVerified": True,
+                    "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "outputSha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "current_menu_cache_key", return_value="menu-test"),
+                mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 5),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={"provider": "tencent-hunyuan", "configured": True},
+                ),
+                mock.patch.object(app_module, "tencent_exact_background_image", side_effect=fake_exact) as exact,
+                mock.patch.object(app_module, "ai_asset_library_enabled", return_value=False),
+            ):
+                preview, generation = app_module.materialize_preview_candidate(
+                    row,
+                    "style-2",
+                    "standard",
+                    background,
+                )
+                assert preview is not None
+                preview_bytes = Path(str(preview["path"])).read_bytes()
+                self.assertEqual(generation["status"], "succeeded")
+                exact.reset_mock()
+
+                final_generation = app_module.materialize_final_images(
+                    {"results": [row]},
+                    "style-2",
+                    "standard",
+                    background,
+                )
+                exact.assert_not_called()
+
+                exact.reset_mock()
+                premium_row = menu_row()
+                premium_generation = app_module.materialize_final_images(
+                    {"results": [premium_row]},
+                    "style-2",
+                    "premium",
+                    background,
+                )
+
+            exact.assert_called_once()
+            self.assertEqual(final_generation["succeeded"], 1)
+            self.assertEqual(final_generation["cached"], 1)
+            self.assertEqual(final_generation["actions"], {"PreviewReuse": 1})
+            self.assertEqual(premium_generation["succeeded"], 1)
+            self.assertEqual(premium_generation["cached"], 0)
+            self.assertEqual(row["generation"]["action"], "PreviewReuse")
+            final_path = Path(str(row["candidates"][0]["path"]))
+            self.assertEqual(final_path.read_bytes(), preview_bytes)
+            final_metadata = app_module.load_ai_output_metadata(final_path)
+            self.assertTrue(
+                app_module.verified_exact_output_metadata(
+                    final_metadata,
+                    final_path,
+                    background,
+                )
+            )
+
+    def test_formal_generation_falls_back_when_preview_cache_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (120, 90), (35, 90, 145))
+            background = selected_background(background_path)
+            row = menu_row()
+
+            def fake_exact(
+                item: dict[str, object],
+                selected: app_module.SelectedBackgroundAsset,
+                quality: str | None,
+                target: Path,
+            ) -> dict[str, object]:
+                save_image(target, (120, 90), (80, 120, 60))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "DeterministicBackgroundComposite",
+                    "promptType": "text_to_image",
+                    "backgroundIdentityVerified": True,
+                    "persistedOutputBackgroundVerified": True,
+                    "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "outputSha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "generated_preview_candidate",
+                    side_effect=app_module.PreviewObjectStorageError(
+                        "preview_object_storage_unavailable",
+                        "temporary failure",
+                    ),
+                ),
+                mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 5),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={"provider": "tencent-hunyuan", "configured": True},
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_exact_background_image",
+                    side_effect=fake_exact,
+                ) as exact,
+                mock.patch.object(app_module, "ai_asset_library_enabled", return_value=False),
+            ):
+                generation = app_module.materialize_final_images(
+                    {"results": [row]},
+                    "style-2",
+                    "standard",
+                    background,
+                )
+
+            exact.assert_called_once()
+            self.assertEqual(generation["succeeded"], 1)
+            self.assertEqual(generation["cached"], 0)
+            self.assertEqual(
+                row["generation"]["action"],
+                "DeterministicBackgroundComposite",
+            )
+
     def test_tampered_exact_output_fails_metadata_and_candidate_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -9649,6 +9649,107 @@ def materialize_final_row(
     return metrics
 
 
+def verified_preview_candidate_for_final(
+    row: dict[str, Any],
+    selected_style: str,
+    quality: str | None,
+    selected_background: SelectedBackgroundAsset | None,
+) -> dict[str, Any] | None:
+    if (
+        selected_background is None
+        or quality_config(quality)["id"] != "standard"
+    ):
+        return None
+    principal = ACTIVE_PREVIEW_PRINCIPAL.get()
+    principal_token = None
+    if principal is None:
+        owner_user_id = ACTIVE_ASSET_OWNER_USER_ID.get().strip()
+        menu_upload_id = ACTIVE_PREVIEW_MENU_UPLOAD_ID.get().strip()
+        if owner_user_id and menu_upload_id:
+            principal_token = ACTIVE_PREVIEW_PRINCIPAL.set(
+                {
+                    "userId": owner_user_id,
+                    "localDemo": staging_in_process_generation_allowed(),
+                }
+            )
+    try:
+        try:
+            candidate = generated_preview_candidate(
+                row,
+                selected_style,
+                selected_background,
+            )
+        except PreviewObjectStorageError:
+            return None
+    finally:
+        if principal_token is not None:
+            ACTIVE_PREVIEW_PRINCIPAL.reset(principal_token)
+    if not verified_exact_candidate(candidate, selected_background):
+        return None
+    return candidate
+
+
+def materialize_verified_preview_as_final(
+    row: dict[str, Any],
+    selected_style: str,
+    quality: str | None,
+    selected_background: SelectedBackgroundAsset | None,
+    target: Path,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    preview = verified_preview_candidate_for_final(
+        row,
+        selected_style,
+        quality,
+        selected_background,
+    )
+    if preview is None or selected_background is None:
+        return None
+    preview_path = Path(str(preview.get("path") or ""))
+    preview_metadata = load_ai_output_metadata(preview_path)
+    if not verified_exact_output_metadata(
+        preview_metadata,
+        preview_path,
+        selected_background,
+    ):
+        return None
+    assert preview_metadata is not None
+    raw = preview_path.read_bytes()
+    if len(raw) > MAX_AI_ASSET_BYTES:
+        return None
+    source_action = str(preview_metadata.get("action") or "Preview")
+    final_metadata = {
+        key: value
+        for key, value in preview_metadata.items()
+        if key != "privatePreviewStorage"
+    }
+    final_metadata.update(
+        {
+            "action": "PreviewReuse",
+            "reason": "verified_free_preview_reuse",
+            "sourceAction": source_action,
+        }
+    )
+    write_private_preview_cache_file(target, raw)
+    write_ai_output_metadata(target, final_metadata)
+    if not verified_exact_output_metadata(
+        final_metadata,
+        target,
+        selected_background,
+    ):
+        target.unlink(missing_ok=True)
+        ai_output_metadata_path(target).unlink(missing_ok=True)
+        return None
+    candidate, _ = ai_output_candidate(
+        row,
+        selected_style,
+        quality,
+        "tencent-PreviewReuse",
+        selected_background,
+    )
+    candidate_generation_metadata(candidate, final_metadata)
+    return candidate, final_metadata
+
+
 def materialize_final_images(
     plan: dict[str, Any],
     selected_style: str,
@@ -9718,7 +9819,38 @@ def materialize_final_images(
             row["generationStatus"] = "cached"
             item_result.update({"provider": provider, "action": cached_action, "status": "cached", "succeeded": True, "cached": True})
             generation["cached"] += 1
+            generation["succeeded"] += 1
             bump_generation_action(generation, "Cached")
+            row["generation"] = item_result
+            items_by_index[index] = item_result
+            continue
+
+        preview_reuse = materialize_verified_preview_as_final(
+            row,
+            selected_style,
+            quality,
+            selected_background,
+            target,
+        )
+        if preview_reuse is not None:
+            ai_candidate, preview_metadata = preview_reuse
+            promote_candidate(row, ai_candidate)
+            row["publicStatus"] = "已生成"
+            row["backgroundAction"] = "正式生成"
+            row["generationStatus"] = "cached"
+            item_result.update(
+                {
+                    "provider": "tencent-hunyuan",
+                    "action": "PreviewReuse",
+                    "status": "cached",
+                    "succeeded": True,
+                    "cached": True,
+                    "sourceAction": preview_metadata.get("sourceAction"),
+                }
+            )
+            generation["cached"] += 1
+            generation["succeeded"] += 1
+            bump_generation_action(generation, "PreviewReuse")
             row["generation"] = item_result
             items_by_index[index] = item_result
             continue
@@ -9780,6 +9912,7 @@ def materialize_final_images(
                     }
                 )
                 generation["cached"] += 1
+                generation["succeeded"] += 1
                 bump_generation_action(
                     generation,
                     "ApprovedAssetReuse",
