@@ -163,3 +163,8 @@
   Their compatibility path keeps the single-hue seamless rule and material
   label normalization active, bringing the frozen checkpoint to 25 categories
   / 150 approved assets.
+- The exact approved prompt bytes for `northern_lu`, `fujian_taiwan`,
+  `home_stir_fry`, `fish_seafood`, and `beef_lamb_pot` are immutable. Their
+  compatibility path keeps the same single-hue seamless rule and material
+  label normalization active, bringing the frozen checkpoint to 30 categories
+  / 180 approved assets.

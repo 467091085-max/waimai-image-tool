@@ -286,6 +286,46 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "485374a8e628fb19d5e44ecb46eef17b2b44797fb38616be4d9d61f2710cf251",
             "style-6": "4fb8689b98af903b4ba724ba7715d3144a9cb9a41fea28c43b5ac482a146eefd",
         },
+        "northern_lu": {
+            "style-1": "ad699667576759f5f2dc8fa0118c6ea100b582491d68e36bba54a9453571d1fe",
+            "style-2": "93f9feab84c8d6f2ea97707474d99614c09b18b3a13444820c75a3f03872b0ed",
+            "style-3": "eae65b4927d3f25dcf0c9150375f0a87464722d4af0bdc6e308ab94e3053ccd5",
+            "style-4": "d6c1e2c6b2ba81546ac62f3196e8edcc6a666bae53af11659ed62ce9545e581d",
+            "style-5": "189ca134adc34db6ae777cc7ba26ea06612abaf7b5cc83327c243fbc8bdd864c",
+            "style-6": "b6098f05d344aeb98ee036147ec114ff8126f6d0df5e720b4bf3ffe181b713a4",
+        },
+        "fujian_taiwan": {
+            "style-1": "1f2ad4c5de9acc0ed9aa76cac75841f86be7af28d22af571d2135d7dc608959a",
+            "style-2": "2a95e6aa54238d338c29311ed5e8bcb6af48a4d4891ab7c5894929e8b6f0ba28",
+            "style-3": "b8a46fe0b0114fe1612ec9cbf5a0b7b67fa70c1004608f77e44525368bfaef87",
+            "style-4": "64046c805eb1f755c1ab5878bc677330d2415ad59a0274eba8f335d4c6a206a9",
+            "style-5": "99929e6594495ccb7482a817de1a48519fa33d077fd9e1ce1962689979df052c",
+            "style-6": "8e397a2ecbdccc16aaa5fadc34f3800d085220baaf4ea2fd9aa7c65c06aad614",
+        },
+        "home_stir_fry": {
+            "style-1": "ddf9ff34db9727058f7518616560d883a1dc7c0379fc40ad481c4f3bf8a46d11",
+            "style-2": "d9515531d3b8583aabe821a1e19540e3491bb07c535c1c326fbe7c7e91d159f9",
+            "style-3": "4c85de4d077cd4db8e89aa5e56d910a1da76eaece3efae6bcfa0c896622f06a2",
+            "style-4": "d2c9df6b18e4a6057743493d76d60bec024f0e0621a7fbd74e8bc4fcf6e90fa8",
+            "style-5": "a529e2d177abf20d158ef878958592ab14616419dec31922fc604b3c518d1b40",
+            "style-6": "fe99e59fc6b38a0abec7eb89e438930b5d9d2ca865cbb4de3708fc57d54586d8",
+        },
+        "fish_seafood": {
+            "style-1": "1f2ad4c5de9acc0ed9aa76cac75841f86be7af28d22af571d2135d7dc608959a",
+            "style-2": "060081cf1cc8657bd0a360c4c7d39ea816f8ef558c14e112b06e7f579e2675a6",
+            "style-3": "b8a46fe0b0114fe1612ec9cbf5a0b7b67fa70c1004608f77e44525368bfaef87",
+            "style-4": "64046c805eb1f755c1ab5878bc677330d2415ad59a0274eba8f335d4c6a206a9",
+            "style-5": "99929e6594495ccb7482a817de1a48519fa33d077fd9e1ce1962689979df052c",
+            "style-6": "8e397a2ecbdccc16aaa5fadc34f3800d085220baaf4ea2fd9aa7c65c06aad614",
+        },
+        "beef_lamb_pot": {
+            "style-1": "c184afd5445bef0f840758dcbcbfbb2bc7ac20e33a38bf6092654368c1ccc5f0",
+            "style-2": "341b5ec986c6c2cc6ccc75158d131c412123ee527250262e517c0d14f8757a98",
+            "style-3": "9c9afab64977cba9c12c1a60ac64c9526b5d1510b4077bef943f64b92d2c9939",
+            "style-4": "750dc834ef8bffa30ce16fd910ab716af967eb7431904dfb2a850da6027d7d59",
+            "style-5": "cdd6b46dc1e9813d1b260079191c3ab6918ce44cf822acbdaf21a725273643e8",
+            "style-6": "bb0ceef29cb3f3ab14eb14cdac1fa816c0788eb0a6e3eb499535abe71115d5d2",
+        },
     }
 
     assert (
@@ -302,6 +342,11 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "jiangzhe",
             "northeast_chinese",
             "northwest_xinjiang",
+            "northern_lu",
+            "fujian_taiwan",
+            "home_stir_fry",
+            "fish_seafood",
+            "beef_lamb_pot",
         }
     )
     for category_id, hashes in expected.items():

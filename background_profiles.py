@@ -122,6 +122,11 @@ FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
         "jiangzhe",
         "northeast_chinese",
         "northwest_xinjiang",
+        "northern_lu",
+        "fujian_taiwan",
+        "home_stir_fry",
+        "fish_seafood",
+        "beef_lamb_pot",
     }
 )
 FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
@@ -133,6 +138,11 @@ FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
         "jiangzhe",
         "northeast_chinese",
         "northwest_xinjiang",
+        "northern_lu",
+        "fujian_taiwan",
+        "home_stir_fry",
+        "fish_seafood",
+        "beef_lamb_pot",
     }
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (

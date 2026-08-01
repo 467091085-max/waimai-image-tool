@@ -5,21 +5,22 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Twenty-five categories are now hash-lock approved
-in private COS, for 150 of the 240 target assets. Render generation deploy
-`dep-d9n0k8942hec73elqfbg` completed all 30 paid assets for `sichuan_hunan`,
-`cantonese_roast`, `jiangzhe`, `northeast_chinese`, and
-`northwest_xinjiang` with `failureCount=0`. Exact COS contact-sheet review
-passed all five groups under the product gate: two seamless solid scenes and
-four broad full-size dining-table scenes are valid, while food, props, small
-central plinths, isolated slabs, mats, and inset frames remain forbidden.
-Approval deploy `dep-d9n0r3qjnfac73a5dnkg` re-read and hash-locked all 30
-reviewed objects. The five exact six-style prompt sets are now locally frozen;
-focused verification passed `20 passed`, full regression passed `1324 passed,
-20 skipped`, and prompt length, compilation, and diff checks passed. Normal
-Gunicorn restore deploy `dep-d9n0tnrm8hqs73dbqq20` is live. The next
-action is to push the freeze commit and generate categories 26 through 30
-without changing any approved prompt bytes.
+6-style background catalog. Thirty categories are now hash-lock approved in
+private COS, for 180 of the 240 target assets. Render generation deploy
+`dep-d9n0vq942hec73emdrng` completed all 30 paid assets for `northern_lu`,
+`fujian_taiwan`, `home_stir_fry`, `fish_seafood`, and `beef_lamb_pot` with
+`failureCount=0`. Exact COS contact-sheet review passed all five groups under
+the product gate: two seamless solid scenes and four broad full-size
+dining-table scenes are valid, while food, props, small central plinths,
+isolated slabs, mats, and inset frames remain forbidden. Approval deploy
+`dep-d9n17djl550s7394dt70` re-read and hash-locked all 30 reviewed objects and
+finished with sentinel `CATALOG_BATCH_26_30_APPROVED`. The five exact six-style
+prompt sets are now locally frozen. Focused verification passed `15 passed`,
+full regression passed `1324 passed, 20 skipped`, maximum prompt length is
+588, and scoped compilation plus `git diff --check` passed. Render restore
+deploy `dep-d9n1b90ae00c73alqhr0` is live with the exact normal Gunicorn command
+and no paid generation or approval process. Commit and push remain before
+categories 31 through 35 start.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -180,6 +181,21 @@ without changing any approved prompt bytes.
 - Restored the Render start command to normal Gunicorn; restore deploy
   `dep-d9n0tnrm8hqs73dbqq20` is live and its exact running command contains no
   paid generation or approval process.
+- Prompt-freeze commit `c91660f` is pushed; its auto-deploy reached live with
+  normal Gunicorn before the next paid operation started.
+- Paid batch deploy `dep-d9n0vq942hec73emdrng` is running categories 26 through
+  30 and completed 30/30 paid assets with zero failures. All five contact
+  sheets passed visual review. Approval deploy `dep-d9n17djl550s7394dt70`
+  completed exact object read-back and six-hash approval writes for all five.
+- Catalog checkpoint: 30 approved categories / 180 approved assets.
+- Added the five newly approved categories to the immutable single-hue and
+  normalized-palette compatibility sets; exact prompt-hash test passes `15
+  passed`.
+- Full regression passed `1324 passed, 20 skipped`; maximum prompt length is
+  588, scoped Python compilation passed, and `git diff --check` passed.
+- Restored the Render start command to normal Gunicorn after approval. Restore
+  deploy `dep-d9n1b90ae00c73alqhr0` is live; its running command contains no
+  paid catalog-generation or approval process.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
