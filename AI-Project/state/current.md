@@ -66,6 +66,14 @@ remaining 39 categories in resumable batches.
   sheet in private COS for efficient six-image visual review
 - Catalog/resume/review focused verification: `98 passed, 1 skipped`
 - Full local regression after resumable review flow: `1313 passed, 20 skipped`
+- `light_food` approval: complete. The exact six recorded v11 hashes are now
+  `approved` in the private COS manifest, reviewed by
+  `catalog-visual-review` at `2026-08-01T12:19:51Z`
+- Light-food review contact sheet:
+  `contact-sheet-45170ad94f6665d1c5750c86ce60f5284443bdfc63b5fddb3bb3de5947c6e768.jpg`
+- Approval operation deploy `dep-d9mu8he1egvs73f0980g` succeeded; the service
+  was restored to normal Gunicorn start command and deploy
+  `dep-d9mu95daeets73aqmh8g` is live
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -908,6 +916,6 @@ remaining 39 categories in resumable batches.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: push and deploy the resumable review flow, run the hash-locked
-  `light_food` approval, verify the customer catalog endpoint returns six exact
-  images, then start the remaining categories in bounded batches.
+- Next action: start the remaining categories with the background builder and
+  Gunicorn running together, monitor per-category checkpoints, then review the
+  generated contact sheets before hash-locked approval.
