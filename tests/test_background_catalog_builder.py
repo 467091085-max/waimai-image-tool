@@ -96,6 +96,62 @@ def test_generation_seed_is_stable_and_pair_scoped() -> None:
     assert 1 <= seed <= 4_294_967_295
 
 
+def test_generation_retry_uses_stable_distinct_seed(tmp_path: Path) -> None:
+    target = tmp_path / "hotpot_skewers" / "style-2.jpg"
+    requested_seeds: list[int] = []
+
+    def provider_request(
+        _action: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        requested_seeds.append(int(payload["Seed"]))
+        if len(requested_seeds) == 1:
+            raise RuntimeError("FailedOperation.ImageIllegalDetected")
+        return {
+            "ResultImage": "test-result",
+            "_Provider": "tencent-hunyuan",
+            "_Action": "TokenHubImageV3",
+            "_Model": "hy-image-v3.0",
+            "RequestId": "request-retry",
+        }
+
+    with (
+        mock.patch.object(
+            builder.app_module,
+            "tencent_api_request",
+            side_effect=provider_request,
+        ),
+        mock.patch.object(
+            builder.app_module,
+            "save_result_image",
+            side_effect=lambda _value, path: save_test_image(path),
+        ),
+        mock.patch.object(
+            builder.app_module,
+            "require_generated_output_quality",
+            return_value={"status": "passed", "quality_score": 1.0},
+        ),
+        mock.patch.object(builder.time, "sleep"),
+    ):
+        entry = builder.generate_entry(
+            category_id="hotpot_skewers",
+            style_id="style-2",
+            image_path=target,
+            attempts=2,
+        )
+
+    assert requested_seeds == [
+        builder.deterministic_generation_seed(
+            "hotpot_skewers",
+            "style-2",
+            attempt,
+        )
+        for attempt in (1, 2)
+    ]
+    assert requested_seeds[0] != requested_seeds[1]
+    assert entry["seed"] == requested_seeds[1]
+
+
 @contextmanager
 def dummy_postgres_connection():
     yield object()

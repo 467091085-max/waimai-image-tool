@@ -3496,6 +3496,8 @@ def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TEN
         ]
         cloud_payload = dict(payload)
         cloud_payload.pop("Images", None)
+        cloud_payload.pop("Revise", None)
+        cloud_payload.pop("Seed", None)
         for host, service, version in endpoints:
             try:
                 response = tencent_cloud_api_request(action, cloud_payload, host, service, version, timeout)

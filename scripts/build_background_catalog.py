@@ -227,7 +227,11 @@ def provider_model(response: dict[str, Any]) -> str:
     return str(response.get("_Model") or "hy-image-v3.0").strip()
 
 
-def deterministic_generation_seed(category_id: str, style_id: str) -> int:
+def deterministic_generation_seed(
+    category_id: str,
+    style_id: str,
+    attempt: int = 1,
+) -> int:
     identity = "|".join(
         (
             background_catalog.CATALOG_VERSION,
@@ -237,6 +241,8 @@ def deterministic_generation_seed(category_id: str, style_id: str) -> int:
             background_catalog.style_slot(style_id).style_id,
         )
     )
+    if attempt > 1:
+        identity += f"|retry-{attempt}"
     seed = int.from_bytes(
         hashlib.sha256(identity.encode("utf-8")).digest()[:4],
         "big",
@@ -256,12 +262,17 @@ def generate_entry(
         style_id,
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    requested_seed = deterministic_generation_seed(category_id, style_id)
+    accepted_seed = deterministic_generation_seed(category_id, style_id)
     image_path.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     started = time.time()
     response: dict[str, Any] = {}
     for attempt in range(1, attempts + 1):
+        requested_seed = deterministic_generation_seed(
+            category_id,
+            style_id,
+            attempt,
+        )
         try:
             response = app_module.tencent_api_request(
                 "TextToImageLite",
@@ -281,6 +292,7 @@ def generate_entry(
                 str(response.get("ResultImage") or ""),
                 image_path,
             )
+            accepted_seed = requested_seed
             break
         except Exception as exc:
             last_error = exc
@@ -318,7 +330,7 @@ def generate_entry(
         "providerAction": str(response.get("_Action") or "TextToImageLite"),
         "model": provider_model(response),
         "requestId": str(response.get("RequestId") or ""),
-        "seed": response.get("Seed") or requested_seed,
+        "seed": response.get("Seed") or accepted_seed,
         "promptRevisionEnabled": False,
         "objectKey": object_key,
         "sha256": str(fingerprint["sha256"]),

@@ -264,6 +264,57 @@ class AppGenerationTests(unittest.TestCase):
         tokenhub.assert_called_once()
         legacy.assert_not_called()
 
+    def test_tokenhub_failure_strips_v3_only_fields_before_legacy_fallback(self) -> None:
+        cloud_payloads: list[dict[str, object]] = []
+
+        def fake_cloud(
+            _action: str,
+            payload: dict[str, object],
+            host: str,
+            _service: str,
+            _version: str,
+            _timeout: int = 70,
+        ) -> dict[str, object]:
+            cloud_payloads.append(dict(payload))
+            raise RuntimeError(f"{host} ResourceInsufficient")
+
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                app_module,
+                "tokenhub_image_request",
+                side_effect=RuntimeError("ImageIllegalDetected"),
+            ),
+            mock.patch.object(
+                app_module,
+                "tencent_cloud_api_request",
+                side_effect=fake_cloud,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ImageIllegalDetected"):
+                app_module.tencent_api_request(
+                    "TextToImageLite",
+                    {
+                        "Prompt": "测试",
+                        "Images": ["https://example.test/reference.jpg"],
+                        "Revise": 0,
+                        "Seed": 123,
+                    },
+                )
+
+        self.assertEqual(len(cloud_payloads), 2)
+        for payload in cloud_payloads:
+            self.assertNotIn("Images", payload)
+            self.assertNotIn("Revise", payload)
+            self.assertNotIn("Seed", payload)
+
     def test_tokenhub_generation_is_serialized_within_the_service_process(self) -> None:
         state_lock = threading.Lock()
         in_flight = 0

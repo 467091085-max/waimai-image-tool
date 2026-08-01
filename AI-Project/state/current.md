@@ -5,14 +5,17 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. The `light_food` v11 pilot is approved with six
-hash-locked COS objects. The first resumable five-category batch
-(`topped_rice`, `mixed_rice`, `porridge_soup_rice`, `rice_noodles`, and
-`wheat_noodles`) completed on the isolated Render staging service while
-Gunicorn remained live: 30 of 30 assets passed generation, immutable COS
-upload, and read-back verification with zero failures. All five durable
-manifests and SHA-addressed 3-by-2 contact sheets remain pending while their
-visual review is performed.
+6-style background catalog. Six categories are now hash-lock approved in
+private COS: `light_food`, `topped_rice`, `mixed_rice`,
+`porridge_soup_rice`, `rice_noodles`, and `wheat_noodles`. This is 36 of the
+240 target assets. The corrected prompt profile removed the first-batch wood
+arches, patchwork tabletops, and second planes; the regenerated 18 assets all
+passed provider generation, immutable upload, SHA-256 read-back, exact-object
+visual review, and approved-manifest read-back. The next five-category paid
+batch completed 29 of 30 assets on isolated Render staging while Gunicorn
+continued serving the test website. Only `hotpot_skewers/style-2` failed after
+the provider content filter rejected the fixed-seed image. A deterministic
+alternate-seed retry patch has passed full regression and is ready to deploy.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -91,6 +94,25 @@ visual review is performed.
   color. Focused verification passed `28 passed`; complete regression passed
   `1315 passed, 20 skipped`, and scoped compilation plus `git diff --check`
   passed.
+- Corrected three-category regeneration deploy `dep-d9muns3m8hqs73d6uh8g`
+  completed `18/18` assets with zero failures. Exact COS contact sheets for
+  `porridge_soup_rice`, `rice_noodles`, and `wheat_noodles` passed visual
+  review: no food, props, plinths, inset frames, patchwork, mixed-material
+  tabletops, or second planes remained.
+- Hash-lock approval deploy `dep-d9musljl550s7390l4jg` approved all three
+  manifests after exact six-hash object read-back. Review times were
+  `2026-08-01T13:02:42Z`, `2026-08-01T13:03:11Z`, and
+  `2026-08-01T13:03:39Z`. The approved catalog is now 6 categories / 36 assets.
+- Second five-category batch deploy `dep-d9muuj2jnfac73a13dhg` completed
+  `29/30` assets. `dumpling_wonton`, `buns_dim_sum`, `chinese_wraps`, and
+  `malatang_maocai` each have a complete pending manifest. Only
+  `hotpot_skewers/style-2` failed with TokenHub
+  `FailedOperation.ImageIllegalDetected`; the other five slots succeeded.
+- Fixed ineffective paid retries: attempt 1 keeps the existing exact seed,
+  while later attempts use distinct deterministic retry seeds. Legacy Tencent
+  fallback now removes TokenHub-v3-only `Revise` and `Seed` fields. Focused
+  generation tests passed `36 passed`; complete regression passed
+  `1317 passed, 20 skipped`; Python compilation and `git diff --check` passed.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -933,6 +955,6 @@ visual review is performed.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: start the remaining categories with the background builder and
-  Gunicorn running together, monitor per-category checkpoints, then review the
-  generated contact sheets before hash-locked approval.
+- Next action: deploy the retry patch with normal Gunicorn startup, regenerate
+  the incomplete `hotpot_skewers` category, then review all five second-batch
+  contact sheets and hash-lock only the exact passing six-image sets.
