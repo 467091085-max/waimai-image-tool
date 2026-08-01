@@ -158,3 +158,8 @@
   `japanese` are immutable. Their frozen compatibility path must continue
   applying material-label normalization; hash locking must never restore raw
   material-like palette words.
+- The exact approved prompt bytes for `sichuan_hunan`, `cantonese_roast`,
+  `jiangzhe`, `northeast_chinese`, and `northwest_xinjiang` are immutable.
+  Their compatibility path keeps the single-hue seamless rule and material
+  label normalization active, bringing the frozen checkpoint to 25 categories
+  / 150 approved assets.

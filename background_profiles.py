@@ -117,10 +117,23 @@ FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
         "southeast_asian",
         "sandwich_bagel",
         "japanese",
+        "sichuan_hunan",
+        "cantonese_roast",
+        "jiangzhe",
+        "northeast_chinese",
+        "northwest_xinjiang",
     }
 )
 FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
-    {"sandwich_bagel", "japanese"}
+    {
+        "sandwich_bagel",
+        "japanese",
+        "sichuan_hunan",
+        "cantonese_roast",
+        "jiangzhe",
+        "northeast_chinese",
+        "northwest_xinjiang",
+    }
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (
     FROZEN_V11_PROMPT_CATEGORIES

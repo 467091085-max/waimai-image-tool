@@ -5,18 +5,21 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Twenty categories are now hash-lock approved in
-private COS, for 120 of the 240 target assets. Render deploy
-`dep-d9n0fdoae00c73ak8pbg` approved `sandwich_bagel` at
-`2026-08-01T14:51:12Z` and `japanese` at `2026-08-01T14:51:46Z` after exact
-six-object read-back. Their corrected contact sheets contain no wood-wall
-misinterpretation, stepped plane, food, prop, plinth, or inset image. Their
-profile-v12 prompt bytes are now locally frozen with exact six-style hash
-tests; focused verification passed `20 passed`, full regression passed `1324
-passed, 20 skipped`, and prompt length, compilation, and diff checks passed.
-Normal Gunicorn deploy `dep-d9n0hbrl550s73936reg` is live. The next action is
-to push the freeze commit and generate the next five categories without
-changing any approved prompt bytes.
+6-style background catalog. Twenty-five categories are now hash-lock approved
+in private COS, for 150 of the 240 target assets. Render generation deploy
+`dep-d9n0k8942hec73elqfbg` completed all 30 paid assets for `sichuan_hunan`,
+`cantonese_roast`, `jiangzhe`, `northeast_chinese`, and
+`northwest_xinjiang` with `failureCount=0`. Exact COS contact-sheet review
+passed all five groups under the product gate: two seamless solid scenes and
+four broad full-size dining-table scenes are valid, while food, props, small
+central plinths, isolated slabs, mats, and inset frames remain forbidden.
+Approval deploy `dep-d9n0r3qjnfac73a5dnkg` re-read and hash-locked all 30
+reviewed objects. The five exact six-style prompt sets are now locally frozen;
+focused verification passed `20 passed`, full regression passed `1324 passed,
+20 skipped`, and prompt length, compilation, and diff checks passed. Normal
+Gunicorn restore deploy `dep-d9n0tnrm8hqs73dbqq20` is live. The next
+action is to push the freeze commit and generate categories 26 through 30
+without changing any approved prompt bytes.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -157,6 +160,26 @@ changing any approved prompt bytes.
   images with `failureCount=0`. COS visual review passed `pasta_steak`,
   `korean`, and `southeast_asian`; `sandwich_bagel/style-2` and
   `japanese/style-2` remain rejected pending profile-v12 selective replacement.
+- Five-category deploy `dep-d9n0k8942hec73elqfbg` completed 30/30 paid images
+  for `sichuan_hunan`, `cantonese_roast`, `jiangzhe`, `northeast_chinese`, and
+  `northwest_xinjiang` with `failureCount=0`.
+- Exact COS visual review passed all five six-slot contact sheets. The review
+  applies the frozen product rule that a broad full-size dining table may show
+  a front edge or legs; a small central plinth, isolated slab, mat, prop, food,
+  or inset image remains a failure. A local candidate that would have forbidden
+  normal dining-table geometry was discarded before deployment.
+- Approval deploy `dep-d9n0r3qjnfac73a5dnkg` hash-lock approved the five
+  manifests at `2026-08-01T15:16:05Z`, `2026-08-01T15:16:39Z`,
+  `2026-08-01T15:17:15Z`, `2026-08-01T15:17:49Z`, and
+  `2026-08-01T15:18:26Z`. The catalog checkpoint is 25 categories / 150
+  approved assets.
+- Added exact prompt-hash regression coverage for the five newly approved
+  categories. Focused verification passed `20 passed`; full regression passed
+  `1324 passed, 20 skipped`; maximum prompt length is 588 and scoped Python
+  compilation plus `git diff --check` passed.
+- Restored the Render start command to normal Gunicorn; restore deploy
+  `dep-d9n0tnrm8hqs73dbqq20` is live and its exact running command contains no
+  paid generation or approval process.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed

@@ -246,6 +246,46 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "ceccbcf94e253aaa780d49ac4224775567457245fe84850a9f35f085bdeb043e",
             "style-6": "9a87bb8dab5e70ed49796c46f2f74cd08956ff9f80816ebdce77c6a733d8c258",
         },
+        "sichuan_hunan": {
+            "style-1": "5c3393bc1c80d5f48ea3cad5b5bae6277fc731f7f776ab6911e0904f1d448112",
+            "style-2": "d0def69a86f2ffea53603f3a2d57a3546caeedad0b400e951a3da56c4256a91f",
+            "style-3": "76cd9a6f3b21ed08f57f031e035c24bce7d37a6a4cd392157edee314fdd74d35",
+            "style-4": "b170bf3ba862c3e7c297b4b7faf6d6753622151232215b29433c7fd1aa77b8c4",
+            "style-5": "5537a210166725ecaaeb619da4b420c5d1bc9bcf31c377de97bb14ff6fba0f99",
+            "style-6": "f212ac663788093f125ed50a1b08680a45591f27b4f0c1e519d6b9444017305e",
+        },
+        "cantonese_roast": {
+            "style-1": "e9d73c5fca3e68398eed7b82338ac0933e4444d24faf461b864cb1e3d740ad85",
+            "style-2": "93f9feab84c8d6f2ea97707474d99614c09b18b3a13444820c75a3f03872b0ed",
+            "style-3": "4847c24b319fcf995af5fd8a5dcbc2ee5515cdd8cb7e57f99705686dafde7eab",
+            "style-4": "7b099d1c251561735e5579a358bc6b20eaa1b44f58034e2b93b948787a27d292",
+            "style-5": "83fee6db3477636414eb98200de209b37f71bf315b3b50d682981b94f4c470c5",
+            "style-6": "d096a37e85f5005999e7ed88972607eb3c0069b144549771850bbd0e6a2b12a9",
+        },
+        "jiangzhe": {
+            "style-1": "68a787d1f19b0b17d25d34bd672912acd35d3657d141d809bd7f8dbaa6dcb5c3",
+            "style-2": "6b7b1d72937820d5e3e0278b2ef178bac4a26b6dfc40af637a91f6e5ee4f3cc7",
+            "style-3": "10588e032b778b2882fdf736af0b5e7ec78c5d423bca40ad02bb645a947a6fb1",
+            "style-4": "6e0c2e4d82f2c427820634261e25d2c6f3bc6832fe0e5843ed1f8178915c0502",
+            "style-5": "524ce2f7855e756d3558cd829ceec9bcdf0ce2afcbbd067f298a091849ea3d5c",
+            "style-6": "8a1cbc7bb62f1bc88ee66373ec9cd240d81ff67643aa414187b29603f30084a9",
+        },
+        "northeast_chinese": {
+            "style-1": "ddf9ff34db9727058f7518616560d883a1dc7c0379fc40ad481c4f3bf8a46d11",
+            "style-2": "0849dece85f45c6e9329f3376ec0e9e7ac4d0cbc1c25d12756e46d2e697a9687",
+            "style-3": "4c85de4d077cd4db8e89aa5e56d910a1da76eaece3efae6bcfa0c896622f06a2",
+            "style-4": "d2c9df6b18e4a6057743493d76d60bec024f0e0621a7fbd74e8bc4fcf6e90fa8",
+            "style-5": "a529e2d177abf20d158ef878958592ab14616419dec31922fc604b3c518d1b40",
+            "style-6": "fe99e59fc6b38a0abec7eb89e438930b5d9d2ca865cbb4de3708fc57d54586d8",
+        },
+        "northwest_xinjiang": {
+            "style-1": "4bac3d45326f6e54187afac92666ddfdbc83386376103f5ea72d9c04013c92fe",
+            "style-2": "383ea7fc2d794e7ba54b04b4ac18778c94bbb59cc3e2181088852de44cac64b9",
+            "style-3": "6d8e97a945752fe14982a09708a5672573022dd32bf4b0231a4b9f7728e20aee",
+            "style-4": "1e7583f18242a49d38af0279f253c1ca4b7efa46045f0effe4ddde0b63542d27",
+            "style-5": "485374a8e628fb19d5e44ecb46eef17b2b44797fb38616be4d9d61f2710cf251",
+            "style-6": "4fb8689b98af903b4ba724ba7715d3144a9cb9a41fea28c43b5ac482a146eefd",
+        },
     }
 
     assert (
@@ -254,7 +294,15 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
     )
     assert (
         background_profiles.FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES
-        == {"sandwich_bagel", "japanese"}
+        == {
+            "sandwich_bagel",
+            "japanese",
+            "sichuan_hunan",
+            "cantonese_roast",
+            "jiangzhe",
+            "northeast_chinese",
+            "northwest_xinjiang",
+        }
     )
     for category_id, hashes in expected.items():
         for style_id, expected_hash in hashes.items():
