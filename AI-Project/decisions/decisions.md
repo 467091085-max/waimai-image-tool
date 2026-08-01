@@ -192,3 +192,12 @@
   manifest lookup, and export see the same ephemeral queue state. The queue
   timeout may be raised by environment variable for a bounded full-menu run;
   production defaults remain unchanged.
+
+## Menu Snapshot Classification Identity
+- Immutable menu bytes remain addressed by their full SHA-256 directory, but
+  the materialized Excel basename must preserve the sanitized original
+  filename. Store/file naming is intentional taxonomy evidence and may not be
+  replaced by a digest-only basename before re-parsing.
+- When a frozen worker contract lacks `originalFilename`, recover the sanitized
+  source basename from the private object key. Do not hardcode a category or
+  silently choose a background from repeated add-on ingredient words.

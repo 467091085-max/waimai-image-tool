@@ -9107,10 +9107,31 @@ def materialize_menu_upload_snapshot(snapshot: dict[str, Any]) -> Path:
             "menu_upload_integrity_mismatch",
             "菜单原文件完整性校验失败",
         )
-    suffix = Path(str(snapshot.get("originalFilename") or "")).suffix.lower()
+    original_filename = Path(
+        str(snapshot.get("originalFilename") or "")
+    ).name
+    if not original_filename:
+        original_filename = Path(object_key).name
+        original_filename = re.sub(
+            r"^[a-f0-9]{16}_",
+            "",
+            original_filename,
+        )
+        original_filename = re.sub(
+            r"^menu_\d+_",
+            "",
+            original_filename,
+        )
+    suffix = Path(original_filename).suffix.lower()
     if suffix not in MENU_EXTS:
         suffix = ".xls" if raw.startswith(b"\xd0\xcf\x11\xe0") else ".xlsx"
-    target = MODEL_INPUT_DIR / "_menu_uploads" / f"{expected_sha256}{suffix}"
+    safe_source_stem = safe_filename(Path(original_filename).stem)
+    target = (
+        MODEL_INPUT_DIR
+        / "_menu_uploads"
+        / expected_sha256
+        / f"{safe_source_stem}{suffix}"
+    )
     if (
         target.is_file()
         and target.stat().st_size <= MAX_MENU_UPLOAD_BYTES
@@ -16549,14 +16570,7 @@ def execute_generation_batch_job(
             "generation_provenance_changed",
             "生图模型或处理版本已变化，请重新提交",
         )
-    menu_path = materialize_menu_upload_snapshot(
-        {
-            **contract["menu"],
-            "originalFilename": "menu.xls"
-            if str(contract["menu"]["objectKey"]).lower().endswith(".xls")
-            else "menu.xlsx",
-        }
-    )
+    menu_path = materialize_menu_upload_snapshot(contract["menu"])
     menu_upload_token = ACTIVE_PREVIEW_MENU_UPLOAD_ID.set(
         str(contract.get("menuUploadId") or "").strip()
     )

@@ -10,12 +10,13 @@ manually reviewed, hash-lock approved in private COS, frozen in commit
 `dep-d9n24ic9v7es73c3od8g` is live with the normal Gunicorn command. The
 customer-ready checkpoint is 40 approved categories / 240 approved assets.
 
-Step 93 in progress: deploy and independently verify the explicit staging-only
-in-process generation queue, then run the real 60-row mixed-rice Excel menu
-through upload, taxonomy routing, six approved backgrounds, six free samples,
-selected-background generation, all dish/combo generation, Meituan export,
-and server-owned point debit/refund verification. Production remains
-fail-closed without Redis and an independent worker.
+Step 93 in progress: the first real 60-row Render run correctly stopped before
+provider calls because post-upload taxonomy was wrong. The root cause is fixed
+locally and verified against the same workbook. Deploy the filename-provenance
+patch, rerun taxonomy routing, then continue through six approved backgrounds,
+six free samples, selected-background generation, all dish/combo generation,
+Meituan export, and server-owned point debit/refund verification. Production
+remains fail-closed without Redis and an independent worker.
 
 ## Status
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
@@ -40,6 +41,23 @@ fail-closed without Redis and an independent worker.
 - Staging queue and real-acceptance focused verification passed `100 passed`.
   Full regression passed `1327 passed, 20 skipped`; scoped Python compilation
   and `git diff --check` passed.
+- First real Render acceptance deploy `dep-d9n2dgjm8hqs73depqrg` passed
+  preflight and uploaded all 60 rows, then failed closed at `plan`: expected
+  `mixed_rice`, received `burger_hotdog`. No sample/formal provider call and no
+  point debit occurred. The failed report is hash-verified in private COS at
+  `generated/acceptance/render-staging/20260801T170318Z/report-fca2a922877bcdea.json`.
+- Taxonomy failure root cause: immutable menu materialization renamed the Excel
+  file to only its SHA-256. Re-parsing therefore lost the original store/file
+  category signals and over-weighted repeated `热狗肠` add-on components.
+- Minimal correction: keep the SHA-256 as the immutable parent directory while
+  restoring a sanitized original filename; worker fallback recovers the same
+  filename from the private object key. No taxonomy rule, catalog mapping, or
+  category-specific exception was added.
+- The same real workbook now materializes as
+  `运营数据_美滋滋烤肉拌饭(成都店).xlsx`, parses all 60 rows, and resolves to
+  `mixed_rice` with confidence 96. Snapshot/category and related focused
+  regression passed `78 passed`; scoped compilation and `git diff --check`
+  passed.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200

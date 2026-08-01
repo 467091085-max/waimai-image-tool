@@ -329,6 +329,8 @@ def main() -> int:
         print("WAIMAI_STAGING_E2E_PASS", flush=True)
         return 0
     except Exception as exc:
+        if isinstance(exc, AcceptanceError):
+            active_stage = exc.stage
         existing_stages = {
             str(item.get("name") or "")
             for item in report.data.get("stages", [])
