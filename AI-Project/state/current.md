@@ -138,7 +138,30 @@ independent worker.
   back to normal exact-background generation; the paid preview GET is never
   retried. Focused selected-background verification passed `16 passed`; full
   regression passed `1336 passed, 20 skipped` in 26.81 seconds. Scoped Python
-  compilation and `git diff --check` passed; deployment remains pending.
+  compilation and `git diff --check` passed. Commit `15d89e9` is pushed to the
+  isolated staging branch, and normal-Gunicorn Render deploy
+  `dep-d9n3dogae00c73f1li10` is live.
+- Raised only the staging acceptance client's single-request timeout from 300
+  to 600 seconds so a slow paid sample cannot be mistaken for a failed request
+  or retried. Environment deploy `dep-d9n3f1rncjis739coju0` is live; provider
+  concurrency and production defaults are unchanged.
+- Real Excel acceptance deploy `dep-d9n3fujm8hqs73dgts50` is live. It passed
+  preflight, uploaded all 60 rows, resolved the menu to `mixed_rice`, retrieved
+  and SHA-verified all six approved backgrounds, and selected `style-3` with
+  SHA prefix `b432ea0bcb2a`.
+- All six paid representative samples completed once each with HTTP 200 in
+  62-87 seconds. The runner downloaded and verified them, then accepted formal
+  job `generation-76caa391a69b9c59f015174f`; the 60-row formal stage is now
+  complete at the queue level.
+- Manifest acceptance failed closed: `succeeded=7`, `failed=0`, `pending=53`.
+  This exact shape proves the runtime formal-generation call budget was 1:
+  six verified preview reuses plus one provider result, followed by 53
+  `TENCENT_HUNYUAN_SYNC_LIMIT` pending rows. The private-COS report is
+  `generated/acceptance/render-staging/20260801T181646Z/report-ceec3e01ae266e38.json`
+  with SHA-256 `ceec3e01ae266e38497d1106f401635686954f59254d6efd6b5ae4c3efc7aa95`.
+- Restoring the normal Gunicorn command before changing any environment value,
+  so a configuration deploy cannot accidentally rerun the paid acceptance
+  entrypoint.
 - 2026-08-01 Render TokenHub readiness: confirmed ready
 - 2026-08-01 real Excel upload: 56 rows / 0 parse errors
 - 2026-08-01 single background transport probe: passed, HTTP 200
@@ -1239,6 +1262,38 @@ independent worker.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: commit and push the complete 40-category / 240-asset prompt
-  freeze, confirm normal Render auto-deploy, then execute the real Excel
-  end-to-end acceptance flow.
+- Render staging now has `TENCENT_HUNYUAN_SYNC_LIMIT=60`. Environment deploy
+  `dep-d9n3mugae00c73apvds0` reached `live`; its logs confirm the normal
+  Gunicorn-only start command, so changing the limit did not launch another
+  paid acceptance run.
+- Next action: start one controlled real-Excel acceptance deploy. Require all
+  six approved-background samples, all 60 formal rows including 26 combos,
+  selected-background SHA consistency, billing arithmetic, manifest integrity,
+  and Meituan ZIP export to pass before restoring normal staging.
+- Controlled real-Excel acceptance deploy
+  `dep-d9n3o2vlk1mc73dmdef0` has started with the corrected 60-image sync
+  limit. Monitor without interrupting while provider progress continues.
+- That deploy passed preflight, 60-row upload/plan, all six approved-background
+  COS reads, selected style-3 SHA `b432ea0bcb2a`, and all six paid free
+  samples without retries. Formal job
+  `generation-9c72f9a8144a9c381e52c09a` is active; leave it running while it
+  continues to make progress.
+- The formal job again completed as `succeeded=7`, `pending=53`; report object
+  `generated/acceptance/render-staging/20260801T183408Z/report-d7ac29a6780f6b8f.json`
+  has SHA-256
+  `d7ac29a6780f6b8fb29e7d8ddbda0368c33d1fc4398be9d0e44bbcc8a42c4df7`.
+- Direct Render row inspection found the actual persisted
+  `TENCENT_HUNYUAN_SYNC_LIMIT` was still `1`. The application reads this exact
+  variable; there is no second hidden limit. The target row was visibly filled
+  to `60` before saving this time, and the start command had already been
+  restored to normal Gunicorn so the environment deploy cannot auto-run E2E.
+- Corrected environment deploy `dep-d9n41lvlk1mc73dmrm50` is live with the
+  normal Gunicorn-only command. Reopening the exact Render row after deployment
+  confirmed its persisted value is now `60`.
+- The staging E2E runner now reads `/api/tencent-status` before paid work and
+  fails preflight unless the provider is configured and runtime `syncLimit` is
+  at least the exact menu row count. Focused tests passed `7 passed`; complete
+  regression passed `1339 passed, 20 skipped`.
+- Next action: deploy this preflight guard to the isolated staging branch, then
+  run the same 60-row acceptance. The first log proof must show runtime limit
+  60 before any of the six paid samples starts.

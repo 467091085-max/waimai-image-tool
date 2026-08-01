@@ -180,6 +180,40 @@ def wait_for_web(client: RemoteClient, timeout_seconds: float = 180.0) -> None:
     raise RuntimeError(f"staging web did not become ready: {last_error}")
 
 
+def verify_runtime_generation_capacity(
+    client: RemoteClient,
+    required_images: int,
+) -> dict[str, Any]:
+    response = client.get("/api/tencent-status")
+    if response.status_code != 200:
+        raise AcceptanceError(
+            "preflight",
+            f"provider status returned HTTP {response.status_code}",
+        )
+    payload = response.get_json(silent=True)
+    if not isinstance(payload, dict) or not payload.get("configured"):
+        raise AcceptanceError(
+            "preflight",
+            "paid Tencent image generation is not configured",
+        )
+    try:
+        sync_limit = int(payload.get("syncLimit"))
+    except (TypeError, ValueError) as exc:
+        raise AcceptanceError(
+            "preflight",
+            "provider status has an invalid syncLimit",
+        ) from exc
+    if sync_limit < required_images:
+        raise AcceptanceError(
+            "preflight",
+            (
+                "runtime TENCENT_HUNYUAN_SYNC_LIMIT is too low: "
+                f"required {required_images}, got {sync_limit}"
+            ),
+        )
+    return payload
+
+
 def persist_report(path: Path, timestamp: str) -> dict[str, Any]:
     import object_storage_service
 
@@ -253,6 +287,10 @@ def main() -> int:
             ),
         )
         wait_for_web(client)
+        provider_status = verify_runtime_generation_capacity(
+            client,
+            int(evidence["rowCount"]),
+        )
         report.add_stage(
             "preflight",
             PASS,
@@ -262,6 +300,7 @@ def main() -> int:
                 "baseUrl": "http://127.0.0.1:[render-port]",
                 "approvedCatalogRequired": True,
                 "paidProviderCallsAllowed": True,
+                "runtimeSyncLimit": int(provider_status["syncLimit"]),
                 "secretsRedacted": True,
                 "summary": (
                     f"real staging HTTP flow for {evidence['rowCount']} dishes"

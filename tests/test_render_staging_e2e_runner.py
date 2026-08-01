@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 from unittest import mock
@@ -98,3 +99,64 @@ def test_post_is_not_retried_after_connection_failure() -> None:
         client.post("/api/generation-jobs", json={"quality": "standard"})
 
     assert client.session.post.call_count == 1
+
+
+def test_runtime_generation_capacity_accepts_sufficient_limit() -> None:
+    client = mock.Mock()
+    client.get.return_value = runner.RemoteResponse(
+        response(
+            200,
+            json.dumps(
+                {
+                    "configured": True,
+                    "provider": "tencent-hunyuan",
+                    "syncLimit": 60,
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    payload = runner.verify_runtime_generation_capacity(client, 60)
+
+    assert payload["syncLimit"] == 60
+    client.get.assert_called_once_with("/api/tencent-status")
+
+
+def test_runtime_generation_capacity_rejects_low_limit_before_paid_flow() -> None:
+    client = mock.Mock()
+    client.get.return_value = runner.RemoteResponse(
+        response(
+            200,
+            json.dumps(
+                {
+                    "configured": True,
+                    "provider": "tencent-hunyuan",
+                    "syncLimit": 1,
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    with pytest.raises(
+        runner.AcceptanceError,
+        match="required 60, got 1",
+    ) as exc_info:
+        runner.verify_runtime_generation_capacity(client, 60)
+
+    assert exc_info.value.stage == "preflight"
+    client.get.assert_called_once_with("/api/tencent-status")
+
+
+def test_runtime_generation_capacity_rejects_unconfigured_provider() -> None:
+    client = mock.Mock()
+    client.get.return_value = runner.RemoteResponse(
+        response(200, b'{"configured":false,"syncLimit":60}')
+    )
+
+    with pytest.raises(
+        runner.AcceptanceError,
+        match="not configured",
+    ) as exc_info:
+        runner.verify_runtime_generation_capacity(client, 60)
+
+    assert exc_info.value.stage == "preflight"
