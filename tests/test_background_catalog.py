@@ -16,7 +16,7 @@ def record(
         "taxonomyVersion": background_catalog.TAXONOMY_VERSION,
         "categoryId": category_id,
         "styleId": style_id,
-        "promptVersion": "style-background.v10",
+        "promptVersion": "style-background.v11",
         "reviewStatus": review_status,
         "sha256": hashlib.sha256(
             f"{category_id}/{style_id}".encode("utf-8")
@@ -41,14 +41,14 @@ def test_catalog_object_key_is_immutable_and_category_scoped() -> None:
     key = background_catalog.catalog_object_key(
         category_id="light_food",
         style_id="style-3",
-        prompt_version="style-background.v10",
+        prompt_version="style-background.v11",
         prompt_sha256=prompt_sha,
         asset_sha256=asset_sha,
     )
 
     assert key.startswith(
         "ai-assets/waimai-shared/background-catalog/background-catalog.v1/"
-        "2026-07-30.v2/light_food/style-3/style-background.v10/"
+        "2026-07-30.v2/light_food/style-3/style-background.v11/"
     )
     assert "prompt-aaaaaaaaaaaaaaaa" in key
     assert key.endswith(f"/{asset_sha}.jpg")
@@ -63,7 +63,7 @@ def test_complete_manifest_requires_one_approved_asset_per_slot() -> None:
     status = background_catalog.category_manifest_status(
         records,
         category_id="light_food",
-        prompt_version="style-background.v10",
+        prompt_version="style-background.v11",
     )
 
     assert status["ready"] is True
@@ -88,7 +88,7 @@ def test_pending_missing_or_duplicate_approved_slots_fail_closed() -> None:
     status = background_catalog.category_manifest_status(
         records,
         category_id="light_food",
-        prompt_version="style-background.v10",
+        prompt_version="style-background.v11",
     )
 
     assert status["ready"] is False

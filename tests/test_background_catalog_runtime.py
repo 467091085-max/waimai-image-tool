@@ -19,8 +19,8 @@ def approved_record(style_id: str, *, suffix: str = "") -> dict[str, object]:
         "category_id": "light_food",
         "category_name": "轻食/沙拉",
         "style_id": style_id,
-        "prompt_version": "style-background.v10",
-        "pipeline_version": "style-background.v10",
+        "prompt_version": "style-background.v11",
+        "pipeline_version": "style-background.v11",
         "source_provider": "tencent-hunyuan",
         "model_name": "hy-image-v3.0",
         "original_sha256": f"{index:064x}",
@@ -110,7 +110,7 @@ def test_complete_approved_runtime_manifest_is_ready() -> None:
     assert set(manifest["_recordsByStyle"]) == set(background_catalog.STYLE_IDS)
     assert len(CatalogStore.calls) == 1
     assert CatalogStore.calls[0]["tenant_id"] == "waimai-shared"
-    assert CatalogStore.calls[0]["pipeline_version"] == "style-background.v10"
+    assert CatalogStore.calls[0]["pipeline_version"] == "style-background.v11"
 
 
 def test_duplicate_approved_runtime_slot_fails_closed() -> None:
@@ -210,7 +210,7 @@ def cos_manifest_document(
         object_key = background_catalog.catalog_object_key(
             category_id="light_food",
             style_id=style_id,
-            prompt_version="style-background.v10",
+            prompt_version="style-background.v11",
             prompt_sha256=prompt_sha,
             asset_sha256=digest,
         )
@@ -222,7 +222,7 @@ def cos_manifest_document(
                 "categoryId": "light_food",
                 "categoryName": "轻食/沙拉",
                 "styleId": style_id,
-                "promptVersion": "style-background.v10",
+                "promptVersion": "style-background.v11",
                 "promptSha256": (
                     "0" * 64 if style_id == tamper_style else prompt_sha
                 ),
@@ -241,7 +241,7 @@ def cos_manifest_document(
         "taxonomyVersion": app_module.TAXONOMY_VERSION,
         "categoryId": "light_food",
         "categoryName": "轻食/沙拉",
-        "promptVersion": "style-background.v10",
+        "promptVersion": "style-background.v11",
         "reviewStatus": review_status,
         "assets": assets,
     }
@@ -282,7 +282,7 @@ def write_cos_manifest(
         json.dumps(document, ensure_ascii=False).encode("utf-8"),
         object_key=background_catalog.catalog_manifest_key(
             "light_food",
-            "style-background.v10",
+            "style-background.v11",
         ),
     )
 

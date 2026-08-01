@@ -8,8 +8,10 @@ Step 91 in progress: replace per-menu live background generation with a
 reviewed 40-category x 6-style background catalog. Provider transport is live,
 and the catalog/COS contract is implemented. The first real `light_food` v9
 pilot is intentionally rejected because four of six images contain a raised
-plinth or rectangular mat. Prompt v10 is locally verified and awaits a new
-six-image paid staging pilot before the remaining 39 categories may run.
+plinth or rectangular mat. The paid v10 pilot is also rejected: it removed the
+small plinths but still produced a paper-sheet seam and table-front slabs.
+Prompt v11 now uses the actual Hunyuan 3.0 `Revise=0` and fixed-seed contract;
+it awaits a six-image staging pilot before the remaining 39 categories may run.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -28,6 +30,18 @@ six-image paid staging pilot before the remaining 39 categories may run.
   tabletop front edge outside the crop, and explicitly forbids a second plane
 - Prompt/catalog focused verification after v10: `61 passed, 1 skipped`
 - Full local regression after v10: `1304 passed, 20 skipped`
+- Paid v10 pilot: 6/6 generated and SHA-verified in private COS, but all remain
+  `pending`; style 2 contains overlapping paper sheets and styles 3, 4, and 6
+  expose table fronts/slabs, so the group was not approved
+- Provider-contract root cause: TokenHub `hy-image-v3.0` was treated like the
+  Lite endpoint; its unsupported negative-prompt field could be ignored while
+  prompt rewriting remained on by default and changed the requested geometry
+- Prompt v11 fix: v3 catalog requests explicitly send `Revise=0` and a stable
+  1..4294967295 seed per category/style; Lite-only negative prompts stay on the
+  Lite path, and solid slots now use one category color without paper wording
+- Prompt v11 focused verification: `91 passed, 1 skipped`
+- Full local regression after v11: `1306 passed, 20 skipped`; scoped Python
+  compilation and `git diff --check` passed
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -870,7 +884,6 @@ six-image paid staging pilot before the remaining 39 categories may run.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: review the three independent ChatGPT Pro deliverables, then add
-  any evidence-backed corrections, push the staging branch, and regenerate
-  only the light-food category for six-image visual acceptance before any
-  40-category paid batch.
+- Next action: finish the full regression, push prompt v11 to the staging
+  branch, regenerate only the six `light_food` slots, and inspect the exact COS
+  objects before any remaining 39-category paid batch.

@@ -115,8 +115,13 @@
 - Prompt v9 is rejected for the `light_food` pilot: four of six outputs created
   a raised platform or rectangular mat even though the negative prompt named
   those objects.
-- Prompt v10 removes product-display wording, requires one continuous surface,
-  requires table texture through the center, and puts any table front edge and
-  thickness outside the crop. v9 assets must not be mixed into a v10 manifest.
-- Do not spend the remaining 39-category batch until the six-slot v10 pilot
+- Prompt v10 removed product-display wording, but its paid pilot is also
+  rejected because provider-side prompt rewriting still produced paper sheets
+  and visible table-front slabs.
+- Prompt v11 is the first catalog contract that explicitly sends Hunyuan 3.0
+  `Revise=0` and a deterministic positive seed. This preserves the reviewed
+  prompt and makes each category/style output reproducible. `NegativePrompt`
+  remains Lite-only because it is not part of the documented v3 input schema.
+- A prompt version may never mix seeds or image bytes from an older version.
+- Do not spend the remaining 39-category batch until the six-slot v11 pilot
   passes exact-object visual review.

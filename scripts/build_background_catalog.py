@@ -100,6 +100,23 @@ def provider_model(response: dict[str, Any]) -> str:
     return str(response.get("_Model") or "hy-image-v3.0").strip()
 
 
+def deterministic_generation_seed(category_id: str, style_id: str) -> int:
+    identity = "|".join(
+        (
+            background_catalog.CATALOG_VERSION,
+            app_module.TAXONOMY_VERSION,
+            PROMPT_VERSION,
+            background_catalog.normalize_category_id(category_id),
+            background_catalog.style_slot(style_id).style_id,
+        )
+    )
+    seed = int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:4],
+        "big",
+    )
+    return seed or 1
+
+
 def generate_entry(
     *,
     category_id: str,
@@ -112,6 +129,7 @@ def generate_entry(
         style_id,
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    requested_seed = deterministic_generation_seed(category_id, style_id)
     image_path.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     started = time.time()
@@ -128,6 +146,8 @@ def generate_entry(
                     "Resolution": app_module.default_delivery_resolution(),
                     "RspImgType": "url",
                     "LogoAdd": 0,
+                    "Revise": 0,
+                    "Seed": requested_seed,
                 },
             )
             app_module.save_result_image(
@@ -171,7 +191,8 @@ def generate_entry(
         "providerAction": str(response.get("_Action") or "TextToImageLite"),
         "model": provider_model(response),
         "requestId": str(response.get("RequestId") or ""),
-        "seed": response.get("Seed"),
+        "seed": response.get("Seed") or requested_seed,
+        "promptRevisionEnabled": False,
         "objectKey": object_key,
         "sha256": str(fingerprint["sha256"]),
         "width": int(fingerprint["width"]),

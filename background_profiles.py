@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v8"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v9"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -117,7 +117,17 @@ def style_prompt(category_id: str, style_id: str) -> str:
 
 
 def pure_background_style_prompt(category_id: str, style_id: str) -> str:
-    prompt = style_prompt(category_id, style_id)
+    normalized_category = normalize_category_id(category_id)
+    slot = background_catalog.style_slot(style_id)
+    scene = BACKGROUND_SCENES.get(normalized_category, MIXED_SCENE)
+    if slot.scene_type == "seamless-solid":
+        match = re.search(r"场景，(.+?)配色，", scene)
+        palette = re.split(r"[、与和]", match.group(1)) if match else []
+        colors = [color.strip() for color in palette if color.strip()]
+        color_index = 0 if style_id == "style-1" else -1
+        color = colors[color_index] if colors else "低饱和中性色"
+        return f"仅以{color}为唯一主色；{slot.prompt}"
+    prompt = style_prompt(normalized_category, style_id)
     prompt = re.sub(r"^[^，；。]+场景，", "", prompt)
     prompt = re.sub(r"(?:适合|兼容)[^，；。]+轮廓，?", "", prompt)
     return prompt.replace("点缀", "配色").replace("细节", "纹理").strip("，；。")
@@ -128,9 +138,9 @@ def pure_background_prompt(category_id: str, style_id: str) -> str:
     slot = background_catalog.style_slot(style_id)
     if slot.scene_type == "seamless-solid":
         geometry = (
-            "CONTINUOUS CYCLORAMA ONLY. 只允许一张连续无缝弧面材料从下边缘"
-            "自然延伸至背景，底部和中央同高；不得创建水平矩形、独立平面或"
-            "任何有边缘和厚度的形状。"
+            "ONE CONTINUOUS ARCHITECTURAL SURFACE ONLY. 只允许墙地一体的"
+            "建筑无缝弧面，底部和中央同高；不得创建纸卷、幕布、水平矩形、"
+            "独立平面或任何有边缘和厚度的形状。"
         )
     else:
         geometry = (

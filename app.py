@@ -219,7 +219,7 @@ AI_ASSET_SCHEMA_VERSION = 1
 AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
-STYLE_BACKGROUND_PROMPT_VERSION = 10
+STYLE_BACKGROUND_PROMPT_VERSION = 11
 DISH_GENERATION_PROMPT_VERSION = 1
 EXACT_BACKGROUND_PIPELINE_VERSION = 4
 CHROMA_FOREGROUND_PROMPT_VERSION = 1
@@ -3351,16 +3351,22 @@ def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, s
 
 def tokenhub_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
     cfg = tokenhub_config()
+    model = str(cfg["model"] or "hy-image-v3.0")
+    is_lite_model = "lite" in model.lower()
     body: dict[str, Any] = {
-        "model": cfg["model"],
+        "model": model,
         "prompt": str(payload.get("Prompt") or ""),
     }
     mappings = {
-        "NegativePrompt": "negative_prompt",
         "Resolution": "resolution",
         "RspImgType": "rsp_img_type",
         "LogoAdd": "logo_add",
     }
+    if is_lite_model:
+        mappings["NegativePrompt"] = "negative_prompt"
+    else:
+        mappings["Revise"] = "revise"
+        mappings["Seed"] = "seed"
     for source_key, target_key in mappings.items():
         if source_key in payload and payload[source_key] not in (None, ""):
             body[target_key] = payload[source_key]

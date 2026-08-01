@@ -350,6 +350,29 @@ class AppGenerationTests(unittest.TestCase):
             ],
         )
 
+    def test_tokenhub_v3_payload_preserves_revise_and_seed_contract(self) -> None:
+        with mock.patch.dict(
+            app_module.os.environ,
+            {
+                "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+            },
+            clear=True,
+        ):
+            payload = app_module.tokenhub_image_payload({
+                "Prompt": "单一连续背景",
+                "NegativePrompt": "展台 纸卷",
+                "Resolution": "1024:768",
+                "LogoAdd": 0,
+                "Revise": 0,
+                "Seed": 148237123,
+            })
+
+        self.assertEqual(payload["model"], "hy-image-v3.0")
+        self.assertEqual(payload["revise"], 0)
+        self.assertEqual(payload["seed"], 148237123)
+        self.assertNotIn("negative_prompt", payload)
+
     def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
         calls: list[str] = []
 

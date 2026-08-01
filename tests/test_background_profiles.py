@@ -64,8 +64,10 @@ def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None
         "style-3",
     )
 
-    assert "暖色低饱和单色无缝影棚纸" in seamless
-    assert "不得创建水平矩形、独立平面" in seamless
+    assert "仅以鼠尾草绿为唯一主色" in seamless
+    assert "哑光微水泥无缝空间" in seamless
+    assert "影棚纸" not in seamless
+    assert "不得创建纸卷、幕布、水平矩形" in seamless
     assert "一张普通浅色石材餐桌的连续桌面" in prompt
     assert "从左右与下边缘铺满" in prompt
     assert "桌面前沿和厚度位于画幅下方不可见" in prompt

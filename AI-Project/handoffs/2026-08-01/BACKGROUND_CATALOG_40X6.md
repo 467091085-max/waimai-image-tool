@@ -4,7 +4,7 @@
 
 - Catalog version: `background-catalog.v1`
 - Taxonomy version: `2026-07-30.v2`
-- Prompt/pipeline version: `style-background.v10`
+- Prompt/pipeline version: `style-background.v11`
 - Total target: 40 categories x 6 fixed slots = 240 approved assets
 - `mixed` is a review state, not a 41st catalog category.
 - Customer Web reads a complete approved six-slot category manifest only. It
@@ -141,6 +141,14 @@ taxonomy, and top-level approval before exposing any asset.
   uploaded them to private COS with SHA-256 read-back. Visual review rejected
   the set: styles 1, 2, and 4 contain raised plinths; style 5 contains a white
   rectangular mat; only styles 3 and 6 are usable. All six remain `pending`.
-- Prompt v10 removes the display-stage cues found in that pilot. No v10 paid
+- The paid v10 pilot generated and uploaded 6/6 assets but was rejected: prompt
+  rewriting turned one solid slot into overlapping paper sheets and exposed
+  table-front slabs in multiple table slots. All remain pending.
+- Prompt v11 sends Hunyuan 3.0 `Revise=0` plus a deterministic positive seed
+  per category/style, keeps the Lite negative-prompt field off the v3 request,
+  and removes paper wording and multi-color palettes from solid slots. No v11
   image is visually approved yet, so the remaining 39-category batch remains
   intentionally gated.
+- Prompt v11 focused verification passed `91 passed, 1 skipped`; full default
+  regression passed `1306 passed, 20 skipped`; scoped Python compilation and
+  `git diff --check` passed.

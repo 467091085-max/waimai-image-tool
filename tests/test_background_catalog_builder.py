@@ -43,7 +43,7 @@ def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:
                 "_Model": "hy-image-v3.0",
                 "RequestId": "request-1",
             },
-        ),
+        ) as provider,
         mock.patch.object(
             builder.app_module,
             "save_result_image",
@@ -65,13 +65,35 @@ def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:
     assert entry["reviewStatus"] == "pending"
     assert entry["categoryId"] == "light_food"
     assert entry["styleId"] == "style-1"
-    assert entry["promptVersion"] == "style-background.v10"
+    assert entry["promptVersion"] == "style-background.v11"
+    assert entry["promptRevisionEnabled"] is False
+    assert 1 <= entry["seed"] <= 4_294_967_295
     assert len(entry["promptSha256"]) == 64
     assert entry["width"] == 1024
     assert entry["height"] == 768
     assert entry["objectKey"].startswith(
         "ai-assets/waimai-shared/background-catalog/"
     )
+    request_payload = provider.call_args.args[1]
+    assert request_payload["Revise"] == 0
+    assert request_payload["Seed"] == builder.deterministic_generation_seed(
+        "light_food",
+        "style-1",
+    )
+
+
+def test_generation_seed_is_stable_and_pair_scoped() -> None:
+    seed = builder.deterministic_generation_seed("light_food", "style-1")
+
+    assert seed == builder.deterministic_generation_seed(
+        "light_food",
+        "style-1",
+    )
+    assert seed != builder.deterministic_generation_seed(
+        "light_food",
+        "style-2",
+    )
+    assert 1 <= seed <= 4_294_967_295
 
 
 @contextmanager
@@ -165,7 +187,7 @@ def test_register_entry_writes_shared_private_object_pending(
     assert call["asset_kind"] == "background"
     assert call["category_id"] == "light_food"
     assert call["style_id"] == "style-1"
-    assert call["pipeline_version"] == "style-background.v10"
+    assert call["pipeline_version"] == "style-background.v11"
 
 
 def test_upload_pending_entry_writes_cos_object_without_registration(
