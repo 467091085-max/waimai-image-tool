@@ -366,6 +366,46 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "c188c3232f516f190a508844b29eb3d8fa4faaebfa7b5180379bcee7c1aa4bbc",
             "style-6": "926752ac248acca330daf6363d0d70dc523dbe89a35df0615bb385848c26a2a0",
         },
+        "bottled_drinks": {
+            "style-1": "594d45241449f6b7f0c38210efce168df979163c9e50fd459c01e8c4de07914b",
+            "style-2": "19f002de37e5a987777eca78da41f46fb8f007be57db354266bc19689a5e4725",
+            "style-3": "31b7ce8874a4b6242e922ff20bcf44aa257623ad0cdbb0f4540d4b888c175e3b",
+            "style-4": "a3d095e2e1bd4403021b9f838a604175ce88a3588b438ecc14f4362777ef37c6",
+            "style-5": "9c3875e68876c9e01ddedeae00a1b15ec1f091d5f5ab3d76c460799f4a2978d8",
+            "style-6": "0db7f244a8c73822838cdbd43091dfcaa61a33a3425b52af19185cfdd9d3de5b",
+        },
+        "fresh_drinks": {
+            "style-1": "fb9bc0f51542c92433dd1731daab1c72926bb5cae0889b18db7572742dbdb5a6",
+            "style-2": "eca043612bc63edb6d7a9562de093daee5ca1f38cfa367375a5be267a1c6ac9e",
+            "style-3": "e68712deafc5cdccc424a5b4ba1a31a3511bae7884bcaf7ef7db6c5e941fca1d",
+            "style-4": "2d15bd9bc7719236509b34d8a916f20aaef469990c81ce0a32b26ed940802889",
+            "style-5": "fe3a850f62f821a3ebe3c2776b04a5d1be8d8dac64861b7d06091469ead2f2b6",
+            "style-6": "a532bbe7096c46067ed6423f5b4ab27db1ee6ef27495f68b063db0eb1287afed",
+        },
+        "dessert_bakery": {
+            "style-1": "95d67a0a5ed17d0f23eb77b6f0f2c25398c11db05cf026850d3040280c711662",
+            "style-2": "062bab789a89215e3e94ab137188342cfc93ca165dac541ad9990f8384566d02",
+            "style-3": "bd4fb5aa105db07c2b80ad980114acb8b0bf0909d158451a17bda638360d1b56",
+            "style-4": "370605bb5e94fa03cfed59924718669fc34f3e4397dce89a697108ed88506900",
+            "style-5": "c45260a040d1fc5d275cba19fca828f787c9ff3ac45083205dcaceb439cd6674",
+            "style-6": "643c1c3f20267dc5198641fc262202cf6c8e976291eea98c132629e1a76dda79",
+        },
+        "fried_snacks": {
+            "style-1": "3d6dbe0803ce955648004f6ca2922a38b39a9495fb492caea9cfb9828b1b2881",
+            "style-2": "6439a94c43f0dc7e21de1a591964773f681546450ad9f047983bc654f6b4247d",
+            "style-3": "883cb270e862843132b545abf0d2d8e3614e7849366782157672eaa1260fc72e",
+            "style-4": "a3ea37298e0a9512c42521fb81e5510ae384541c88ef08e2e3a47bd639789042",
+            "style-5": "2cd92000cd2b1650d7438555982e8d093405521b4722520ec56ad7be77e9765c",
+            "style-6": "05517fbdc14662f7ea5995f8ccc8b89cae3d030c6a6ce220ad158ee381277bff",
+        },
+        "fruit": {
+            "style-1": "594d45241449f6b7f0c38210efce168df979163c9e50fd459c01e8c4de07914b",
+            "style-2": "aa4bc72ee16992a1b5feb30100dd0bdd8d96ec5e9a0a7da885e91ce0cfcbbe63",
+            "style-3": "31b7ce8874a4b6242e922ff20bcf44aa257623ad0cdbb0f4540d4b888c175e3b",
+            "style-4": "a3d095e2e1bd4403021b9f838a604175ce88a3588b438ecc14f4362777ef37c6",
+            "style-5": "9c3875e68876c9e01ddedeae00a1b15ec1f091d5f5ab3d76c460799f4a2978d8",
+            "style-6": "0db7f244a8c73822838cdbd43091dfcaa61a33a3425b52af19185cfdd9d3de5b",
+        },
     }
 
     assert (
@@ -392,6 +432,11 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "steamed_claypot",
             "milk_fruit_tea",
             "coffee_cocoa",
+            "bottled_drinks",
+            "fresh_drinks",
+            "dessert_bakery",
+            "fried_snacks",
+            "fruit",
         }
     )
     for category_id, hashes in expected.items():

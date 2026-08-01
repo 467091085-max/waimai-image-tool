@@ -4,19 +4,23 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
-Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Thirty-five categories are now hash-lock approved
-in private COS, for 210 of the 240 target assets. Generation deploy
-`dep-d9n1com417fc73cf9hog` completed all 30 paid assets for
-`braised_cooked_food`, `soup_stew`, `steamed_claypot`, `milk_fruit_tea`, and
-`coffee_cocoa` with `failureCount=0`; all five exact COS contact sheets passed
-manual product-gate review. Approval deploy `dep-d9n1j9m417fc73cfmii0`
-re-read and hash-lock approved all 30 objects. Their prompt bytes are locally
-frozen; focused verification passed `15 passed`, full regression passed `1324
-passed, 20 skipped`, maximum prompt length is 588, and scoped compilation plus
-`git diff --check` passed. Normal-Gunicorn restore deploy
-`dep-d9n1lsp42hec73eno410` is live. Commit and push this checkpoint, then run
-the final five categories 36 through 40.
+Step 91 complete: the full 40-category x 6-style catalog is generated,
+manually reviewed, and hash-lock approved in private COS, for 240 of 240 target
+assets. Final generation deploy `dep-d9n1nfvlk1mc73dj7cp0` completed 30/30
+assets with `failureCount=0`. Approval deploy `dep-d9n1toflk1mc73djgftg`
+approved `bottled_drinks` and `fresh_drinks`; bounded retry deploy
+`dep-d9n20h0ae00c73amvtj0` approved `dessert_bakery`, `fried_snacks`, and
+`fruit` after a transient COS read timeout. All final prompt bytes are frozen;
+focused verification passed `15 passed`, full regression passed `1324 passed,
+20 skipped`, maximum prompt length is 588, and scoped compilation plus
+`git diff --check` passed. Render restore deploy
+`dep-d9n23cijnfac73a7sqeg` is live with the normal Gunicorn command.
+
+Step 92 in progress: commit and push the complete catalog freeze to the
+isolated staging branch, confirm its normal Render auto-deploy, then run one
+real Excel menu through taxonomy routing, six approved backgrounds, six free
+samples, selected-background generation, full dish generation including
+combos, platform export, and points/billing verification.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready
@@ -231,6 +235,38 @@ the final five categories 36 through 40.
   `git diff --check` passed.
 - Restored normal Gunicorn startup; deploy `dep-d9n1lsp42hec73eno410` is live
   with no paid generation or approval process in the running command.
+- Pushed the 35-category freeze as commit `418707d`; auto-deploy
+  `dep-d9n1mn8ae00c73f08jmg` is live with normal Gunicorn.
+- Started final paid generation deploy `dep-d9n1nfvlk1mc73dj7cp0` for
+  `bottled_drinks`, `fresh_drinks`, `dessert_bakery`, `fried_snacks`, and
+  `fruit`; all 30 outputs must remain pending until visual and hash review.
+- `bottled_drinks` contact sheet
+  `contact-sheet-e99156fc43311b64893d61064becf9b2fad7aeccf4bc1bb9a033989955437128.jpg`
+  passed manual review and remains pending.
+- `fresh_drinks` contact sheet
+  `contact-sheet-fb8144f54d4edd22cf21e132d5f8dc3d5796d4421b48217753ea8703ffe9810b.jpg`
+  passed manual review and remains pending.
+- `dessert_bakery` contact sheet
+  `contact-sheet-b70dfa0951010e90672170693f64b95461b055f94c322a1bf6c69a64f34c805f.jpg`
+  passed manual review and remains pending.
+- `fried_snacks` contact sheet
+  `contact-sheet-c6fd6bed82e3adaff503cc864f62a330afca25a67d366da4f321c75ac1ea477e.jpg`
+  passed manual review and remains pending.
+- `fruit` contact sheet
+  `contact-sheet-a43ae5e8c513c0d8f63f1f3e202d9121654e75ddf988054e09a768c442986439.jpg`
+  passed manual review and remains pending.
+- Final generation deploy `dep-d9n1nfvlk1mc73dj7cp0` finished with
+  `complete=true`, `completedAssetCount=30`, `failureCount=0`, and sentinel
+  `CATALOG_BATCH_36_40_COMPLETE`.
+- Started final approval deploy `dep-d9n1toflk1mc73djgftg` with all 30 exact
+  manually reviewed image hashes.
+- Final approval deploy approved `bottled_drinks` at
+  `2026-08-01T16:30:15Z` and `fresh_drinks` at `2026-08-01T16:30:41Z`, then a
+  COS SSL/read timeout stopped the command chain before the remaining three
+  categories. No image regeneration is required; retry only the unapproved
+  categories with their exact reviewed hashes.
+- Remaining-three approval retry deploy `dep-d9n20h0ae00c73amvtj0` is running
+  for `dessert_bakery`, `fried_snacks`, and `fruit` only.
 - Staging browser false provider-failure root cause: fixed locally; private media required a Bearer token even though protected staging legitimately uses same-origin Basic Auth
 - Private-media failures now remain distinct from Hunyuan provider failures: done locally
 - Focused staging/customer UI contract verification: done, 27 passed
@@ -683,6 +719,20 @@ the final five categories 36 through 40.
 - Final goal completion audit: done; every explicit implementation, verification, push, no-deploy, and no-migration requirement has an evidence disposition
 - Final sanitized source archive v6: done, 1134096 bytes, 224 files, ZIP integrity passed
 - Final sanitized source archive v6 SHA-256: f5409d62d735f70f57d27a422897cd72c3ca09981bd901402b7a08b01d076be3
+- Final background generation deploy `dep-d9n1nfvlk1mc73dj7cp0`: complete,
+  30/30 assets, `failureCount=0`, sentinel `CATALOG_BATCH_36_40_COMPLETE`
+- Final hash-lock approval: `bottled_drinks` at `2026-08-01T16:30:15Z`,
+  `fresh_drinks` at `2026-08-01T16:30:41Z`, `dessert_bakery` at
+  `2026-08-01T16:36:06Z`, `fried_snacks` at `2026-08-01T16:36:31Z`, and
+  `fruit` at `2026-08-01T16:37:06Z`
+- Final approval retry sentinel: `CATALOG_BATCH_36_40_APPROVED`
+- Background catalog checkpoint: 40 approved categories / 240 approved assets
+- Complete-catalog prompt freeze verification: focused `15 passed`; full
+  regression `1324 passed, 20 skipped`; maximum prompt length 588; scoped
+  Python compilation and `git diff --check` passed
+- Render normal-start restore deploy `dep-d9n23cijnfac73a7sqeg`: live; running
+  command is only `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads
+  8 --worker-class gthread --timeout 180`
 
 ## Constraints
 - Codex 每次继续任务前必须先读 `AI-Project/state/current.md`。
@@ -898,14 +948,14 @@ the final five categories 36 through 40.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. Commit and deploy prompt v10 to the isolated Render test service only.
-2. Regenerate all six `light_food` slots under v10 and visually review every
-   exact COS object; rejected assets must remain pending and unavailable.
-3. Only after the pilot passes, generate the remaining 39 categories in
-   bounded batches, review all 240 assets, and publish complete approved
-   category manifests.
-4. Upload a real Excel menu and verify taxonomy routing, six free previews,
-   selected-background identity, formal generation, export, and billing.
+1. Commit and push the final five-category prompt freeze to
+   `codex/render-image-staging`; confirm the resulting Render deploy is live
+   with only the normal Gunicorn command.
+2. Upload one real Excel menu from `/Users/guiguixiaxia/Documents/menus` and
+   verify taxonomy routing plus retrieval of the correct approved six-slot
+   category manifest.
+3. Verify all six free samples, selected-background identity, every formal dish
+   and combo output, platform export, points debit, and failure compensation.
 
 ## Latest Verified Checkpoint
 - Render image staging acceptance: commit `37429f9`, real 56-row Excel parsed with zero errors, six pipeline-v4 paid samples passed visual/SHA/background checks, and the formal compositor probe passed one row. Evidence: `AI-Project/handoffs/2026-07-31/RENDER_IMAGE_STAGING_ACCEPTANCE.md`.
@@ -1073,6 +1123,6 @@ the final five categories 36 through 40.
   one coherent primary light and explicit phantom-shadow prohibitions while
   preserving all 40 category-specific palettes.
 - Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
-- Next action: commit and push the 35-category prompt freeze, then generate,
-  visually review, and hash-lock categories 36 through 40 before real Excel
-  end-to-end verification.
+- Next action: commit and push the complete 40-category / 240-asset prompt
+  freeze, confirm normal Render auto-deploy, then execute the real Excel
+  end-to-end acceptance flow.

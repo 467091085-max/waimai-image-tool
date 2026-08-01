@@ -132,6 +132,11 @@ FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
         "steamed_claypot",
         "milk_fruit_tea",
         "coffee_cocoa",
+        "bottled_drinks",
+        "fresh_drinks",
+        "dessert_bakery",
+        "fried_snacks",
+        "fruit",
     }
 )
 FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
@@ -153,6 +158,11 @@ FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
         "steamed_claypot",
         "milk_fruit_tea",
         "coffee_cocoa",
+        "bottled_drinks",
+        "fresh_drinks",
+        "dessert_bakery",
+        "fried_snacks",
+        "fruit",
     }
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (

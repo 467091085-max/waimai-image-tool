@@ -173,3 +173,8 @@
   compatibility path preserves the single-hue seamless rule and material
   label normalization, bringing the frozen checkpoint to 35 categories / 210
   approved assets.
+- The exact approved prompt bytes for `bottled_drinks`, `fresh_drinks`,
+  `dessert_bakery`, `fried_snacks`, and `fruit` are immutable. Their
+  compatibility path preserves the same single-hue seamless rule and material
+  label normalization, completing the frozen catalog at 40 categories / 240
+  hash-lock approved assets.
