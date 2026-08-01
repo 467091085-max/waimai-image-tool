@@ -5,18 +5,18 @@
 
 ## Current Step
 Step 91 in progress: build and visually approve the complete 40-category x
-6-style background catalog. Fifteen categories are now hash-lock approved in
-private COS, for 90 of the 240 target assets. The latest approved groups are
-`fried_chicken`, `burger_hotdog`, and `pizza`; their corrected same-hue solid
-slots and complete six-image contact sheets passed exact COS visual review.
-Render deploy `dep-d9mvpm2jnfac73a32hvg` re-read every object and wrote all
-three approved manifests. The next five-category batch completed 30/30 with
-zero provider failures. Exact COS review passed `pasta_steak`, `korean`, and
-`southeast_asian`. Only `sandwich_bagel/style-2` and `japanese/style-2` failed:
-material-like palette terms `浅木` and `原木` produced wood walls, and the
-Japanese image added a stepped plane. Profile v12 maps material-like palette
-terms to plain color names before selective replacement of only those two
-slots.
+6-style background catalog. Twenty categories are now hash-lock approved in
+private COS, for 120 of the 240 target assets. Render deploy
+`dep-d9n0fdoae00c73ak8pbg` approved `sandwich_bagel` at
+`2026-08-01T14:51:12Z` and `japanese` at `2026-08-01T14:51:46Z` after exact
+six-object read-back. Their corrected contact sheets contain no wood-wall
+misinterpretation, stepped plane, food, prop, plinth, or inset image. Their
+profile-v12 prompt bytes are now locally frozen with exact six-style hash
+tests; focused verification passed `20 passed`, full regression passed `1324
+passed, 20 skipped`, and prompt length, compilation, and diff checks passed.
+Normal Gunicorn deploy `dep-d9n0hbrl550s73936reg` is live. The next action is
+to push the freeze commit and generate the next five categories without
+changing any approved prompt bytes.
 
 ## Status
 - 2026-08-01 Render TokenHub readiness: confirmed ready

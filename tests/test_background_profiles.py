@@ -230,11 +230,31 @@ def test_approved_profile_v11_single_hue_prompts_remain_frozen() -> None:
             "style-5": "4fe3e70858c9188dc1e0bfba42f21682e1fb7fb1737ba8d38a736bdf51a9b1d3",
             "style-6": "6baccb98f90b0f1bafc23669360f4e017295c9ae316070c947255cffa0364473",
         },
+        "sandwich_bagel": {
+            "style-1": "19584dfb9a73779157cfbe29b03715a19b8bd49913f34f450cc9c8a827878d39",
+            "style-2": "228ea0bad722c5446bd09d651ad1ef662e93ff1ff753afec2b85c6be83efbcbd",
+            "style-3": "85159ba60fc1805712db0754babc100ff15c2da3bdecba101591a722c88c0071",
+            "style-4": "895ecca2f9c68cbdd0bbd0f8716b625780fd194fbec3bc3667f6a107bc6faf13",
+            "style-5": "59d7a8263fbeb99522e80b3f6a011f099c198da2e5ec3a7bf30bc4852dc0112c",
+            "style-6": "d528d27941609651565172349da660bd1b60868b053be37b32f760b4f8d75b4f",
+        },
+        "japanese": {
+            "style-1": "1508c2eb9ff731d3c6db825777a34f7c7ec5541d90e385c63cc96bf82bb64dc5",
+            "style-2": "9de6d5678eff7a79e9521ca034f6e7ccc2cc741e5bf7d86d1f1bbdf382ee9fa4",
+            "style-3": "2aedeb53b1c4616738ca6040f43cbe9a7658fd2e6c8c601af4912ba2bf443954",
+            "style-4": "a669b02054b944a708c97ec351a8533d841ebbc50d4b08765481056f56b79eb5",
+            "style-5": "ceccbcf94e253aaa780d49ac4224775567457245fe84850a9f35f085bdeb043e",
+            "style-6": "9a87bb8dab5e70ed49796c46f2f74cd08956ff9f80816ebdce77c6a733d8c258",
+        },
     }
 
     assert (
         background_profiles.FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES
         == set(expected)
+    )
+    assert (
+        background_profiles.FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES
+        == {"sandwich_bagel", "japanese"}
     )
     for category_id, hashes in expected.items():
         for style_id, expected_hash in hashes.items():

@@ -115,7 +115,12 @@ FROZEN_PROFILE_V11_SINGLE_HUE_PROMPT_CATEGORIES = frozenset(
         "pasta_steak",
         "korean",
         "southeast_asian",
+        "sandwich_bagel",
+        "japanese",
     }
+)
+FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES = frozenset(
+    {"sandwich_bagel", "japanese"}
 )
 HASH_LOCKED_PROMPT_CATEGORIES = (
     FROZEN_V11_PROMPT_CATEGORIES
@@ -178,7 +183,11 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
         else:
             color_index = 1 if len(colors) > 1 else -1
         color = colors[color_index] if colors else "低饱和中性色"
-        if normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES:
+        if (
+            normalized_category not in HASH_LOCKED_PROMPT_CATEGORIES
+            or normalized_category
+            in FROZEN_PROFILE_V12_NORMALIZED_PROMPT_CATEGORIES
+        ):
             color = SEAMLESS_SOLID_COLOR_ALIASES.get(color, color)
         if (
             style_id == "style-2"

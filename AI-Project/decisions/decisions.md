@@ -154,3 +154,7 @@
   `浅木`, `原木`, `暖木`, `胡桃木`, `金属灰`, and `冷石色` into plain color names.
   These labels are visual palette intent, not permission to render wood, metal,
   stone texture, wall panels, or stepped display planes.
+- The exact approved profile-v12 prompt bytes for `sandwich_bagel` and
+  `japanese` are immutable. Their frozen compatibility path must continue
+  applying material-label normalization; hash locking must never restore raw
+  material-like palette words.
