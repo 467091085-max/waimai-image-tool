@@ -4,7 +4,7 @@
 
 - Catalog version: `background-catalog.v1`
 - Taxonomy version: `2026-07-30.v2`
-- Prompt/pipeline version: `style-background.v8`
+- Prompt/pipeline version: `style-background.v9`
 - Total target: 40 categories x 6 fixed slots = 240 approved assets
 - `mixed` is a review state, not a 41st catalog category.
 - Customer Web reads a complete approved six-slot category manifest only. It
@@ -137,5 +137,5 @@ taxonomy, and top-level approval before exposing any asset.
 - Full default regression: 1300 passed, 20 skipped.
 - Real local Excel classification: 24/24 workbooks resolved to explicit leaf
   taxonomies, with zero `mixed` results after the store/menu conflict gate.
-- These checks do not claim that any `style-background.v8` paid image has been
+- These checks do not claim that any `style-background.v9` paid image has been
   generated, visually approved, uploaded to real COS, or deployed.

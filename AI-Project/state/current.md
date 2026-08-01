@@ -25,9 +25,12 @@ and prompt redesign.
 - Real browser upload/background display after deploy: done; 6/6 background cards and 6/6 blob images, no Hunyuan/media failure text, no console errors
 - Current light-food background content acceptance: failed; raised plinths plus forbidden cup/flowers/cloth remain
 - Sanitized Pro package: `/tmp/waimai-background-architecture-8f9afd6db1ea.zip`, SHA-256 `5394b3f88d938412ea37575112e4e40e5882c27283ca32a51b181a0a819825a6`
-- ChatGPT Pro architecture review: in progress, `https://chatgpt.com/c/6a6dc7fa-9140-83e8-84ff-3f038953ce8b`
-- ChatGPT Pro provider/UI failure review: in progress, `https://chatgpt.com/c/6a6dc81d-0b38-83e8-bfa2-5fb67fde2e94`
-- ChatGPT Pro visual prompt review: requires 40-category course correction, `https://chatgpt.com/c/6a6dc847-c370-83e8-bb28-93b3f3191a66`
+- ChatGPT Pro architecture review: delivered and triaged, `https://chatgpt.com/c/6a6dc7fa-9140-83e8-84ff-3f038953ce8b`
+- ChatGPT Pro provider/UI failure review: delivered and triaged, `https://chatgpt.com/c/6a6dc81d-0b38-83e8-bfa2-5fb67fde2e94`
+- ChatGPT Pro visual prompt review: delivered and triaged, `https://chatgpt.com/c/6a6dc847-c370-83e8-bb28-93b3f3191a66`
+- Three ChatGPT Pro background reviews: delivered and independently triaged;
+  accepted/rejected findings are saved in
+  `AI-Project/handoffs/2026-08-01/CHATGPT_PRO_BACKGROUND_REVIEWS.md`.
 - Chroma residual false-success root cause: done
 - Fail-closed chroma-spill validator and cloud-Mask fallback: done locally
 - Lossless RGB PNG chroma intermediate: done locally
@@ -846,6 +849,11 @@ and prompt redesign.
   registration occurred.
 - Full regression after the COS manifest backend passed `1304 passed,
   20 skipped`.
+- Visual prompt hardening from independently accepted review findings: done in
+  `style-background.v9`; adds a 25-degree camera angle, a 60%-by-50% safe area,
+  one coherent primary light and explicit phantom-shadow prohibitions while
+  preserving all 40 category-specific palettes.
+- Full regression after v9 prompt hardening passed `1304 passed, 20 skipped`.
 - Next action: review the three independent ChatGPT Pro deliverables, then add
   any evidence-backed corrections, push the staging branch, and regenerate
   only the light-food category for six-image visual acceptance before any

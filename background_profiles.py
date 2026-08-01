@@ -15,7 +15,7 @@ from matching_engine import (
 )
 
 
-BACKGROUND_PROFILE_VERSION = "2026-08-01.v6"
+BACKGROUND_PROFILE_VERSION = "2026-08-01.v7"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -25,7 +25,8 @@ PURE_BACKGROUND_NEGATIVE_PROMPT = (
     "筷子，刀叉，布料，桌布，餐巾，纸张，木板，砧板，托盘，展示台，"
     "展台，底座，台座，方台，圆台，台阶，层板，垫板，边框，画框，"
     "文字，价格，菜单，logo，品牌名，水印，人物，手，低清晰度，"
-    "模糊，畸变，拼贴，画中画，中央小图，背景虚化"
+    "模糊，畸变，拼贴，画中画，中央小图，背景虚化，暗角，强景深虚化，"
+    "无来源阴影，悬浮阴影，不存在物体产生的投影"
 )
 
 STYLE_VARIANTS = tuple(slot.prompt for slot in background_catalog.STYLE_SLOTS)
@@ -132,7 +133,9 @@ def pure_background_prompt(category_id: str, style_id: str) -> str:
         "不能出现中央小框、画中画、边框或虚化外框；"
         f"{pure_background_style_prompt(normalized_category, style_id)}；"
         f"固定风格槽位：{slot.name}；"
-        "中央下半部保留宽阔连续摆放区，表面铺满画幅并延伸到边缘，真实光影。"
+        "镜头约25度轻俯视，透视自然；中央下半部承载安全区至少占画面60%宽、"
+        "50%高，表面铺满画幅并延伸到边缘；只允许一个明确主光方向，不能出现"
+        "无来源阴影或不存在物体产生的投影，真实商业摄影光影。"
     )
 
 
