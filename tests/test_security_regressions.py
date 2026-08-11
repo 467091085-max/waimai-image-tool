@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -270,6 +271,61 @@ class SecurityRegressionTests(unittest.TestCase):
 
         response.read.assert_called_once_with(9)
         image_open.assert_not_called()
+
+    def test_remote_image_read_retries_transient_download_failure(self) -> None:
+        raw = io.BytesIO()
+        Image.new("RGB", (2, 2), (220, 120, 80)).save(raw, "PNG")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = raw.getvalue()
+
+        with (
+            mock.patch.object(
+                app_module.urllib.request,
+                "urlopen",
+                side_effect=[
+                    app_module.urllib.error.URLError(
+                        TimeoutError("TLS handshake timed out")
+                    ),
+                    response,
+                ],
+            ) as urlopen,
+            mock.patch.object(app_module.time, "sleep") as sleep,
+        ):
+            image = app_module.read_remote_pil_image(
+                "https://provider.example.test/result.png"
+            )
+
+        self.assertEqual(image.size, (2, 2))
+        image.close()
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(
+            app_module.REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS
+        )
+
+    def test_remote_image_read_does_not_retry_permanent_http_failure(self) -> None:
+        failure = app_module.urllib.error.HTTPError(
+            "https://provider.example.test/missing.png",
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        with (
+            mock.patch.object(
+                app_module.urllib.request,
+                "urlopen",
+                side_effect=failure,
+            ) as urlopen,
+            mock.patch.object(app_module.time, "sleep") as sleep,
+            self.assertRaises(app_module.urllib.error.HTTPError),
+        ):
+            app_module.read_remote_pil_image(
+                "https://provider.example.test/missing.png"
+            )
+
+        urlopen.assert_called_once()
+        sleep.assert_not_called()
 
     def test_tokenhub_json_read_stops_at_limit_before_json_decode(self) -> None:
         response = mock.MagicMock()

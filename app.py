@@ -212,6 +212,11 @@ TENCENT_REQUEST_TIMEOUT = env_int("TENCENT_REQUEST_TIMEOUT", 55)
 TENCENT_SYNC_LIMIT = env_int("TENCENT_HUNYUAN_SYNC_LIMIT", 6)
 TENCENT_TOKENHUB_POLL_TIMEOUT = env_int("TENCENT_TOKENHUB_POLL_TIMEOUT", 120)
 TENCENT_TOKENHUB_POLL_INTERVAL = max(1, env_int("TENCENT_TOKENHUB_POLL_INTERVAL", 3))
+REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3
+REMOTE_IMAGE_DOWNLOAD_RETRY_STATUS_CODES = frozenset(
+    {408, 425, 429, 500, 502, 503, 504}
+)
+REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS = 0.25
 FINAL_GENERATION_WORKERS = max(1, env_int("FINAL_GENERATION_WORKERS", 3))
 GENERATION_QUEUE_STALE_AFTER_SECONDS = max(
     1,
@@ -3597,8 +3602,22 @@ def bounded_pil_image_from_bytes(
 
 def read_remote_pil_image(url: str, timeout: int = 60) -> Image.Image:
     req = urllib.request.Request(url, headers={"User-Agent": "waimai-image-tool/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read(MAX_AI_ASSET_BYTES + 1)
+    raw = b""
+    for attempt in range(1, REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read(MAX_AI_ASSET_BYTES + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code in REMOTE_IMAGE_DOWNLOAD_RETRY_STATUS_CODES
+            if getattr(exc, "fp", None) is not None:
+                exc.close()
+            if not retryable or attempt >= REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt >= REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS:
+                raise
+        time.sleep(REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS * attempt)
     if len(raw) > MAX_AI_ASSET_BYTES:
         raise ValueError("remote image exceeds limit")
     return bounded_pil_image_from_bytes(raw)

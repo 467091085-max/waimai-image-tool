@@ -41,6 +41,18 @@ also now injects `DATABASE_URL` into Product Worker and uses a dedicated public
 post-blueprint full run passed 1366 tests with 20 real-infrastructure tests
 skipped.
 
+Step 96 in progress: commit `dd84051` is live on the protected Render staging
+service. Public `/healthz` returned 200, Hunyuan 3.0 and COS both reported
+ready, and Gemini correctly reported unavailable without an API key. A fresh
+remote run of the exact 60-row mixed-rice workbook passed upload, taxonomy,
+six approved-background retrieval, SHA verification, and selected-background
+binding. Its first free sample then failed after 75.961 seconds because the
+provider result-image HTTPS download hit a TLS handshake timeout. The paid
+generation request itself was not reported as rejected. A minimal candidate
+patch now retries only that idempotent result-image GET, up to three bounded
+attempts; it never resubmits the paid image-generation request. Focused
+generation/security verification passes 83 tests.
+
 ## Status
 - 2026-08-11 live Render inventory: one free Python Web Service
   `waimai-image-tool-1`, branch `codex/render-image-staging`, commit `39e6fdf`;
