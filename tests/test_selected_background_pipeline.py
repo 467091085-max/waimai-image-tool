@@ -116,7 +116,10 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
         self.assertIn("必须清楚出现白米饭", prompt)
         self.assertIn("不是整块西式牛排", prompt)
         self.assertIn("三拼必须呈现3种不同肉类", prompt)
-        self.assertIn("只出现其中一种", prompt)
+        self.assertIn("本图只呈现煎蛋", prompt)
+        self.assertNotIn("热狗肠", prompt)
+        self.assertNotIn("饮品三选一", prompt)
+        self.assertIn("所有容器必须纯色无印刷", prompt)
         self.assertIn("完全均匀的纯青色", prompt)
         self.assertLessEqual(
             len(prompt),
@@ -134,6 +137,138 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             prompt = app_module.prompt_for_chroma_foreground(row, "standard")
 
         self.assertNotIn("必须清楚出现白米饭", prompt)
+
+    def test_generation_choice_resolver_supports_or_and_numeric_choice(self) -> None:
+        resolved, choices = app_module.resolve_explicit_generation_choices(
+            "馋口小吃｜骨肉相连or川香鸡柳2选1（单独打包）"
+        )
+
+        self.assertEqual(resolved, "馋口小吃|骨肉相连(单独打包)")
+        self.assertEqual(choices, (("骨肉相连", ("骨肉相连", "川香鸡柳")),))
+
+    def test_generation_choice_resolver_handles_real_world_separators(self) -> None:
+        cases = {
+            "可乐或者雪碧二选一": ("可乐", ("可乐", "雪碧")),
+            "原味Original/香辣Spicy二选一": (
+                "原味Original",
+                ("原味Original", "香辣Spicy"),
+            ),
+            "可乐、雪碧、芬达三选一": (
+                "可乐",
+                ("可乐", "雪碧", "芬达"),
+            ),
+            "饮品|可乐|雪碧二选一": (
+                "饮品|可乐",
+                ("可乐", "雪碧"),
+            ),
+        }
+
+        for source, (expected_name, expected_options) in cases.items():
+            with self.subTest(source=source):
+                resolved, choices = app_module.resolve_explicit_generation_choices(source)
+                self.assertEqual(resolved, expected_name)
+                self.assertEqual(choices[0], (expected_options[0], expected_options))
+
+    def test_reference_conditioned_prompt_resolves_explicit_choice(self) -> None:
+        row = menu_row(13, "超值爆款招牌烤肉饭+煎蛋/热狗肠/饮品三选一")
+        row["components"] = [
+            "超值爆款招牌烤肉饭",
+            "煎蛋/热狗肠/饮品三选一",
+        ]
+
+        prompt = app_module.prompt_for_generation(
+            row,
+            "style-3",
+            "standard",
+            "text_to_image",
+        )
+
+        self.assertIn("备选已固定为煎蛋", prompt)
+        self.assertIn("容器不要出现任何文字", prompt)
+        self.assertNotIn("热狗肠", prompt)
+        self.assertNotIn("饮品三选一", prompt)
+
+    def test_generation_components_resolve_embedded_choice_group(self) -> None:
+        row = menu_row(17, "大鸡腿+肉自选+煎蛋/热狗肠/饮品三选一")
+        row["kind"] = "套餐/组合"
+        row["components"] = [
+            "大鸡腿",
+            "煎蛋/热狗肠/饮品三选一",
+            "烤肉",
+        ]
+        _dish, choices = app_module.resolve_explicit_generation_choices(row["name"])
+
+        self.assertEqual(
+            app_module.generation_component_values(row, choices),
+            ["大鸡腿", "煎蛋", "烤肉"],
+        )
+
+    def test_chroma_foreground_disables_prompt_revision_and_uses_stable_seed(self) -> None:
+        row = menu_row(13, "超值爆款招牌烤肉饭+煎蛋/热狗肠/饮品三选一")
+        captured: list[dict[str, object]] = []
+
+        def fake_provider(
+            _action: str,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            captured.append(dict(payload))
+            return {
+                "ResultImage": "https://cdn.example.test/result.png",
+                "RequestId": "request-1",
+                "_Action": "TokenHubImageV3",
+                "_Model": "hy-image-v3.0",
+            }
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(app_module, "active_category_id", return_value="mixed_rice"),
+            mock.patch.object(app_module, "tencent_api_request", side_effect=fake_provider),
+            mock.patch.object(app_module, "save_result_image"),
+        ):
+            first = app_module.tencent_chroma_foreground(
+                row,
+                "standard",
+                Path(tmp) / "first.png",
+            )
+            second = app_module.tencent_chroma_foreground(
+                row,
+                "standard",
+                Path(tmp) / "second.png",
+            )
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["Revise"], 0)
+        self.assertEqual(captured[0]["Seed"], captured[1]["Seed"])
+        self.assertGreaterEqual(int(captured[0]["Seed"]), 1)
+        self.assertLessEqual(int(captured[0]["Seed"]), 4_294_967_295)
+        self.assertEqual(first["requestedSeed"], captured[0]["Seed"])
+        self.assertEqual(second["seed"], captured[1]["Seed"])
+
+    def test_seed_metadata_does_not_claim_ignored_seed(self) -> None:
+        requested = 123456
+
+        self.assertEqual(
+            app_module.dish_generation_seed_metadata(
+                {"_Action": "TokenHubImageLite", "Seed": 987},
+                requested,
+            ),
+            {
+                "seed": 987,
+                "requestedSeed": requested,
+                "seedApplied": False,
+            },
+        )
+        self.assertEqual(
+            app_module.dish_generation_seed_metadata(
+                {"_Action": "TokenHubImageV3"},
+                requested,
+            ),
+            {
+                "seed": requested,
+                "requestedSeed": requested,
+                "seedApplied": True,
+            },
+        )
 
     def test_exact_product_identity_keeps_similar_combo_names_separate(self) -> None:
         first = menu_row(1, "【霸气任选】 三拼饭+赠品五选一")

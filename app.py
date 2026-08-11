@@ -249,9 +249,9 @@ AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 11
-DISH_GENERATION_PROMPT_VERSION = 2
+DISH_GENERATION_PROMPT_VERSION = 3
 EXACT_BACKGROUND_PIPELINE_VERSION = 4
-CHROMA_FOREGROUND_PROMPT_VERSION = 2
+CHROMA_FOREGROUND_PROMPT_VERSION = 3
 CHROMA_FOREGROUND_PROMPT_MAX_CHARS = 600
 EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
 STAGING_E2E_INSTANCE_NONCE_PATH = Path(
@@ -4007,21 +4007,34 @@ def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | Non
     style = style_prompt_for(style_id)
     detail = quality_detail(quality)
     kind = row.get("kind") or "菜品"
-    dish = row.get("name", "外卖菜品")
-    forbidden = "不要出现任何文字、价格、logo、水印、品牌名、人物、包装袋，不要裁切菜品主体。"
+    dish, explicit_choices = resolve_explicit_generation_choices(
+        str(row.get("name") or "外卖菜品")
+    )
+    component_values = generation_component_values(row, explicit_choices)
+    fixed_choice = ""
+    if explicit_choices:
+        selected = "、".join(choice[0] for choice in explicit_choices)
+        fixed_choice = f"，备选已固定为{selected}，每个固定项只出现一份"
+    forbidden = (
+        "最高优先级：画面和容器不要出现任何文字、数字、价格、logo、"
+        "水印、品牌名或印刷，不要出现人物、包装袋，不要裁切菜品主体。"
+    )
     if kind == "套餐/组合" or prompt_type == "combo":
         return (
-            f"{dish}，套餐组合外卖主图，外卖平台主图，包含：{row_components_text(row)}，{style}，"
-            f"{detail}，多菜品协调摆放，主体完整，背景必须跟所选背景一致。{forbidden}"
+            f"{forbidden}严格生成“{dish}”{fixed_choice}，套餐组合外卖主图，外卖平台主图，"
+            f"包含：{'、'.join(component_values[:6]) or dish}，背景必须跟所选背景一致，"
+            f"{style}，{detail}，多菜品协调摆放，主体完整。"
         )[:250]
     if prompt_type == "replace_background":
         return (
-            f"保留「{dish}」菜品主体完整，仅替换为{style}，外卖平台主图，{detail}，"
-            f"背景必须跟所选背景一致，不改变菜品本身，不添加无关物体。{forbidden}"
+            f"{forbidden}保留「{dish}」菜品主体完整{fixed_choice}，仅替换为{style}，"
+            f"外卖平台主图，{detail}，"
+            "背景必须跟所选背景一致，不改变菜品本身，不添加无关物体。"
         )[:250]
     return (
-        f"{dish}，{kind}，纯文生图，外卖平台主图，{style}，{detail}，"
-        f"背景必须跟所选背景一致，真实餐饮商业摄影质感。{forbidden}"
+        f"{forbidden}严格生成“{dish}”{fixed_choice}，{kind}，纯文生图，"
+        f"外卖平台主图，{style}，{detail}，"
+        "背景必须跟所选背景一致，真实餐饮商业摄影质感。"
     )[:250]
 
 
@@ -4033,12 +4046,15 @@ def tencent_text_to_image(
     selected_background: SelectedBackgroundAsset | None = None,
 ) -> dict[str, Any]:
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "text_to_image"
+    requested_seed = deterministic_dish_generation_seed(row, quality)
     payload: dict[str, Any] = {
         "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
         "NegativePrompt": NEGATIVE_IMAGE_PROMPT,
         "Resolution": output_resolution_for_style(style_id),
         "RspImgType": "url",
         "LogoAdd": 0,
+        "Revise": 0,
+        "Seed": requested_seed,
     }
     reference_url = ""
     if selected_background is not None and tokenhub_ready():
@@ -4056,12 +4072,13 @@ def tencent_text_to_image(
         payload,
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
+    seed_metadata = dish_generation_seed_metadata(response, requested_seed)
     return {
         "provider": str(response.get("_Provider") or "tencent-hunyuan"),
         "action": str(response.get("_Action") or "TextToImageLite"),
         "promptType": prompt_type,
         "requestId": response.get("RequestId"),
-        "seed": response.get("Seed"),
+        **seed_metadata,
         "endpoint": response.get("_Endpoint"),
         "model": response.get("_Model"),
         "referenceConditioned": bool(reference_url),
@@ -4154,13 +4171,16 @@ def tencent_replace_background(row: dict[str, Any], source_candidate: dict[str, 
     if not product_url:
         raise RuntimeError("当前图库图片没有公网 URL，无法调用商品背景生成")
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "replace_background"
+    resolved_dish, _explicit_choices = resolve_explicit_generation_choices(
+        str(row.get("name") or "")
+    )
     try:
         response = tencent_api_request(
             "ReplaceBackground",
             {
                 "ProductUrl": product_url,
                 "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
-                "Product": str(row.get("name") or "")[:50],
+                "Product": resolved_dish[:50],
                 "Resolution": output_resolution_for_style(style_id),
                 "RspImgType": "url",
                 "LogoAdd": 0,
@@ -4183,14 +4203,11 @@ def prompt_for_chroma_foreground(
     row: dict[str, Any],
     quality: str | None,
 ) -> str:
-    dish = str(row.get("name") or "外卖菜品")
+    raw_dish = str(row.get("name") or "外卖菜品")
+    dish, explicit_choices = resolve_explicit_generation_choices(raw_dish)
     kind = str(row.get("kind") or "菜品")
     category_id = active_category_id()
-    component_values = [
-        str(value).strip()
-        for value in row.get("components") or []
-        if str(value).strip()
-    ]
+    component_values = generation_component_values(row, explicit_choices)
     semantic_source = f"{dish} {' '.join(component_values)}"
     semantic_hints: list[str] = []
     if category_id in {"mixed_rice", "topped_rice"} or any(
@@ -4215,10 +4232,17 @@ def prompt_for_chroma_foreground(
         semantic_hints.append(
             f"{portion_match.group(1)}拼必须呈现{portion_count}种不同肉类"
         )
-    if re.search(r"(?:[二三四五六七八九十\d]+选一|任选|自选|可选)", semantic_source):
+    if explicit_choices:
+        fixed_choices = "、".join(choice[0] for choice in explicit_choices)
+        semantic_hints.append(
+            f"备选项已固定，本图只呈现{fixed_choices}，每个固定项只出现一份"
+        )
+    elif re.search(r"(?:[二三四五六七八九十\d]+选一|任选|自选|可选)", semantic_source):
         semantic_hints.append(
             "标注选一、任选或自选的配菜只出现其中一种，不得同时摆出全部备选"
         )
+    if "饮品自选" in semantic_source:
+        semantic_hints.append("饮品只放一杯，杯身纯色无品牌无文字")
     if kind == "套餐/组合":
         semantic_hints.append("非备选的套餐核心食材必须分别可辨，不得漏项或替换")
     semantics = "；".join(semantic_hints)
@@ -4226,14 +4250,16 @@ def prompt_for_chroma_foreground(
         semantics = f"。菜品语义：{semantics}"
     components = ""
     if kind == "套餐/组合":
-        components = f"，套餐构成：{row_components_text(row)}"
+        components = f"，套餐构成：{'、'.join(component_values[:6]) or dish}"
     return (
-        f"真实中式外卖商品摄影，严格生成菜名“{dish}”，{kind}{components}{semantics}。"
+        "最高优先级：画面绝对不能包含汉字、字母、数字或其他可读符号；"
+        "餐盘、餐盒、杯子及所有容器必须纯色无印刷，不能有标签、品牌、logo或水印。"
+        f"真实中式外卖商品摄影，严格生成“{dish}”，{kind}{components}{semantics}。"
         "菜品自然装在同一个完整餐盘、餐碗、餐盒或托盘中，"
         f"{quality_detail(quality)}，主体约占画面70%，居中完整且仅留必要抠图边距。"
         "背景必须是完全均匀的纯青色抠图幕布"
         "（RGB 0,255,255），无桌面、无墙面、无地平线、无渐变、无阴影、无反射、无道具。"
-        "不要出现文字、价格、logo、水印、品牌名、人物、手、小图、相框或边框，不要裁切主体。"
+        "不要出现人物、手、小图、相框或边框，不要裁切主体。"
     )[:CHROMA_FOREGROUND_PROMPT_MAX_CHARS]
 
 
@@ -4255,11 +4281,145 @@ def exact_product_identity(row: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+EXPLICIT_GENERATION_CHOICE_COUNT_RE = re.compile(
+    r"(?P<count>[二三四五六七八九十\d]+)选(?:一|1)"
+)
+EXPLICIT_GENERATION_CHOICE_SEPARATOR_RE = re.compile(
+    r"(?:[/／、,，|丨｜]|或者|或|(?i:(?<![A-Za-z])or(?![A-Za-z])))"
+)
+EXPLICIT_GENERATION_CHOICE_BOUNDARY_RE = re.compile(
+    r"[+＋;；:：【】\[\]()（）]"
+)
+EXPLICIT_GENERATION_CHOICE_COUNTS = {
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+def resolve_explicit_generation_choices(
+    dish_name: str,
+) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+    normalized = unicodedata.normalize("NFKC", str(dish_name or ""))
+    choices: list[tuple[str, tuple[str, ...]]] = []
+    replacements: list[tuple[int, int, str]] = []
+    for count_match in EXPLICIT_GENERATION_CHOICE_COUNT_RE.finditer(normalized):
+        count_text = count_match.group("count")
+        count = (
+            int(count_text)
+            if count_text.isdigit()
+            else EXPLICIT_GENERATION_CHOICE_COUNTS.get(count_text, 0)
+        )
+        if count < 2:
+            continue
+        preceding = normalized[: count_match.start()]
+        boundary = None
+        for candidate in EXPLICIT_GENERATION_CHOICE_BOUNDARY_RE.finditer(preceding):
+            boundary = candidate
+        segment_start = boundary.end() if boundary is not None else 0
+        segment = normalized[segment_start : count_match.start()]
+        parts: list[tuple[str, int]] = []
+        cursor = 0
+        for separator in EXPLICIT_GENERATION_CHOICE_SEPARATOR_RE.finditer(segment):
+            raw = segment[cursor : separator.start()]
+            stripped = raw.strip()
+            if stripped:
+                parts.append((stripped, cursor + len(raw) - len(raw.lstrip())))
+            cursor = separator.end()
+        raw = segment[cursor:]
+        stripped = raw.strip()
+        if stripped:
+            parts.append((stripped, cursor + len(raw) - len(raw.lstrip())))
+        if len(parts) < count:
+            continue
+        selected_parts = parts[-count:]
+        options = tuple(part[0] for part in selected_parts)
+        selected = options[0]
+        choice_start = segment_start + selected_parts[0][1]
+        choices.append((selected, options))
+        replacements.append((choice_start, count_match.end(), selected))
+
+    resolved = normalized
+    for start, end, selected in reversed(replacements):
+        resolved = resolved[:start] + selected + resolved[end:]
+    return resolved, tuple(choices)
+
+
+def generation_component_values(
+    row: dict[str, Any],
+    choices: tuple[tuple[str, tuple[str, ...]], ...],
+) -> list[str]:
+    excluded = {
+        normalize_dish(option)
+        for _selected, options in choices
+        for option in options[1:]
+        if normalize_dish(option)
+    }
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw_value in row.get("components") or []:
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        value, _component_choices = resolve_explicit_generation_choices(value)
+        choice_suffix_removed = re.sub(
+            r"\s*[二三四五六七八九十\d]+选(?:一|1)\s*$",
+            "",
+            unicodedata.normalize("NFKC", value),
+        )
+        norm = normalize_dish(choice_suffix_removed)
+        if not norm or norm in excluded or norm in seen:
+            continue
+        seen.add(norm)
+        values.append(choice_suffix_removed)
+    return values
+
+
+def deterministic_dish_generation_seed(
+    row: dict[str, Any],
+    quality: str | None,
+) -> int:
+    identity = "|".join(
+        (
+            f"dish-generation.v{DISH_GENERATION_PROMPT_VERSION}",
+            f"chroma-foreground.v{CHROMA_FOREGROUND_PROMPT_VERSION}",
+            exact_product_identity(row),
+            active_category_id(),
+            quality_config(quality)["id"],
+        )
+    )
+    seed = int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:4],
+        "big",
+    )
+    return seed or 1
+
+
+def dish_generation_seed_metadata(
+    response: dict[str, Any],
+    requested_seed: int,
+) -> dict[str, Any]:
+    provider_seed = response.get("Seed")
+    tokenhub_v3 = str(response.get("_Action") or "") == "TokenHubImageV3"
+    return {
+        "seed": provider_seed or (requested_seed if tokenhub_v3 else None),
+        "requestedSeed": requested_seed,
+        "seedApplied": tokenhub_v3,
+    }
+
+
 def tencent_chroma_foreground(
     row: dict[str, Any],
     quality: str | None,
     target: Path,
 ) -> dict[str, Any]:
+    requested_seed = deterministic_dish_generation_seed(row, quality)
     response = tencent_api_request(
         "TextToImageLite",
         {
@@ -4271,16 +4431,19 @@ def tencent_chroma_foreground(
             "Resolution": default_delivery_resolution(),
             "RspImgType": "url",
             "LogoAdd": 0,
+            "Revise": 0,
+            "Seed": requested_seed,
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
+    seed_metadata = dish_generation_seed_metadata(response, requested_seed)
     return {
         "provider": str(response.get("_Provider") or "tencent-hunyuan"),
         "action": str(response.get("_Action") or "TextToImageLite"),
         "promptType": "chroma_foreground",
         "promptVersion": CHROMA_FOREGROUND_PROMPT_VERSION,
         "requestId": response.get("RequestId"),
-        "seed": response.get("Seed"),
+        **seed_metadata,
         "endpoint": response.get("_Endpoint"),
         "model": response.get("_Model"),
         "referenceConditioned": False,

@@ -1485,3 +1485,40 @@ recovery remain explicit P2 production work.
   production verification: Redis/independent Worker, production PostgreSQL,
   distributed paid-call recovery, real payment/SMS/KYC, and production soak
   evidence remain outside this acceptance.
+
+## 2026-08-11 Resume Checkpoint
+
+- Step 98 in progress: Render commit `6786792` passed upload, taxonomy,
+  retrieval of all six approved `mixed_rice` backgrounds, selected-background
+  SHA binding, and six real Hunyuan sample generations in 399.733 seconds.
+  Structural verification was 6/6, but visual QA was only 4/6: row 13 drew
+  more than one `三选一` option and row 61 printed Chinese text on the meal
+  box. Formal 60-row generation remains stopped; the earlier partial formal
+  run was fully refunded and the staging balance remains 1880 points.
+- Root cause is isolated to Hunyuan v3 prompt adherence. The foreground request
+  allowed provider prompt revision, had no stable seed, retained every option
+  from explicit `二/三选一` names, and placed the no-text rule too late.
+- A minimal v3 candidate disables provider prompt revision (`Revise=0`), uses
+  a product/category/quality-scoped deterministic seed, resolves explicit
+  slash/or choices to one fixed option before generation, removes the rejected
+  alternatives from combo components, and gives unprinted containers highest
+  prompt priority. Prompt/cache versions are bumped so rejected foregrounds
+  cannot be reused.
+- The first independent review rejected the candidate because the default
+  reference-conditioned path still used the old prompt, and the first regex
+  could split `或者` or the `or` inside `Original`. Both generation paths now
+  share the same resolver. It supports slash, `or`, `或者`, comma, Chinese
+  comma, enumeration comma, and vertical-bar forms while using the declared
+  option count to ignore category prefixes. Lite/cloud metadata no longer
+  claims that an ignored requested seed was applied.
+- Focused verification passed 154 tests. A static check over all 60 real menu
+  rows confirmed that all 21 explicit-choice rows remove rejected options from
+  both Chroma and reference-conditioned prompts. Full regression passed `1382
+  passed, 20 skipped`; the skips still require real PostgreSQL/Redis. Next
+  action is one staging deploy and a fresh six-image
+  visual acceptance. Do not start formal 60-row generation unless all six
+  samples pass visual review.
+- Independent re-review passed after `seedApplied` was restricted to requests
+  actually sent through TokenHub v3. Lite and legacy cloud may still report
+  their provider-generated output seed, but no longer claim the requested seed
+  was applied.
