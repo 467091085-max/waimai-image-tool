@@ -27,7 +27,29 @@ PostgreSQL deployment/migration, durable distributed single-flight/provider
 recovery, and the separately authorized production integrations before main
 can be promoted.
 
+Step 95 in progress: the 2026-08-11 resumed audit is isolated on
+`codex/gemini-dual-provider-staging`. The current Render test service is still
+one free Web Service, not the declared Redis/PostgreSQL/Worker topology.
+Gemini refinement code existed but the test service had no Gemini key and the
+admin UI did not surface its readiness. A minimal candidate patch now exposes
+sanitized Hunyuan/Gemini routing, disables unavailable Gemini refinement in
+the customer UI, shows both providers in admin readiness, sends Gemini
+Interactions requests with `store=false`, rejects non-Google endpoints, and
+prevents permanent provider failures from being retried. The Render blueprint
+also now injects `DATABASE_URL` into Product Worker and uses a dedicated public
+`/healthz` liveness endpoint. Focused verification passed 132 tests; the
+post-blueprint full run passed 1366 tests with 20 real-infrastructure tests
+skipped.
+
 ## Status
+- 2026-08-11 live Render inventory: one free Python Web Service
+  `waimai-image-tool-1`, branch `codex/render-image-staging`, commit `39e6fdf`;
+  no deployed Redis, PostgreSQL, or independent Worker resources.
+- 2026-08-11 live environment names include TokenHub/Tencent/COS staging
+  configuration but no `GEMINI_API_KEY`; secret values were not copied into
+  the repository or project memory.
+- 2026-08-11 candidate regression: 1366 passed, 20 skipped. The skipped tests
+  require live PostgreSQL/Redis and remain an external verification gate.
 - Complete catalog freeze commit `b7b4395` is pushed; Render auto-deploy
   `dep-d9n24ic9v7es73c3od8g` reached live with the exact normal Gunicorn
   command and no catalog-review process.

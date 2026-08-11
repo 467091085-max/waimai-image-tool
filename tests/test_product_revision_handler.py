@@ -435,6 +435,29 @@ def test_provider_failure_is_not_converted_to_fake_success(tmp_path) -> None:
     assert storage.list_prefix(revision_prefix) == []
 
 
+def test_permanent_provider_failure_is_not_retried(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    contract, _background, _source, _edited = _contract(storage)
+
+    class RejectedProvider:
+        def edit(self, *_args, **_kwargs):
+            raise ImageEditProviderError(
+                "provider_rejected",
+                "provider rejected the request",
+                retryable=False,
+            )
+
+    with pytest.raises(
+        NonRetryableProductRevisionError,
+        match="provider rejected the request",
+    ):
+        handle_product_revision(
+            _payload(contract),
+            provider=RejectedProvider(),
+            storage=storage,
+        )
+
+
 @pytest.mark.parametrize("cancel_on_call", [1, 2, 3])
 def test_execution_guard_can_cancel_at_every_required_boundary(
     tmp_path,

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -26,6 +27,8 @@ MAX_IMAGE_PIXELS = 24_000_000
 MAX_IMAGE_SIDE = 12_000
 MAX_EDIT_PROMPT_CHARS = 800
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}")
+GEMINI_API_HOST = "generativelanguage.googleapis.com"
+GEMINI_INTERACTIONS_PATH = "/v1beta/interactions"
 
 
 class ImageEditProviderError(RuntimeError):
@@ -68,7 +71,11 @@ def gemini_image_edit_config(
         or DEFAULT_GEMINI_INTERACTIONS_URL
     ).strip()
     return {
-        "ready": bool(api_key and MODEL_RE.fullmatch(model)),
+        "ready": bool(
+            api_key
+            and MODEL_RE.fullmatch(model)
+            and _valid_gemini_interactions_endpoint(endpoint)
+        ),
         "apiKey": api_key,
         "model": model,
         "endpoint": endpoint,
@@ -86,6 +93,8 @@ def gemini_image_edit_readiness(
         blocking.append("gemini_image_edit_api_key_required")
     if not MODEL_RE.fullmatch(str(config["model"])):
         blocking.append("gemini_image_edit_model_invalid")
+    if not _valid_gemini_interactions_endpoint(str(config["endpoint"])):
+        blocking.append("gemini_image_edit_endpoint_invalid")
     return {
         "ready": not blocking,
         "provider": "google-gemini",
@@ -120,7 +129,7 @@ class GeminiImageEditProvider:
                 "gemini_image_edit_model_invalid",
                 "Gemini 图片精修模型配置无效",
             )
-        if not self.endpoint.startswith("https://"):
+        if not _valid_gemini_interactions_endpoint(self.endpoint):
             raise ImageEditProviderError(
                 "gemini_image_edit_endpoint_invalid",
                 "Gemini 图片精修地址无效",
@@ -161,6 +170,7 @@ class GeminiImageEditProvider:
         mime_type = _normalized_mime_type(source_mime_type)
         payload = {
             "model": self.model,
+            "store": False,
             "input": [
                 {
                     "type": "text",
@@ -266,6 +276,23 @@ class GeminiImageEditProvider:
             model=self.model,
             request_id=str(response_payload.get("id") or ""),
         )
+
+
+def _valid_gemini_interactions_endpoint(value: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == GEMINI_API_HOST
+        and parsed.port in {None, 443}
+        and parsed.path.rstrip("/") == GEMINI_INTERACTIONS_PATH
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _validated_prompt(value: str) -> str:

@@ -86,9 +86,28 @@ def test_provider_sends_source_and_returns_last_inline_image() -> None:
     assert captured["url"].endswith("/v1beta/interactions")
     assert "test-secret" not in captured["url"]
     assert "test-secret" not in json.dumps(captured["payload"])
+    assert captured["payload"]["store"] is False
     assert captured["payload"]["input"][1]["data"] == base64.b64encode(source).decode("ascii")
     assert "把香菜去掉" in captured["payload"]["input"][0]["text"]
     assert captured["payload"]["response_format"]["type"] == "image"
+
+
+def test_provider_rejects_non_google_interactions_endpoint() -> None:
+    status = gemini_image_edit_readiness(
+        {
+            "GEMINI_API_KEY": "test-secret",
+            "GEMINI_INTERACTIONS_URL": "https://gemini-proxy.example/v1beta/interactions",
+        }
+    )
+
+    assert status["ready"] is False
+    assert "gemini_image_edit_endpoint_invalid" in status["blockingIssues"]
+    with pytest.raises(ImageEditProviderError) as raised:
+        GeminiImageEditProvider(
+            api_key="test-secret",
+            endpoint="https://gemini-proxy.example/v1beta/interactions",
+        )
+    assert raised.value.code == "gemini_image_edit_endpoint_invalid"
 
 
 def test_provider_parses_generate_content_inline_data_compatibility() -> None:

@@ -80,7 +80,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 60
-    healthCheckPath: /
+    healthCheckPath: /healthz
     autoDeployTrigger: "off"
     envVars:
       - fromGroup: waimai-image-tool-core
@@ -252,6 +252,10 @@ services:
         fromService:
           type: keyvalue
           name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
           property: connectionString
       - key: WORKER_TASK_MODE
         value: product

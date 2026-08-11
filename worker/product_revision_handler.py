@@ -11,7 +11,7 @@ from PIL import Image, ImageChops, ImageOps
 
 import object_storage_service
 from background_compositor import outside_mask_pixels_equal
-from image_edit_provider import GeminiImageEditProvider
+from image_edit_provider import GeminiImageEditProvider, ImageEditProviderError
 from refinement_pipeline import (
     compose_locked_refinement,
     derive_locked_foreground_mask,
@@ -99,11 +99,16 @@ def handle_product_revision(
     _run_execution_guard(execution_guard)
     editor = provider or GeminiImageEditProvider.from_env()
     prompt = _provider_prompt(contract)
-    provider_result = editor.edit(
-        source_bytes,
-        prompt,
-        source_mime_type=source_mime_type,
-    )
+    try:
+        provider_result = editor.edit(
+            source_bytes,
+            prompt,
+            source_mime_type=source_mime_type,
+        )
+    except ImageEditProviderError as exc:
+        if not exc.retryable:
+            raise NonRetryableProductRevisionError(str(exc)) from exc
+        raise
     _run_execution_guard(execution_guard)
 
     edited_bytes = getattr(provider_result, "image_bytes", None)

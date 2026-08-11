@@ -226,3 +226,19 @@
   failing the formal row or retrying the paid preview endpoint.
 - A verified preview reused as a formal output counts as a successful cached
   result for manifest completion and billing settlement.
+
+## Image Provider Routing And Privacy
+- Hunyuan 3.0 remains the server-owned provider for category backgrounds,
+  free samples, and formal menu generation. Gemini is server-owned only for
+  single-image refinement; customers do not submit API keys, model IDs, or
+  arbitrary provider endpoints.
+- Provider readiness is exposed only as redacted capability/status metadata.
+  Secret values never enter browser payloads, logs, repository files, or
+  project memory.
+- Gemini image refinement uses the official Google Interactions endpoint with
+  `store=false`. A configured endpoint outside
+  `generativelanguage.googleapis.com/v1beta/interactions` fails closed before
+  any customer image or API key is transmitted.
+- Permanent provider rejections do not enter the Worker retry loop. Transient
+  quota, rate-limit, timeout, and server failures may use the existing bounded
+  retry policy.

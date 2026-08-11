@@ -164,6 +164,10 @@ class CustomerUiContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, payload_body)
 
         self.assertIn('api("/api/image-refinements"', self.script)
+        self.assertIn('api("/api/image-providers")', self.script)
+        self.assertIn("geminiRefinementReady", self.script)
+        self.assertIn("Gemini 精细改图未配置", self.script)
+        self.assertIn("Gemini 精细改图", self.template)
         self.assertIn("fetchImageRefinement", poll_body)
         self.assertIn("REFINEMENT_MAX_POLL_ATTEMPTS", poll_body)
         self.assertIn("REFINEMENT_POLL_DELAY_MS", poll_body)
@@ -442,9 +446,11 @@ class CustomerUiContractTests(unittest.TestCase):
             'api("/api/admin/queue-snapshot")',
             "objectStorage",
             "generationProvider",
+            "imageRefinement",
             "generationQueue",
             "payments",
-            "AI 生图 provider",
+            "混元生图 provider",
+            "Gemini 精细改图 provider",
             "未接入",
         ]:
             self.assertIn(required, self.admin_script)

@@ -50,6 +50,20 @@ def test_staging_gate_challenges_missing_or_invalid_credentials(
     assert invalid.status_code == 401
 
 
+def test_staging_health_check_is_public_liveness_only(monkeypatch) -> None:
+    _configure_staging(monkeypatch)
+    response = app_module.app.test_client().get(
+        "/healthz",
+        environ_base={"REMOTE_ADDR": "198.51.100.8"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "service": "waimai-image-tool",
+    }
+
+
 def test_staging_credentials_enable_customer_demo_boundaries(monkeypatch) -> None:
     _configure_staging(monkeypatch)
     client = app_module.app.test_client()

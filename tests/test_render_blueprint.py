@@ -54,7 +54,7 @@ def test_blueprint_parses_and_preserves_customer_web_entrypoint() -> None:
     assert customer["type"] == "web"
     assert customer["startCommand"].startswith("gunicorn app:app ")
     assert "--chdir api-server" not in customer["startCommand"]
-    assert customer["healthCheckPath"] == "/"
+    assert customer["healthCheckPath"] == "/healthz"
 
     assert (ROOT / "app.py").is_file()
     assert "app = Flask(__name__)" in (ROOT / "app.py").read_text(
@@ -127,6 +127,7 @@ def test_all_active_compute_services_share_explicit_redis_contract() -> None:
     for service_name in (
         CUSTOMER_WEB,
         OUTBOX_DISPATCHER,
+        PRODUCT_WORKER,
         GROWTH_EVENT_WORKER,
         SETTLEMENT_RECONCILER,
     ):
@@ -138,7 +139,6 @@ def test_all_active_compute_services_share_explicit_redis_contract() -> None:
         }
 
     assert "DATABASE_URL" not in _env_entries(services[API_SERVER])
-    assert "DATABASE_URL" not in _env_entries(services[PRODUCT_WORKER])
 
 
 def test_growth_event_worker_uses_durable_runtime_and_real_ttl_heartbeat() -> None:

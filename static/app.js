@@ -24,6 +24,11 @@ const state = {
   deliveryPlatforms: [],
   quality: "standard",
   busy: null,
+  imageProviders: {
+    loaded: false,
+    generation: null,
+    refinement: null
+  },
   generationJob: null,
   completedGenerationJobId: "",
   previewLoadingStyle: "",
@@ -423,6 +428,27 @@ async function api(url, opt = {}) {
     throw error;
   }
   return await materializePrivateMediaUrls(data);
+}
+
+async function loadImageProviders() {
+  try {
+    const providers = await api("/api/image-providers");
+    state.imageProviders = {
+      loaded: true,
+      generation: providers.generation || null,
+      refinement: providers.refinement || null
+    };
+  } catch {
+    state.imageProviders = {
+      loaded: true,
+      generation: null,
+      refinement: null
+    };
+  }
+}
+
+function geminiRefinementReady() {
+  return state.imageProviders.refinement?.ready === true;
 }
 
 async function downloadProtectedFile(url) {
@@ -1243,7 +1269,9 @@ function renderPlan(showPreview = false) {
     generation.pending ? `待正式生成 ${generation.pending} 张` : "",
     generation.failed ? `生成失败 ${generation.failed} 张` : "",
     state.watermark.enabled ? `品牌水印 ${p.pricing.watermarkPoints} 积分/单` : "品牌水印可选",
-    `自定义修改 ${p.pricing.customEditPoints} 积分/次`,
+    geminiRefinementReady()
+      ? `Gemini 精细改图 ${p.pricing.customEditPoints} 积分/次`
+      : "Gemini 精细改图未配置",
     needsWork ? `待补图 ${needsWork} 张` : "全部可生成"
   ].filter(Boolean).map(x => `<span class="pill">${esc(x)}</span>`).join("");
   renderReworkBanner();
@@ -1780,6 +1808,10 @@ function renderPreview() {
   const redrawLabel = state.freeReworkRemaining > 0
     ? `换一版（免费剩 ${state.freeReworkRemaining}）`
     : `换一版 ${imagePoints()}积分`;
+  const refineLabel = geminiRefinementReady()
+    ? "Gemini 精细改图 10积分"
+    : "Gemini 精细改图未配置";
+  const refineDisabled = geminiRefinementReady() ? "" : "disabled";
   const card = (row, index) => {
     const rowNo = index + 1;
     const candidate = isPendingGeneration(row) ? null : row.candidates[0];
@@ -1792,7 +1824,7 @@ function renderPreview() {
       <div class="result-body">
         <p>${esc(row.category || "未分类")} · ${esc(row.kind)}</p>
         <div><span class="pill success">${esc(status)}</span><span class="pill">正式图 ${row.points} 积分</span></div>
-        ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button">自定义修改 10积分</button>`}
+        ${candidate ? `<div class="result-actions"><button class="single-save-btn" data-row="${rowNo}" type="button">单张保存</button><button class="redraw-btn" data-row="${rowNo}" type="button">${redrawLabel}</button><button class="refine-btn" data-row="${rowNo}" type="button" ${refineDisabled}>${refineLabel}</button></div>` : `<button class="refine-btn" data-row="${rowNo}" type="button" ${refineDisabled}>${refineLabel}</button>`}
       </div>
     </div>`;
   };
@@ -2266,12 +2298,13 @@ async function exportSingle(rowNo, button = null) {
 
 function openRefine(rowNo) {
   if (!state.confirmed || !state.plan) return toast("请先生成正式图片");
+  if (!geminiRefinementReady()) return toast("Gemini 精细改图尚未配置");
   const row = state.plan.results[rowNo - 1];
   if (!row) return;
   state.refineRow = rowNo;
-  $("#refineTitle").textContent = `自定义修改：${row.name}`;
+  $("#refineTitle").textContent = `Gemini 精细改图：${row.name}`;
   $("#refinePrompt").value = "";
-  $("#refinePrice").textContent = `自定义修改：${state.plan.pricing.customEditPoints} 积分/张`;
+  $("#refinePrice").textContent = `Gemini 精细改图：${state.plan.pricing.customEditPoints} 积分/张`;
   $("#refineModal").classList.add("show");
   $("#refineModal").setAttribute("aria-hidden", "false");
   $("#refinePrompt").focus();
@@ -2285,6 +2318,7 @@ function closeRefine() {
 
 async function submitRefine() {
   if (!state.refineRow || !state.plan) return;
+  if (!geminiRefinementReady()) return toast("Gemini 精细改图尚未配置");
   if (state.busy) return toast("请等待当前任务完成");
   const prompt = $("#refinePrompt").value.trim();
   if (!prompt) return toast("请先填写精修要求");
@@ -2474,6 +2508,7 @@ $("#refineModal").onclick = event => {
 async function initApp() {
   renderAuth();
   await loadAuthSession();
+  await loadImageProviders();
   await refreshMenuStatus();
 }
 

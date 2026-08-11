@@ -551,8 +551,29 @@ function renderGenerationProviderReadiness(generationProvider, hasGenerationProv
     ? "readiness 未返回 generationProvider 字段"
     : `TokenHub ${generationProvider.tokenhubReady ? "ready" : "not ready"} · Cloud API ${generationProvider.cloudApiReady ? "ready" : "not ready"} · tokenhubRequired ${generationProvider.tokenhubRequired ? "yes" : "no"}`;
   return readinessCard({
-    title: "AI 生图 provider",
+    title: "混元生图 provider",
     ready: generationProvider?.ready,
+    status,
+    warnings,
+    errors,
+    detail,
+    missing
+  });
+}
+
+function renderImageRefinementReadiness(imageRefinement, hasImageRefinementField) {
+  const missing = !hasImageRefinementField || !imageRefinement || typeof imageRefinement !== "object";
+  const warnings = readinessWarnings(imageRefinement);
+  const errors = readinessIssues(imageRefinement);
+  const status = missing
+    ? "未接入"
+    : [imageRefinement.provider, imageRefinement.model].filter(Boolean).join(" / ") || "未知";
+  const detail = missing
+    ? "readiness 未返回 imageRefinement 字段"
+    : `providerConfigured ${imageRefinement.providerConfigured ? "yes" : "no"} · liveRequired ${imageRefinement.liveRequired ? "yes" : "no"}`;
+  return readinessCard({
+    title: "Gemini 精细改图 provider",
+    ready: imageRefinement?.ready,
     status,
     warnings,
     errors,
@@ -567,10 +588,12 @@ function renderOpsReadiness(readiness = {}, queueSnapshot = null) {
 
   const hasPaymentsField = Object.prototype.hasOwnProperty.call(readiness || {}, "payments");
   const hasGenerationProviderField = Object.prototype.hasOwnProperty.call(readiness || {}, "generationProvider");
+  const hasImageRefinementField = Object.prototype.hasOwnProperty.call(readiness || {}, "imageRefinement");
   const queue = readiness?.generationQueue || queueSnapshot;
   const cards = [
     renderObjectStorageReadiness(readiness?.objectStorage),
     renderGenerationProviderReadiness(readiness?.generationProvider, hasGenerationProviderField),
+    renderImageRefinementReadiness(readiness?.imageRefinement, hasImageRefinementField),
     renderGenerationQueueReadiness(queue),
     renderPaymentReadiness(readiness?.payments, hasPaymentsField)
   ];

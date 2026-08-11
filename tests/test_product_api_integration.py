@@ -144,6 +144,7 @@ def test_product_api_routes_are_registered(product_api: ProductApiFixture) -> No
         ("GET", "/api/generation-jobs/<job_id>"),
         ("POST", "/api/generation-jobs/<job_id>/cancel"),
         ("GET", "/api/ops/readiness"),
+        ("GET", "/api/image-providers"),
         ("GET", "/api/ops/deployment-config"),
         ("GET", "/api/admin/queue-snapshot"),
         ("POST", "/api/admin/actions/risk"),
@@ -521,6 +522,20 @@ def test_ops_readiness_reports_storage_and_generation_queue(
     assert payload["productGeneration"]["ready"] is True
     assert payload["productGeneration"]["mode"] == "in_process_demo"
     assert "sqlite_product_job_store_is_for_local_demo_only" in payload["productGeneration"]["warnings"]
+
+
+def test_image_provider_routes_are_public_and_redacted(
+    product_api: ProductApiFixture,
+) -> None:
+    response = product_api.client.get("/api/image-providers")
+    payload = _json_for_status(response, 200, "GET /api/image-providers")
+
+    assert payload["ok"] is True
+    assert payload["generation"]["id"] == "tencent-hunyuan"
+    assert payload["refinement"]["id"] == "google-gemini"
+    assert payload["routing"]["background"] == "tencent-hunyuan"
+    assert payload["routing"]["singleImageRefinement"] == "google-gemini"
+    assert "apiKey" not in json.dumps(payload)
 
 
 def test_ops_readiness_is_false_when_generation_provider_missing_tokenhub_in_staging(

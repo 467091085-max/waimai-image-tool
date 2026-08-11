@@ -691,6 +691,8 @@ def staging_in_process_generation_allowed() -> bool:
 
 @app.before_request
 def require_staging_test_access():
+    if request.path == "/healthz":
+        return None
     if not staging_test_access_configured() or staging_test_access_allowed():
         return None
     return Response(
@@ -11244,6 +11246,11 @@ def export_zip(
     return {"rows": len(rows), "images": images, "platforms": selected_platforms, "watermark": watermark_enabled, "download": f"/download/{zip_path.relative_to(EXPORT_DIR).as_posix()}"}
 
 
+@app.get("/healthz")
+def healthz():
+    return jsonify({"ok": True, "service": "waimai-image-tool"})
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -14768,6 +14775,36 @@ def api_ops_readiness():
             "productGrowth": product_growth,
             "imageRefinement": refinement_provider,
             "authentication": product_auth,
+        }
+    )
+
+
+@app.get("/api/image-providers")
+def api_image_providers():
+    generation = generation_provider_readiness()
+    refinement = image_refinement_readiness()
+    return jsonify(
+        {
+            "ok": True,
+            "generation": {
+                "id": "tencent-hunyuan",
+                "label": "混元 3.0",
+                "ready": bool(generation.get("ready")),
+                "mode": generation.get("mode"),
+                "model": generation.get("tokenhubModel"),
+            },
+            "refinement": {
+                "id": "google-gemini",
+                "label": "Gemini",
+                "ready": bool(refinement.get("ready")),
+                "model": refinement.get("model"),
+            },
+            "routing": {
+                "background": "tencent-hunyuan",
+                "freeSamples": "tencent-hunyuan",
+                "formalGeneration": "tencent-hunyuan",
+                "singleImageRefinement": "google-gemini",
+            },
         }
     )
 
