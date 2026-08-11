@@ -77,7 +77,10 @@ def test_provider_image_write_failure_keeps_previous_complete_file() -> None:
             "save",
             side_effect=OSError("interrupted"),
         ):
-            with pytest.raises(OSError, match="interrupted"):
+            with pytest.raises(
+                app_module.ProviderResultDownloadError,
+                match="provider result image processing failed",
+            ):
                 app_module.save_result_image(
                     base64.b64encode(raw.getvalue()).decode(),
                     target,
@@ -88,6 +91,50 @@ def test_provider_image_write_failure_keeps_previous_complete_file() -> None:
 
 
 class SelectedBackgroundPipelineTests(unittest.TestCase):
+    def test_mixed_rice_combo_prompt_disambiguates_food_and_choices(self) -> None:
+        row = menu_row(
+            10,
+            "豪华三拼【烤肉+烤排+鸡排】+煎蛋/热狗肠/饮品三选一",
+        )
+        row["kind"] = "套餐/组合"
+        row["components"] = [
+            "烤肉",
+            "烤排",
+            "鸡排",
+            "煎蛋",
+            "热狗肠",
+            "饮品三选一",
+        ]
+
+        with mock.patch.object(
+            app_module,
+            "active_category_id",
+            return_value="mixed_rice",
+        ):
+            prompt = app_module.prompt_for_chroma_foreground(row, "standard")
+
+        self.assertIn("必须清楚出现白米饭", prompt)
+        self.assertIn("不是整块西式牛排", prompt)
+        self.assertIn("三拼必须呈现3种不同肉类", prompt)
+        self.assertIn("只出现其中一种", prompt)
+        self.assertIn("完全均匀的纯青色", prompt)
+        self.assertLessEqual(
+            len(prompt),
+            app_module.CHROMA_FOREGROUND_PROMPT_MAX_CHARS,
+        )
+
+    def test_non_rice_category_prompt_does_not_require_white_rice(self) -> None:
+        row = menu_row(1, "香辣鸡腿堡")
+
+        with mock.patch.object(
+            app_module,
+            "active_category_id",
+            return_value="burger_hotdog",
+        ):
+            prompt = app_module.prompt_for_chroma_foreground(row, "standard")
+
+        self.assertNotIn("必须清楚出现白米饭", prompt)
+
     def test_exact_product_identity_keeps_similar_combo_names_separate(self) -> None:
         first = menu_row(1, "【霸气任选】 三拼饭+赠品五选一")
         second = menu_row(2, "【超值自选】 双拼饭+赠品五选一")

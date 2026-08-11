@@ -77,6 +77,14 @@ class ComboRecognitionTests(unittest.TestCase):
                 self.assertEqual(parser_detect_kind(name), "套餐/组合")
                 self.assertEqual(parser_split_components(name, ""), expected_components)
 
+    def test_bracketed_combo_ingredients_are_not_dropped_or_malformed(self) -> None:
+        name = "豪华三拼【烤肉+烤排+鸡排】+煎蛋/热狗肠/饮品三选一"
+        expected = ["烤肉", "烤排", "鸡排", "煎蛋", "热狗肠", "饮品三选一"]
+
+        self.assertEqual(classify_kind(name), "套餐/组合")
+        self.assertEqual(split_components(name), expected)
+        self.assertEqual(parser_split_components(name, ""), expected)
+
     def test_unresolved_multi_item_markers_still_force_combo_generation(self) -> None:
         for name in ("人气海陆空三拼烤时蔬健康碗", "招牌全家福", "家庭分享组合"):
             with self.subTest(name=name):

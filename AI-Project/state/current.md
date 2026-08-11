@@ -53,9 +53,46 @@ patch now retries only that idempotent result-image GET, up to three bounded
 attempts; it never resubmits the paid image-generation request. Focused
 generation/security verification passes 83 tests.
 
+Step 97 in progress: bounded result-image download retry commit `42a3739` is
+live. The exact 60-row workbook then passed upload, `mixed_rice`
+classification, all six approved COS backgrounds, selected `style-3`, and six
+real Hunyuan free-sample requests in 330.054 seconds. Every output preserved
+the selected background bytes, but visual review rejected two of six samples:
+bracketed ingredients such as `【烤肉+烤排】` were malformed by combo parsing,
+and the short prompt let Hunyuan interpret Chinese `烤排` as a western steak.
+The formal job was canceled at 14/60; all 600 charged points were refunded and
+the account returned to 1880 points. A minimal candidate now preserves
+bracketed combo ingredients and adds mixed-rice, cutlet, choice, and
+double/triple/quadruple-combo semantics without affecting non-rice categories.
+Focused parser and selected-background verification passes 48 tests.
+An independent security review then found that the result-image retry still
+accepted arbitrary provider-controlled URLs and that the legacy replacement
+path could start a second paid generation after a successful provider job but
+failed result download. The candidate now accepts only credential-free HTTPS
+under the Tencent result-domain allowlist, rejects non-public DNS answers,
+revalidates every redirect, uses a shared retry deadline, and raises a
+dedicated download error that cannot enter the paid text-generation fallback.
+Security/generation focused verification passes 104 tests; full regression
+initially passed 1374 tests with 20 real-infrastructure tests skipped. A second
+review found uppercase/malformed result URLs could still escape the dedicated
+error and an ambiguous TokenHub submit could trigger the legacy cloud fallback.
+All provider-result processing failures now use the dedicated error, and a
+configured TokenHub path fails closed without invoking a second paid provider.
+The provider contract is `tokenhub-fail-closed-v2`; focused verification passes
+115 tests and full regression initially passed 1375 tests with 20
+infrastructure skips. The final P1 review extended the same error boundary over
+directory creation and image/temp-file cleanup so cleanup errors cannot replace
+the paid-result sentinel. Focused verification passes 116 tests and full
+regression passes 1376 tests with 20 infrastructure skips.
+Independent final P1 review passed for the default TokenHub staging route: no
+reproducible automatic second paid generation remains. DNS connection binding,
+strict DNS/body wall-clock enforcement, and cross-process result-download
+recovery remain explicit P2 production work.
+
 ## Status
 - 2026-08-11 live Render inventory: one free Python Web Service
-  `waimai-image-tool-1`, branch `codex/render-image-staging`, commit `39e6fdf`;
+  `waimai-image-tool-1`, branch `codex/gemini-dual-provider-staging`, commit
+  `42a3739`;
   no deployed Redis, PostgreSQL, or independent Worker resources.
 - 2026-08-11 live environment names include TokenHub/Tencent/COS staging
   configuration but no `GEMINI_API_KEY`; secret values were not copied into

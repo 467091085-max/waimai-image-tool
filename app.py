@@ -4,13 +4,17 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import hmac
+import http.client
+import ipaddress
 import io
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
+import ssl
 import threading
 import time
 import tempfile
@@ -217,6 +221,18 @@ REMOTE_IMAGE_DOWNLOAD_RETRY_STATUS_CODES = frozenset(
     {408, 425, 429, 500, 502, 503, 504}
 )
 REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS = 0.25
+REMOTE_IMAGE_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = max(
+    5,
+    env_int("REMOTE_IMAGE_DOWNLOAD_TOTAL_TIMEOUT_SECONDS", 150),
+)
+REMOTE_IMAGE_ALLOWED_HOST_SUFFIXES = tuple(
+    suffix.strip().lower().lstrip(".")
+    for suffix in os.environ.get(
+        "REMOTE_IMAGE_ALLOWED_HOST_SUFFIXES",
+        "myqcloud.com",
+    ).split(",")
+    if suffix.strip()
+)
 FINAL_GENERATION_WORKERS = max(1, env_int("FINAL_GENERATION_WORKERS", 3))
 GENERATION_QUEUE_STALE_AFTER_SECONDS = max(
     1,
@@ -233,9 +249,10 @@ AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 11
-DISH_GENERATION_PROMPT_VERSION = 1
+DISH_GENERATION_PROMPT_VERSION = 2
 EXACT_BACKGROUND_PIPELINE_VERSION = 4
-CHROMA_FOREGROUND_PROMPT_VERSION = 1
+CHROMA_FOREGROUND_PROMPT_VERSION = 2
+CHROMA_FOREGROUND_PROMPT_MAX_CHARS = 600
 EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
 STAGING_E2E_INSTANCE_NONCE_PATH = Path(
     "/tmp/waimai-staging-e2e-instance-nonce"
@@ -340,6 +357,10 @@ class SelectedBackgroundError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class ProviderResultDownloadError(RuntimeError):
+    """A paid provider result exists, but its image could not be retrieved."""
 
 
 class MenuUploadError(ValueError):
@@ -2293,7 +2314,7 @@ def generation_provenance_snapshot() -> dict[str, str]:
     tokenhub = tokenhub_config()
     if tokenhub_ready():
         provider = "tencent-hunyuan"
-        provider_mode = "tokenhub-cloud-fallback-v1"
+        provider_mode = "tokenhub-fail-closed-v2"
         model_name = str(tokenhub["model"] or "hy-image-v3.0")
         model_version = (
             f"{model_name}.aiart-{TENCENT_AIART_VERSION}."
@@ -3538,13 +3559,10 @@ def tokenhub_image_request(payload: dict[str, Any], timeout: int = TENCENT_REQUE
 
 def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     if action == "TextToImageLite":
-        errors = []
         if tokenhub_ready():
-            try:
-                with TENCENT_TOKENHUB_GENERATION_LOCK:
-                    return tokenhub_image_request(payload, timeout=timeout)
-            except RuntimeError as exc:
-                errors.append(str(exc))
+            with TENCENT_TOKENHUB_GENERATION_LOCK:
+                return tokenhub_image_request(payload, timeout=timeout)
+        errors = []
         endpoints = [
             (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
             (TENCENT_HUNYUAN_HOST, TENCENT_HUNYUAN_SERVICE, TENCENT_HUNYUAN_VERSION),
@@ -3600,12 +3618,110 @@ def bounded_pil_image_from_bytes(
         return image.copy()
 
 
+def validate_remote_image_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("provider image URL is invalid") from exc
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme.lower() != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        raise ValueError("provider image URL must use credential-free HTTPS")
+    if not any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in REMOTE_IMAGE_ALLOWED_HOST_SUFFIXES
+    ):
+        raise ValueError("provider image host is not allowlisted")
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            443,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise ValueError("provider image host could not be resolved") from exc
+    if not addresses:
+        raise ValueError("provider image host has no addresses")
+    for address in addresses:
+        ip_text = str(address[4][0]).split("%", 1)[0]
+        try:
+            resolved_ip = ipaddress.ip_address(ip_text)
+        except ValueError as exc:
+            raise ValueError("provider image host resolved to an invalid address") from exc
+        if (
+            not resolved_ip.is_global
+            or resolved_ip.is_private
+            or resolved_ip.is_loopback
+            or resolved_ip.is_link_local
+            or resolved_ip.is_reserved
+            or resolved_ip.is_unspecified
+            or resolved_ip.is_multicast
+        ):
+            raise ValueError("provider image host resolved to a non-public address")
+    return host
+
+
+class ProviderImageRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        validate_remote_image_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_validated_remote_image(
+    request: urllib.request.Request,
+    timeout: float,
+) -> Any:
+    validate_remote_image_url(request.full_url)
+    opener = urllib.request.build_opener(ProviderImageRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def retryable_remote_image_error(exc: Exception) -> bool:
+    reason: Any = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, (ssl.SSLCertVerificationError, socket.gaierror)):
+        return False
+    return isinstance(
+        reason,
+        (
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            http.client.IncompleteRead,
+            ssl.SSLError,
+        ),
+    )
+
+
 def read_remote_pil_image(url: str, timeout: int = 60) -> Image.Image:
     req = urllib.request.Request(url, headers={"User-Agent": "waimai-image-tool/1.0"})
     raw = b""
+    deadline = time.monotonic() + min(
+        max(1, timeout) * REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS,
+        REMOTE_IMAGE_DOWNLOAD_TOTAL_TIMEOUT_SECONDS,
+    )
     for attempt in range(1, REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("provider image download deadline exceeded")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_validated_remote_image(
+                req,
+                timeout=max(0.1, min(float(timeout), remaining)),
+            ) as resp:
                 raw = resp.read(MAX_AI_ASSET_BYTES + 1)
             break
         except urllib.error.HTTPError as exc:
@@ -3614,10 +3730,23 @@ def read_remote_pil_image(url: str, timeout: int = 60) -> Image.Image:
                 exc.close()
             if not retryable or attempt >= REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS:
                 raise
-        except (urllib.error.URLError, TimeoutError):
-            if attempt >= REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            http.client.IncompleteRead,
+            ssl.SSLError,
+        ) as exc:
+            if (
+                not retryable_remote_image_error(exc)
+                or attempt >= REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS
+            ):
                 raise
-        time.sleep(REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS * attempt)
+        delay = REMOTE_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS * attempt
+        if time.monotonic() + delay >= deadline:
+            raise TimeoutError("provider image download deadline exceeded")
+        time.sleep(delay)
     if len(raw) > MAX_AI_ASSET_BYTES:
         raise ValueError("remote image exceeds limit")
     return bounded_pil_image_from_bytes(raw)
@@ -3632,29 +3761,58 @@ def read_remote_image(url: str, timeout: int = 60) -> Image.Image:
 
 
 def save_result_image(result_image: str, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(
         f".{target.name}.{secrets.token_hex(8)}.tmp"
     )
-    if result_image.startswith("http://") or result_image.startswith("https://"):
-        img = read_remote_image(result_image)
-    else:
-        source = bounded_pil_image_from_bytes(
-            decode_bounded_provider_image(result_image)
-        )
-        try:
-            img = source.convert("RGB")
-        finally:
-            source.close()
+    img: Image.Image | None = None
+    failure: Exception | None = None
     try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            scheme = urllib.parse.urlsplit(result_image).scheme.lower()
+        except ValueError:
+            scheme = "https" if str(result_image).lower().startswith("https:") else ""
+        if scheme in {"http", "https"}:
+            img = read_remote_image(result_image)
+        else:
+            source = bounded_pil_image_from_bytes(
+                decode_bounded_provider_image(result_image)
+            )
+            try:
+                img = source.convert("RGB")
+            finally:
+                source.close()
         if target.suffix.lower() == ".png":
             img.save(temporary, "PNG", optimize=True)
         else:
             img.save(temporary, "JPEG", quality=92, optimize=True)
         os.replace(temporary, target)
+    except Exception as exc:
+        failure = exc
     finally:
-        img.close()
-        temporary.unlink(missing_ok=True)
+        if img is not None:
+            try:
+                img.close()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        try:
+            temporary.unlink(missing_ok=True)
+        except Exception as exc:
+            if failure is None:
+                failure = exc
+    if failure is not None:
+        if isinstance(failure, ProviderResultDownloadError):
+            raise failure
+        try:
+            host = str(
+                urllib.parse.urlsplit(result_image).hostname or "embedded"
+            )
+        except ValueError:
+            host = "invalid"
+        raise ProviderResultDownloadError(
+            f"provider result image processing failed ({host})"
+        ) from failure
 
 
 def provider_mask_image(result_image: str) -> Image.Image:
@@ -4027,15 +4185,56 @@ def prompt_for_chroma_foreground(
 ) -> str:
     dish = str(row.get("name") or "外卖菜品")
     kind = str(row.get("kind") or "菜品")
+    category_id = active_category_id()
+    component_values = [
+        str(value).strip()
+        for value in row.get("components") or []
+        if str(value).strip()
+    ]
+    semantic_source = f"{dish} {' '.join(component_values)}"
+    semantic_hints: list[str] = []
+    if category_id in {"mixed_rice", "topped_rice"} or any(
+        word in semantic_source for word in ("拌饭", "盖饭", "盖码饭", "烤肉饭")
+    ):
+        semantic_hints.append(
+            "这是中式外卖米饭餐，必须清楚出现白米饭，不是西式牛排拼盘"
+        )
+    if "烤肉" in semantic_source:
+        semantic_hints.append("烤肉是切片中式蜜汁烤肉")
+    if "烤排" in semantic_source:
+        semantic_hints.append("烤排是切片中式黑椒无骨猪排，不是整块西式牛排")
+    if "鸡排" in semantic_source:
+        semantic_hints.append("鸡排是完整鸡排，不得替换成牛排")
+    if "腿排" in semantic_source:
+        semantic_hints.append("腿排是去骨鸡腿排，不是西式牛排")
+    if "猪排" in semantic_source:
+        semantic_hints.append("猪排是中式猪排，不是牛排")
+    portion_match = re.search(r"([双三四])拼", dish)
+    if portion_match:
+        portion_count = {"双": 2, "三": 3, "四": 4}[portion_match.group(1)]
+        semantic_hints.append(
+            f"{portion_match.group(1)}拼必须呈现{portion_count}种不同肉类"
+        )
+    if re.search(r"(?:[二三四五六七八九十\d]+选一|任选|自选|可选)", semantic_source):
+        semantic_hints.append(
+            "标注选一、任选或自选的配菜只出现其中一种，不得同时摆出全部备选"
+        )
+    if kind == "套餐/组合":
+        semantic_hints.append("非备选的套餐核心食材必须分别可辨，不得漏项或替换")
+    semantics = "；".join(semantic_hints)
+    if semantics:
+        semantics = f"。菜品语义：{semantics}"
     components = ""
     if kind == "套餐/组合":
-        components = f"，套餐内容：{row_components_text(row)}，全部放在一个完整托盘内"
+        components = f"，套餐构成：{row_components_text(row)}"
     return (
-        f"{dish}，{kind}{components}，单个完整菜品主体，包括承载菜品的完整餐盘、餐碗或托盘，"
-        f"{quality_detail(quality)}，主体居中并四周留足空隙。背景必须是完全均匀的纯青色抠图幕布"
+        f"真实中式外卖商品摄影，严格生成菜名“{dish}”，{kind}{components}{semantics}。"
+        "菜品自然装在同一个完整餐盘、餐碗、餐盒或托盘中，"
+        f"{quality_detail(quality)}，主体约占画面70%，居中完整且仅留必要抠图边距。"
+        "背景必须是完全均匀的纯青色抠图幕布"
         "（RGB 0,255,255），无桌面、无墙面、无地平线、无渐变、无阴影、无反射、无道具。"
-        "不要出现文字、价格、logo、水印、品牌名、人物或手，不要裁切主体。"
-    )[:250]
+        "不要出现文字、价格、logo、水印、品牌名、人物、手、小图、相框或边框，不要裁切主体。"
+    )[:CHROMA_FOREGROUND_PROMPT_MAX_CHARS]
 
 
 def exact_product_identity(row: dict[str, Any]) -> str:
@@ -9738,6 +9937,8 @@ def materialize_final_row(
             elif source_candidate:
                 try:
                     detail = tencent_replace_background(row, source_candidate, selected_style, target, quality)
+                except ProviderResultDownloadError:
+                    raise
                 except Exception as exc:
                     replace_error = exc
                     try:

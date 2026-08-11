@@ -24,7 +24,7 @@ TEST_GENERATION_PROVENANCE = {
     "dishPromptVersion": "dish-generation.v1",
     "pipelineVersion": "exact-background.v1",
     "provider": "tencent-hunyuan",
-    "providerMode": "tokenhub-cloud-fallback-v1",
+    "providerMode": "tokenhub-fail-closed-v2",
     "modelName": "hy-image-v3.0",
     "modelVersion": (
         "hy-image-v3.0.aiart-2022-12-29."

@@ -258,15 +258,15 @@ class SecurityRegressionTests(unittest.TestCase):
         with (
             mock.patch.object(app_module, "MAX_AI_ASSET_BYTES", 8),
             mock.patch.object(
-                app_module.urllib.request,
-                "urlopen",
+                app_module,
+                "open_validated_remote_image",
                 return_value=response,
             ),
             mock.patch.object(app_module.Image, "open") as image_open,
         ):
             with self.assertRaisesRegex(ValueError, "remote image exceeds limit"):
                 app_module.read_remote_pil_image(
-                    "https://provider.example.test/result.png"
+                    "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/result.png"
                 )
 
         response.read.assert_called_once_with(9)
@@ -281,8 +281,8 @@ class SecurityRegressionTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                app_module.urllib.request,
-                "urlopen",
+                app_module,
+                "open_validated_remote_image",
                 side_effect=[
                     app_module.urllib.error.URLError(
                         TimeoutError("TLS handshake timed out")
@@ -293,7 +293,7 @@ class SecurityRegressionTests(unittest.TestCase):
             mock.patch.object(app_module.time, "sleep") as sleep,
         ):
             image = app_module.read_remote_pil_image(
-                "https://provider.example.test/result.png"
+                "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/result.png"
             )
 
         self.assertEqual(image.size, (2, 2))
@@ -305,7 +305,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_remote_image_read_does_not_retry_permanent_http_failure(self) -> None:
         failure = app_module.urllib.error.HTTPError(
-            "https://provider.example.test/missing.png",
+            "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/missing.png",
             404,
             "Not Found",
             {},
@@ -313,19 +313,130 @@ class SecurityRegressionTests(unittest.TestCase):
         )
         with (
             mock.patch.object(
-                app_module.urllib.request,
-                "urlopen",
+                app_module,
+                "open_validated_remote_image",
                 side_effect=failure,
             ) as urlopen,
             mock.patch.object(app_module.time, "sleep") as sleep,
             self.assertRaises(app_module.urllib.error.HTTPError),
         ):
             app_module.read_remote_pil_image(
-                "https://provider.example.test/missing.png"
+                "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/missing.png"
             )
 
         urlopen.assert_called_once()
         sleep.assert_not_called()
+
+    def test_remote_image_url_rejects_non_allowlisted_or_private_targets(self) -> None:
+        with self.assertRaisesRegex(ValueError, "allowlisted"):
+            app_module.validate_remote_image_url(
+                "https://attacker.example.test/result.png"
+            )
+
+        with (
+            mock.patch.object(
+                app_module.socket,
+                "getaddrinfo",
+                return_value=[
+                    (
+                        app_module.socket.AF_INET,
+                        app_module.socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("127.0.0.1", 443),
+                    )
+                ],
+            ),
+            self.assertRaisesRegex(ValueError, "non-public"),
+        ):
+            app_module.validate_remote_image_url(
+                "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/result.png"
+            )
+
+    def test_remote_image_redirect_revalidates_destination(self) -> None:
+        handler = app_module.ProviderImageRedirectHandler()
+        request = app_module.urllib.request.Request(
+            "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/start.png"
+        )
+        destination = (
+            "https://hyimg-next.cos.ap-guangzhou.myqcloud.com/result.png"
+        )
+
+        with mock.patch.object(
+            app_module,
+            "validate_remote_image_url",
+            return_value="hyimg-next.cos.ap-guangzhou.myqcloud.com",
+        ) as validate:
+            redirected = handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                destination,
+            )
+
+        self.assertIsNotNone(redirected)
+        validate.assert_called_once_with(destination)
+
+    def test_provider_result_url_variants_always_use_paid_result_sentinel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "result.jpg"
+            for result_url in (
+                "HTTPS://hyimg-test.cos.ap-guangzhou.myqcloud.com/result.png",
+                "https://[broken",
+            ):
+                with self.subTest(result_url=result_url):
+                    with (
+                        mock.patch.object(
+                            app_module,
+                            "read_remote_image",
+                            side_effect=ValueError("invalid provider URL"),
+                        ) as read,
+                        self.assertRaises(
+                            app_module.ProviderResultDownloadError
+                        ),
+                    ):
+                        app_module.save_result_image(result_url, target)
+
+                    read.assert_called_once_with(result_url)
+
+    def test_provider_result_filesystem_failures_use_paid_result_sentinel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "nested" / "result.jpg"
+            with (
+                mock.patch.object(
+                    Path,
+                    "mkdir",
+                    side_effect=OSError("mkdir failed"),
+                ),
+                self.assertRaises(
+                    app_module.ProviderResultDownloadError
+                ),
+            ):
+                app_module.save_result_image("not-base64", target)
+
+            image = Image.new("RGB", (2, 2), (220, 120, 80))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with (
+                mock.patch.object(
+                    app_module,
+                    "read_remote_image",
+                    return_value=image,
+                ),
+                mock.patch.object(
+                    image,
+                    "close",
+                    side_effect=OSError("close failed"),
+                ),
+                self.assertRaises(
+                    app_module.ProviderResultDownloadError
+                ),
+            ):
+                app_module.save_result_image(
+                    "https://hyimg-test.cos.ap-guangzhou.myqcloud.com/result.png",
+                    target,
+                )
 
     def test_tokenhub_json_read_stops_at_limit_before_json_decode(self) -> None:
         response = mock.MagicMock()

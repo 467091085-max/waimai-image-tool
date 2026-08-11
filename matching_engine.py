@@ -139,6 +139,8 @@ GENERIC_COMPONENTS = {
     "全家福",
     "酱料",
     "口味",
+    "豪华",
+    "土豪",
 }
 
 DRINK_SNACK_WORDS = (
@@ -212,6 +214,7 @@ SNACK_TAXONOMIES = {
 }
 SPLIT_RE = re.compile(r"[+＋#&＆/／、,，|丨;；]+|\s+(?:配|加|和|含)\s+")
 PAREN_RE = re.compile(r"[（(]([^）)]{0,80})[）)]")
+BRACKET_RE = re.compile(r"[【\[]([^】\]]{0,80})[】\]]")
 TOP_LEVEL_PLUS_RE = re.compile(r"[+＋]")
 CHOICE_RE = re.compile(r"(?:\d+|[一二三四五六七八九十]+)选(?:\d+|[一二三四五六七八九十]+)|(?:^|[^A-Za-z])or(?:[^A-Za-z]|$)|或者")
 PEOPLE_MEAL_RE = re.compile(r"(?:\d+|[一二三四五六七八九十单双]+)人[^,，;；]{0,12}餐|\d+\s*件套")
@@ -269,7 +272,14 @@ def split_components(name: str, attrs: str = "", category: str = "") -> list[str
     """Split combo/set-meal names into matchable dish components."""
     name_source = unicodedata.normalize("NFKC", str(name or ""))
     explicit_combo = any(word in name_source for word in COMBO_WORDS) or bool(PEOPLE_MEAL_RE.search(name_source))
+    bracket_sources: list[str] = []
     parenthetical_sources: list[str] = []
+
+    def keep_component_bracket(match: re.Match[str]) -> str:
+        content = match.group(1)
+        if explicit_combo and SPLIT_RE.search(content):
+            bracket_sources.append(content)
+        return " "
 
     def keep_component_parenthetical(match: re.Match[str]) -> str:
         content = match.group(1)
@@ -277,8 +287,15 @@ def split_components(name: str, attrs: str = "", category: str = "") -> list[str
             parenthetical_sources.append(content)
         return " "
 
+    name_source = BRACKET_RE.sub(keep_component_bracket, name_source)
     name_source = PAREN_RE.sub(keep_component_parenthetical, name_source)
-    sources = [name_source, *parenthetical_sources]
+    if bracket_sources:
+        name_source = re.sub(
+            r"^\s*[^+＋#&＆/／、,，|丨;；]{0,30}(?:双拼|三拼|四拼|多拼)\s*",
+            "",
+            name_source,
+        )
+    sources = [*bracket_sources, name_source, *parenthetical_sources]
     attrs_source = unicodedata.normalize("NFKC", str(attrs or ""))
     if attrs_source and any(word in attrs_source for word in INCLUSION_WORDS):
         sources.append(attrs_source)

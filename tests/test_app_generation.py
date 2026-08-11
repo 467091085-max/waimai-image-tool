@@ -63,6 +63,57 @@ def menu_row(row: int, name: str, kind: str, candidates: list[dict[str, object]]
 
 
 class AppGenerationTests(unittest.TestCase):
+    def test_result_download_failure_never_starts_a_second_paid_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.jpg"
+            save_image(source)
+            row = menu_row(
+                1,
+                "红烧肉",
+                "单品",
+                [candidate(source, "红烧肉", "style-2")],
+            )
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={
+                        "provider": "tencent-hunyuan",
+                        "configured": True,
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_first_generation_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_asset_library_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_replace_background",
+                    side_effect=app_module.ProviderResultDownloadError(
+                        "provider result image download failed"
+                    ),
+                ),
+                mock.patch.object(app_module, "tencent_text_to_image") as text,
+            ):
+                generation = app_module.materialize_final_images(
+                    {"results": [row]},
+                    "style-1",
+                    "standard",
+                )
+
+            self.assertEqual(generation["succeeded"], 0)
+            self.assertEqual(generation["failed"], 1)
+            text.assert_not_called()
+
     def test_materialize_routes_required_rows_to_replace_or_text_and_reuses_same_style(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -264,20 +315,7 @@ class AppGenerationTests(unittest.TestCase):
         tokenhub.assert_called_once()
         legacy.assert_not_called()
 
-    def test_tokenhub_failure_strips_v3_only_fields_before_legacy_fallback(self) -> None:
-        cloud_payloads: list[dict[str, object]] = []
-
-        def fake_cloud(
-            _action: str,
-            payload: dict[str, object],
-            host: str,
-            _service: str,
-            _version: str,
-            _timeout: int = 70,
-        ) -> dict[str, object]:
-            cloud_payloads.append(dict(payload))
-            raise RuntimeError(f"{host} ResourceInsufficient")
-
+    def test_tokenhub_unknown_outcome_never_calls_a_second_paid_provider(self) -> None:
         with (
             mock.patch.dict(
                 app_module.os.environ,
@@ -290,15 +328,11 @@ class AppGenerationTests(unittest.TestCase):
             mock.patch.object(
                 app_module,
                 "tokenhub_image_request",
-                side_effect=RuntimeError("ImageIllegalDetected"),
-            ),
-            mock.patch.object(
-                app_module,
-                "tencent_cloud_api_request",
-                side_effect=fake_cloud,
-            ),
+                side_effect=RuntimeError("submit outcome unknown"),
+            ) as tokenhub,
+            mock.patch.object(app_module, "tencent_cloud_api_request") as legacy,
         ):
-            with self.assertRaisesRegex(RuntimeError, "ImageIllegalDetected"):
+            with self.assertRaisesRegex(RuntimeError, "submit outcome unknown"):
                 app_module.tencent_api_request(
                     "TextToImageLite",
                     {
@@ -309,11 +343,8 @@ class AppGenerationTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(len(cloud_payloads), 2)
-        for payload in cloud_payloads:
-            self.assertNotIn("Images", payload)
-            self.assertNotIn("Revise", payload)
-            self.assertNotIn("Seed", payload)
+        tokenhub.assert_called_once()
+        legacy.assert_not_called()
 
     def test_tokenhub_generation_is_serialized_within_the_service_process(self) -> None:
         state_lock = threading.Lock()
