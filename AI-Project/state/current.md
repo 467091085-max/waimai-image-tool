@@ -173,6 +173,24 @@ Step 108 complete: candidate commit `2236784` was created and pushed only to
 databases, and production configuration were not changed. Render staging
 deployment and live health/readiness verification are the active next action.
 
+Step 109 complete: Render staging auto-deployed commit `b28580a`, then the
+authorized staging-only environment update set `FINAL_GENERATION_WORKERS=10`,
+`TENCENT_HUNYUAN_SYNC_LIMIT=120`, and
+`TENCENT_TOKENHUB_MAX_CONCURRENCY=10`. Manual environment deploy
+`dep-d9ts17fqj5pc738c8930` reached `Deploy succeeded | Live` in 1m15s.
+Public `/healthz` returned HTTP 200. Authenticated runtime readiness reports
+`batchWorkers=10`, `batchCallLimit=120`, no structural issues,
+`structureReady=true`, Hunyuan TokenHub ready, and private COS ready. Gemini
+routing is deployed but remains fail-closed because no `GEMINI_API_KEY` is
+configured.
+
+Step 110 pending: the scheduler is structurally ready for ten lanes, but paid
+provider concurrency remains safely clamped to one until the real Tencent
+account is verified for ten simultaneous calls. Production throughput is not
+claimed until a measured provider P95 and a SHA-256-bound real 100-image batch
+under 3600 seconds are recorded. Six paid v12 mixed-rice backgrounds also need
+visual approval before the new scene contract can replace approved v11 assets.
+
 ## Status
 - 2026-08-11 live Render inventory: one free Python Web Service
   `waimai-image-tool-1`, branch `codex/gemini-dual-provider-staging`, commit
@@ -1247,14 +1265,17 @@ deployment and live health/readiness verification are the active next action.
 - Durable acceptance report: `AI-Project/handoffs/2026-07-29/05_TASK1_CODEX_ACCEPTANCE.md`.
 
 ## Next Action
-1. Commit and push the final five-category prompt freeze to
-   `codex/render-image-staging`; confirm the resulting Render deploy is live
-   with only the normal Gunicorn command.
-2. Upload one real Excel menu from `/Users/guiguixiaxia/Documents/menus` and
-   verify taxonomy routing plus retrieval of the correct approved six-slot
-   category manifest.
-3. Verify all six free samples, selected-background identity, every formal dish
-   and combo output, platform export, points debit, and failure compensation.
+1. Verify the Tencent account's real safe concurrency entitlement, then set
+   `TENCENT_TOKENHUB_VERIFIED_CONCURRENCY` only to the measured value.
+2. Run one paid, SHA-256-bound 100-image staging acceptance and record provider
+   P95, peak paid concurrency, total duration, complete output manifest, point
+   debit, retry, and refund evidence. The target is 100 images within 3600
+   seconds; configuration alone cannot satisfy it.
+3. Add `GEMINI_API_KEY` only after the service is purchased, then run a bounded
+   single-image refinement smoke test through the dedicated revision queue.
+4. Generate and visually approve the six v12 `mixed_rice` backgrounds before
+   promoting that category. Keep the existing approved v11 catalog live until
+   all six pass.
 
 ## Latest Verified Checkpoint
 - Render image staging acceptance: commit `37429f9`, real 56-row Excel parsed with zero errors, six pipeline-v4 paid samples passed visual/SHA/background checks, and the formal compositor probe passed one row. Evidence: `AI-Project/handoffs/2026-07-31/RENDER_IMAGE_STAGING_ACCEPTANCE.md`.
