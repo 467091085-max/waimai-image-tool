@@ -69,6 +69,26 @@ def test_v12_builder_refuses_a_multi_category_plan() -> None:
         )
 
 
+def test_v13_builder_plan_covers_the_complete_240_asset_catalog(capsys) -> None:
+    with mock.patch.object(
+        builder,
+        "PROMPT_VERSION",
+        builder.DEFAULT_PROMPT_VERSION,
+    ):
+        assert builder.main(
+            [
+                "--prompt-version",
+                builder.background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+            ]
+        ) == 0
+
+    output = capsys.readouterr().out
+    assert '"promptVersion": "style-background.v13"' in output
+    assert '"categoryCount": 40' in output
+    assert '"styleCount": 6' in output
+    assert '"plannedAssetCount": 240' in output
+
+
 def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:
     target = tmp_path / "light_food" / "style-1.jpg"
 

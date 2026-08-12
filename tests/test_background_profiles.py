@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from background_design_contracts import CATEGORY_BACKGROUND_DIRECTIONS
 import background_profiles
 import prompt_compiler
 from matching_engine import TAXONOMY_RULES
@@ -108,6 +109,44 @@ def test_mixed_rice_v12_pilot_rejects_other_categories() -> None:
             "style-1",
             prompt_version=background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
         )
+
+
+def test_v13_binds_all_40_categories_to_six_distinct_original_directions() -> None:
+    taxonomy_ids = {taxonomy_id for taxonomy_id, _label, _words in TAXONOMY_RULES}
+    prompts = set()
+
+    assert set(CATEGORY_BACKGROUND_DIRECTIONS) == taxonomy_ids
+    for taxonomy_id in sorted(taxonomy_ids):
+        category_prompts = []
+        for style_id in background_profiles.STYLE_IDS:
+            prompt = background_profiles.pure_background_prompt(
+                taxonomy_id,
+                style_id,
+                prompt_version=(
+                    background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION
+                ),
+            )
+            category_prompts.append(prompt)
+            prompts.add(prompt)
+
+            assert "原创高品质外卖菜品商业摄影空背景" in prompt
+            assert "中央72%和四周裁切安全区" in prompt
+            assert "不模仿任何品牌的专有版式" in prompt
+            assert "桌沿、桌面厚度、桌腿、墙桌分界" in prompt
+            assert "悬浮平台、展台、底座、台阶" in prompt
+            assert "不是3D渲染" in prompt
+            assert len(prompt) <= 760
+
+        assert len(category_prompts) == 6
+        assert len(set(category_prompts)) == 6
+
+    assert len(prompts) == 240
+    assert (
+        background_profiles.background_profile_version(
+            background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION
+        )
+        == background_profiles.BENCHMARKED_BACKGROUND_PROFILE_VERSION
+    )
 
 
 def test_unapproved_v11_profiles_forbid_multicolor_table_surfaces() -> None:

@@ -1775,3 +1775,47 @@ visual approval before the new scene contract can replace approved v11 assets.
   demo-library self-check failure already reproduced on untouched `15083e7`.
   Python compilation and `git diff --check` passed. Next action is commit/push to
   the staging branch and one real paid visual canary before a six-sample rerun.
+
+- Step 113 in progress: a source-linked Background Library V2 task has started
+  in `background_research_v2/`. The exact 40-leaf taxonomy was extracted from
+  `matching_engine.py`, and `catalog.csv` now contains 240 pending slots
+  (40 categories x 6 differentiated styles). The new library is isolated from
+  the current hash-locked catalog and will not replace any approved runtime
+  asset without a separate review/import decision.
+- Xiaohongshu references are research evidence only. The deliverables will be
+  newly generated 1200x900 original empty backgrounds with no dish, person,
+  text, logo, watermark, or identifiable brand element. The first review gate
+  is six `topped_rice` backgrounds before the remaining 39 categories proceed.
+- Current blocker: the original saved-project checkout
+  `/Users/guiguixiaxia/Documents/waimai-image-tool` is absent. The latest
+  surviving staging worktree is being used as the read-only taxonomy source and
+  isolated V2 artifact root. The in-app browser must be opened and, if required,
+  the user must complete Xiaohongshu sign-in before source screening.
+
+- Step 114 in progress: the staging service now has
+  `EXACT_BACKGROUND_CHROMA_FAST_PATH=false`, confirmed by the authenticated
+  runtime endpoint. A fresh paid six-sample run of the exact 60-row workbook
+  completed 6/6 through Hunyuan reference conditioning, cloud Mask, and
+  deterministic background composition. Each sample took 54-57 seconds,
+  preserved the selected background identity, and contained no cyan-screen
+  contamination. Functional generation therefore passes, but visual approval
+  still fails because the selected v11 background is a dull brown cyclorama
+  scene; no formal batch was started.
+- The source-linked visual benchmark now covers all 40 taxonomy leaves in
+  `AI-Project/research/category-visual-benchmarks-2026-08-12.yaml`. Brand and
+  Meituan pages are research evidence only; no competitor image is stored or
+  eligible for COS. A specific Meituan-store monthly-sales-above-5000 claim
+  remains `unknown` because no stable primary-source evidence was found.
+- Candidate prompt/profile v13 defines six original directions per category,
+  including two textured seamless color scenes and four edge-to-edge table
+  surfaces. Camera and placement contracts differ for upright drinks,
+  top-down products, and normal plated food. The default runtime remains v11;
+  v13 requires an explicit staging setting and cannot replace an approved
+  manifest without paid six-image visual review and hash-locked approval.
+- Verification: v13 focused regression passed `49 passed`; the full suite with
+  the declared Redis client loaded from `/tmp` passed `1444`, skipped `20`, and
+  retained only the previously reproduced baseline demo-library self-check
+  failure. The v13 catalog dry-run planned exactly 40 categories / 6 styles /
+  240 assets. Next action is staging deploy, six paid `mixed_rice` v13
+  background generations, contact-sheet inspection, and no catalog promotion
+  unless all six pass visual review.

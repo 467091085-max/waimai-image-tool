@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import re
 import unicodedata
 from typing import Any, Literal, Mapping, Sequence
 
+from background_design_contracts import (
+    CATEGORY_BACKGROUND_DIRECTIONS,
+    STYLE_BACKGROUND_DIRECTIONS,
+    TOP_DOWN_PRODUCT_CATEGORIES,
+    UPRIGHT_PRODUCT_CATEGORIES,
+)
 from matching_engine import normalize_dish
 
 
@@ -14,6 +20,7 @@ COMPILER_VERSION = "product-image-compiler.v3"
 SCENE_CONTRACT_VERSION = "background-scene-contract.v2"
 LEGACY_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 CURRENT_BACKGROUND_PROMPT_VERSION = "style-background.v12"
+BENCHMARKED_BACKGROUND_PROMPT_VERSION = "style-background.v13"
 MAX_COMPILED_PROMPT_CHARS = 900
 
 
@@ -250,6 +257,86 @@ _LEGACY_SCENE_TEMPLATES: dict[str, _SceneTemplate] = {
 }
 
 
+def _benchmarked_scene_template(
+    style_id: str,
+    category_id: str,
+) -> _SceneTemplate:
+    try:
+        base = _SCENE_TEMPLATES[style_id]
+        direction = CATEGORY_BACKGROUND_DIRECTIONS[category_id]
+        style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
+            style_id
+        ]
+    except KeyError as exc:
+        raise PromptCompilationError(
+            f"unknown benchmarked background contract: {category_id}/{style_id}"
+        ) from exc
+
+    if category_id in UPRIGHT_PRODUCT_CATEGORIES:
+        pitch = {
+            "style-1": 15,
+            "style-2": 15,
+            "style-3": 18,
+            "style-4": 18,
+            "style-5": 16,
+            "style-6": 14,
+        }[style_id]
+        support = SupportPlaneSpec(
+            0.50, 0.58, 0.20, 0.10, 0.60, 0.80, 0.60, 0.80
+        )
+        placement = PlacementSpec(
+            0.50, 0.58, 0.58, 0.80, 0.008, 0.012, 0.017, 0.15
+        )
+    elif category_id in TOP_DOWN_PRODUCT_CATEGORIES:
+        pitch = {
+            "style-1": 60,
+            "style-2": 58,
+            "style-3": 62,
+            "style-4": 58,
+            "style-5": 60,
+            "style-6": 56,
+        }[style_id]
+        support = SupportPlaneSpec(
+            0.50, 0.53, 0.07, 0.12, 0.86, 0.78, 0.88, 0.78
+        )
+        placement = PlacementSpec(
+            0.50, 0.53, 0.88, 0.78, 0.009, 0.011, 0.017, 0.15
+        )
+    else:
+        pitch = {
+            "style-1": 42,
+            "style-2": 40,
+            "style-3": 46,
+            "style-4": 42,
+            "style-5": 44,
+            "style-6": 38,
+        }[style_id]
+        support = SupportPlaneSpec(
+            0.50, 0.55, 0.08, 0.14, 0.84, 0.76, 0.84, 0.76
+        )
+        placement = PlacementSpec(
+            0.50, 0.55, 0.84, 0.76, 0.010, 0.012, 0.018, 0.16
+        )
+
+    surface = str(getattr(direction, surface_field))
+    return replace(
+        base,
+        style_name=style_name,
+        scene_description=(
+            f"原创{style_name}，{geometry}，中央承托区连续、真实、没有舞台感"
+        ),
+        surface_description=surface,
+        camera=CameraSpec(pitch, base.camera.lens_mm),
+        support=support,
+        lighting=LightingSpec(
+            base.lighting.direction,
+            direction.lighting_mood,
+            base.lighting.color_temperature_k,
+        ),
+        placement=placement,
+    )
+
+
 _CHOICE_COUNT_RE = re.compile(r"(?P<count>[二三四五六七八九十\d]+)选(?:一|1)")
 _CHOICE_SEPARATOR_RE = re.compile(
     r"(?:[/／、,，|丨｜]|或者|或|(?i:(?<![A-Za-z])or(?![A-Za-z])))"
@@ -284,6 +371,13 @@ def scene_contract_for(
         templates = _SCENE_TEMPLATES
     elif resolved_prompt_version == LEGACY_BACKGROUND_PROMPT_VERSION:
         templates = _LEGACY_SCENE_TEMPLATES
+    elif resolved_prompt_version == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
+        templates = {
+            str(style_id).strip(): _benchmarked_scene_template(
+                str(style_id).strip(),
+                str(category_id or "unknown").strip() or "unknown",
+            )
+        }
     else:
         raise PromptCompilationError(
             f"unsupported background prompt version: {prompt_version}"
@@ -695,6 +789,7 @@ def _digest(payload: Any) -> str:
 
 
 __all__ = [
+    "BENCHMARKED_BACKGROUND_PROMPT_VERSION",
     "BackgroundSceneContract",
     "COMPILER_VERSION",
     "CompiledGeneration",

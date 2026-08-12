@@ -4509,7 +4509,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
             "categoryId": category_id,
             "promptVersion": prompt_version,
             "backgroundProfileVersion": (
-                background_profiles.BACKGROUND_PROFILE_VERSION
+                background_profiles.background_profile_version(prompt_version)
             ),
             "promptSha256": prompt_sha256,
         }
@@ -4542,7 +4542,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         "categoryId": category_id,
         "promptVersion": prompt_version,
         "backgroundProfileVersion": (
-            background_profiles.BACKGROUND_PROFILE_VERSION
+            background_profiles.background_profile_version(prompt_version)
         ),
         "promptSha256": prompt_sha256,
     }
@@ -5370,13 +5370,19 @@ def active_category_id() -> str:
 def active_background_prompt_version(category_id: str | None = None) -> str:
     resolved_category_id = str(category_id or active_category_id()).strip()
     legacy = prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
-    if resolved_category_id != "mixed_rice":
+    configured = os.environ.get("BACKGROUND_CATALOG_PROMPT_VERSION", legacy)
+    if resolved_category_id == "mixed_rice":
+        configured = os.environ.get(
+            "MIXED_RICE_BACKGROUND_PROMPT_VERSION",
+            configured,
+        )
+    resolved = normalized_background_prompt_version(configured)
+    if (
+        resolved_category_id != "mixed_rice"
+        and resolved == prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION
+    ):
         return legacy
-    configured = os.environ.get(
-        "MIXED_RICE_BACKGROUND_PROMPT_VERSION",
-        legacy,
-    )
-    return normalized_background_prompt_version(configured)
+    return resolved
 
 
 def category_keywords(category_name: str | None = None) -> tuple[str, ...]:
@@ -8200,6 +8206,10 @@ def normalized_background_prompt_version(value: Any) -> str:
         prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION: (
             prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION
         ),
+        "13": prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+        prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION: (
+            prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION
+        ),
     }
     resolved = aliases.get(
         clean,
@@ -8329,7 +8339,9 @@ def style_background_prompt_metadata(
         "category": str(context.get("category") or "复合餐饮"),
         "categoryId": category_id,
         "backgroundProfileVersion": (
-            background_profiles.BACKGROUND_PROFILE_VERSION
+            background_profiles.background_profile_version(
+                resolved_prompt_version
+            )
         ),
         "promptVersion": resolved_prompt_version,
         "catalogVersion": background_catalog.CATALOG_VERSION,

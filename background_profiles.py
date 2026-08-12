@@ -6,6 +6,10 @@ import unicodedata
 from typing import Any
 
 import background_catalog
+from background_design_contracts import (
+    CATEGORY_BACKGROUND_DIRECTIONS,
+    STYLE_BACKGROUND_DIRECTIONS,
+)
 import prompt_compiler
 from matching_engine import (
     TAXONOMY_COMBO,
@@ -17,8 +21,12 @@ from matching_engine import (
 
 
 BACKGROUND_PROFILE_VERSION = "2026-08-01.v12"
+BENCHMARKED_BACKGROUND_PROFILE_VERSION = "2026-08-12.v13"
 DEFAULT_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 MIXED_RICE_PILOT_PROMPT_VERSION = "style-background.v12"
+BENCHMARKED_BACKGROUND_PROMPT_VERSION = (
+    prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION
+)
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -301,6 +309,60 @@ def mixed_rice_pilot_background_prompt(style_id: str) -> str:
     )
 
 
+def benchmarked_background_prompt(category_id: str, style_id: str) -> str:
+    normalized_category = normalize_category_id(category_id)
+    if normalized_category not in CATEGORY_BACKGROUND_DIRECTIONS:
+        raise ValueError(
+            f"style-background.v13 requires a classified category: {category_id}"
+        )
+    try:
+        style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
+            style_id
+        ]
+    except KeyError as exc:
+        raise ValueError(f"unknown background style slot: {style_id}") from exc
+
+    direction = CATEGORY_BACKGROUND_DIRECTIONS[normalized_category]
+    surface = str(getattr(direction, surface_field))
+    contract = prompt_compiler.scene_contract_for(
+        style_id,
+        normalized_category,
+        prompt_version=BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+    )
+    if style_id in {"style-1", "style-2"}:
+        material_contract = (
+            f"仅以{surface}为唯一色相，使用细腻哑光矿物质感和自然明暗；"
+            "不是平面色卡，不是图形色块，不允许第二种背景色"
+        )
+    else:
+        material_contract = (
+            f"承托面严格使用{surface}；{geometry}，纹理连续穿过中央，"
+            "不得拼色、拼花、镶嵌或混合材质"
+        )
+    return (
+        "原创高品质外卖菜品商业摄影空背景，4:3横图，1024x768。"
+        f"适配{background_catalog.category_label(normalized_category)}品类，但只生成空背景；"
+        "不得生成菜品、饮料、水果、原料、餐盘、碗、杯、餐盒、餐具、人物、"
+        "手、文字、数字、品牌、logo或水印。"
+        f"本槽位为{style_name}：{material_contract}。"
+        f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，约"
+        f"{contract.camera.lens_mm}mm标准镜头，横平竖直，透视真实。"
+        "中央72%和四周裁切安全区必须保持连续、干净、可承托菜品；"
+        "绝不能出现桌沿、桌面厚度、桌腿、墙桌分界、地平线、中央石板、"
+        "悬浮平台、展台、底座、台阶、第二层台面、矩形垫板、洞穴暗角、"
+        "边框、画中画或无来源阴影。"
+        f"光线采用{direction.lighting_mood}，方向为{contract.lighting.direction}，"
+        "有自然层次但不产生不存在物体的投影；真实摄影，不是3D渲染，"
+        "不模仿任何品牌的专有版式。"
+    )
+
+
+def background_profile_version(prompt_version: str | None) -> str:
+    if str(prompt_version or "").strip() == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
+        return BENCHMARKED_BACKGROUND_PROFILE_VERSION
+    return BACKGROUND_PROFILE_VERSION
+
+
 def pure_background_prompt(
     category_id: str,
     style_id: str,
@@ -316,6 +378,8 @@ def pure_background_prompt(
                 "style-background.v12 pilot is restricted to mixed_rice"
             )
         return mixed_rice_pilot_background_prompt(style_id)
+    if resolved_prompt_version == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
+        return benchmarked_background_prompt(normalized_category, style_id)
     if resolved_prompt_version != DEFAULT_BACKGROUND_PROMPT_VERSION:
         raise ValueError(
             f"unsupported background prompt version: {resolved_prompt_version}"

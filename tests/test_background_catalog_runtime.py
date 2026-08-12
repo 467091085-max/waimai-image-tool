@@ -144,6 +144,61 @@ def test_v12_promotion_is_scoped_to_mixed_rice() -> None:
         )
 
 
+def test_v13_global_catalog_version_is_explicit_and_category_wide() -> None:
+    with mock.patch.dict(
+        app_module.os.environ,
+        {"BACKGROUND_CATALOG_PROMPT_VERSION": "style-background.v13"},
+        clear=False,
+    ):
+        assert (
+            app_module.active_background_prompt_version("mixed_rice")
+            == "style-background.v13"
+        )
+        assert (
+            app_module.active_background_prompt_version("light_food")
+            == "style-background.v13"
+        )
+        assert (
+            app_module.normalized_background_prompt_version("13")
+            == "style-background.v13"
+        )
+
+
+def test_v12_global_value_remains_scoped_to_mixed_rice() -> None:
+    with mock.patch.dict(
+        app_module.os.environ,
+        {"BACKGROUND_CATALOG_PROMPT_VERSION": "style-background.v12"},
+        clear=False,
+    ):
+        assert (
+            app_module.active_background_prompt_version("mixed_rice")
+            == "style-background.v12"
+        )
+        assert (
+            app_module.active_background_prompt_version("light_food")
+            == "style-background.v11"
+        )
+
+
+def test_mixed_rice_specific_version_overrides_global_catalog_version() -> None:
+    with mock.patch.dict(
+        app_module.os.environ,
+        {
+            "BACKGROUND_CATALOG_PROMPT_VERSION": "style-background.v13",
+            "MIXED_RICE_BACKGROUND_PROMPT_VERSION": "style-background.v12",
+        },
+        clear=False,
+    ):
+        assert (
+            app_module.active_background_prompt_version("mixed_rice")
+            == "style-background.v12"
+        )
+        assert (
+            app_module.active_background_prompt_version("light_food")
+            == "style-background.v13"
+        )
+
+
 def test_complete_v12_postgres_manifest_uses_v12_prompt_hashes() -> None:
     records = [
         approved_record(

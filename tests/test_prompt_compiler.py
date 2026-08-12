@@ -136,6 +136,33 @@ def test_scene_contract_uses_the_backgrounds_actual_prompt_geometry() -> None:
     )
 
 
+def test_v13_scene_geometry_tracks_product_orientation() -> None:
+    upright = prompt_compiler.scene_contract_for(
+        "style-3",
+        "milk_fruit_tea",
+        prompt_version=prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+    )
+    plate = prompt_compiler.scene_contract_for(
+        "style-3",
+        "mixed_rice",
+        prompt_version=prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+    )
+    top_down = prompt_compiler.scene_contract_for(
+        "style-3",
+        "pizza",
+        prompt_version=prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+    )
+
+    assert upright.camera.pitch_degrees == 18
+    assert plate.camera.pitch_degrees == 46
+    assert top_down.camera.pitch_degrees == 62
+    assert upright.placement.max_subject_width_ratio == 0.58
+    assert plate.placement.max_subject_width_ratio == 0.84
+    assert top_down.placement.max_subject_width_ratio == 0.88
+    assert upright.background_prompt_version == "style-background.v13"
+    assert plate.contract_sha256 != top_down.contract_sha256
+
+
 def test_compiler_never_silently_truncates_mandatory_contract() -> None:
     scene = prompt_compiler.scene_contract_for("style-3", "mixed_rice")
     provider = prompt_compiler.ProviderCapabilities(

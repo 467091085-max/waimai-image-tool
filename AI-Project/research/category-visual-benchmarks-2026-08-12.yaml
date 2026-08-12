@@ -1,0 +1,255 @@
+schema_version: 1
+researched_at: "2026-08-12"
+purpose: "40-category commercial food-background art direction for original generation"
+platform_rules:
+  - url: "https://i.waimai.meituan.com/node/rules/businessrules"
+    use: "4:3, clear, complete, appetizing, category-consistent, no unauthorized watermark or logo"
+  - url: "https://i.waimai.meituan.com/node/gongshanghegui/norm"
+    use: "dish image must match the sold item, keep a clean background, and contain no other-platform image"
+research_boundary:
+  competitor_assets_downloaded: false
+  competitor_assets_allowed_in_catalog: false
+  output_requirement: "Only newly generated original backgrounds without food, people, text, logos, watermarks, or identifiable proprietary brand layouts."
+  monthly_sales_5000_evidence: "unknown"
+  limitation: "No stable public primary-source evidence was found for a specific Meituan store exceeding 5000 monthly orders. Brand scale, store count, and cumulative sales are not treated as monthly-sales proof."
+categories:
+  - id: topped_rice
+    label: "盖饭/盖码饭"
+    reference_brand: "乡村基"
+    source_url: "https://www.csc100.com/index/category/xcjjdcp.html"
+    source_kind: official_product_page
+    visual_takeaway: "Bright natural side light, warm neutral support, full plate visible, strong ingredient color contrast."
+  - id: mixed_rice
+    label: "炒饭/拌饭"
+    reference_brand: "米村拌饭"
+    source_url: "https://www.micun.com/food/"
+    source_kind: official_product_page
+    visual_takeaway: "Warm red or wood accents, compact bowl-centered composition, clear grains and toppings, no stage-like plinth."
+  - id: porridge_soup_rice
+    label: "粥/汤饭"
+    reference_brand: "曼玲粥"
+    source_url: "https://manlzd.com/?product_9%2F97.html="
+    source_kind: official_product_page
+    visual_takeaway: "High-key morning light, cream and oat palette, restrained low-contrast surface, gentle steam-friendly lighting."
+  - id: rice_noodles
+    label: "米粉/米线"
+    reference_brand: "蒙自源"
+    source_url: "https://www.mengziyuan.com/product"
+    source_kind: official_product_page
+    visual_takeaway: "Warm directional light, stone or dark wood support, enough bowl footprint, vivid broth and garnish contrast."
+  - id: wheat_noodles
+    label: "面食"
+    reference_brand: "遇见小面"
+    source_url: "https://www.yujianxiaomian.com/en/products/"
+    source_kind: official_product_page
+    visual_takeaway: "Wheat and chili palette, warm matte table, medium top-down angle, uncluttered bowl silhouette."
+  - id: dumpling_wonton
+    label: "饺子/馄饨"
+    reference_brand: "袁记云饺"
+    source_url: "https://www.yuanjiyunjiao.com.cn/jz/"
+    source_kind: official_product_page
+    visual_takeaway: "Clean ivory and bamboo-gray palette, soft bright light, pale support that preserves wrapper edge detail."
+  - id: buns_dim_sum
+    label: "包子/点心"
+    reference_brand: "曼玲小笼包"
+    source_url: "https://manlzd.com/?product_8%2F109.html="
+    source_kind: official_product_page
+    visual_takeaway: "Light cream support, airy warm light, high detail in white dough, no heavy vignette."
+  - id: chinese_wraps
+    label: "中式卷饼"
+    reference_brand: "煎饼道"
+    source_url: "https://www.zgjbd.cn/product"
+    source_kind: official_product_page
+    visual_takeaway: "Honey wood or clean stone, bright frontal light, horizontal room for elongated wraps, fresh green accent."
+  - id: malatang_maocai
+    label: "麻辣烫/冒菜"
+    reference_brand: "杨国福"
+    source_url: "https://www.ygfglobal.com/"
+    source_kind: official_brand_page
+    visual_takeaway: "Warm cream with restrained red, strong but controlled side light, dark support option for glossy broth."
+  - id: hotpot_skewers
+    label: "火锅/串串"
+    reference_brand: "袁记串串香"
+    source_url: "https://www.yjccx.com/en/yuan/12.html"
+    source_kind: official_brand_page
+    visual_takeaway: "Directional light, charcoal or warm wood support, broad center for pot footprint, no fake stage or table edge."
+  - id: barbecue
+    label: "烧烤"
+    reference_brand: "木屋烧烤"
+    source_url: "https://www.muwubbq.com/"
+    source_kind: official_brand_page
+    visual_takeaway: "Smoked wood and charcoal materials, warm rim light, moderate contrast, enough horizontal room for skewers."
+  - id: fried_chicken
+    label: "炸鸡"
+    reference_brand: "正新鸡排"
+    source_url: "https://zhengxinfood.com/products.html"
+    source_kind: official_product_page
+    visual_takeaway: "Cream, mustard, and restrained tomato accents, high-key warm light that reveals crisp coating."
+  - id: burger_hotdog
+    label: "汉堡/热狗"
+    reference_brand: "麦当劳中国"
+    source_url: "https://www.mcdonalds.com.cn/product/Hamburger/"
+    source_kind: official_product_page
+    visual_takeaway: "Clean graphic color families translated into original matte surfaces, crisp top-front light, no copied campaign layout."
+  - id: pizza
+    label: "披萨"
+    reference_brand: "达美乐中国"
+    source_url: "https://www.dominos.com.cn/menu"
+    source_kind: official_menu_page
+    visual_takeaway: "High top-down camera, cream or terracotta palette, broad edge-to-edge table, even crust-revealing light."
+  - id: sandwich_bagel
+    label: "三明治/贝果"
+    reference_brand: "Tims天好中国"
+    source_url: "https://www.timschina.com/home/warmfood"
+    source_kind: official_product_page
+    visual_takeaway: "Oat white and sage, natural daylight, light wood or stone, modest shadow and generous crop safety."
+  - id: light_food
+    label: "轻食/沙拉"
+    reference_brand: "Wagas"
+    source_url: "https://www.weibo.com/3950845244/PBtVgbQmx"
+    source_kind: official_social_post
+    visual_takeaway: "Clear high-key daylight, sage and neutral stone, top-down-friendly support, no raised presentation slab."
+  - id: pasta_steak
+    label: "意面/牛排"
+    reference_brand: "豪享来"
+    source_url: "https://www.haoxianglai.net/page10"
+    source_kind: official_product_page
+    visual_takeaway: "Walnut or charcoal support, refined warm side light, restrained burgundy accent, realistic restaurant depth."
+  - id: japanese
+    label: "日料"
+    reference_brand: "寿司郎"
+    source_url: "https://www.akindo-sushiro.co.jp/cn/"
+    source_kind: official_brand_page
+    visual_takeaway: "Pale wood, ink gray, low-contrast diffused light, precise clean geometry without decorative imitation."
+  - id: korean
+    label: "韩餐"
+    reference_brand: "米村拌饭"
+    source_url: "https://www.micun.com/food/"
+    source_kind: official_product_page
+    visual_takeaway: "Warm white and restrained red, shallow real-table perspective, clear space for stone bowl or set meal."
+  - id: southeast_asian
+    label: "东南亚菜"
+    reference_brand: "Blue Elephant"
+    source_url: "https://blueelephant.com/menu/"
+    source_kind: official_menu_page
+    visual_takeaway: "Warm white, coral, and low-saturation leaf green, bright daylight, teak or clean mineral support."
+  - id: sichuan_hunan
+    label: "川湘菜"
+    reference_brand: "费大厨"
+    source_url: "https://www.feidachu.com.cn/h-col-114.html"
+    source_kind: official_product_page
+    visual_takeaway: "Warm gray, restrained vermilion, dark wood or stone, appetizing directional light without red color cast."
+  - id: cantonese_roast
+    label: "粤式烧味"
+    reference_brand: "太兴"
+    source_url: "https://www.taihing.com/?id=1&lang=3&location=1&route=brands-detail"
+    source_kind: official_brand_page
+    visual_takeaway: "Honey beige, deep wood, warm side-back light that supports lacquered highlights and full plate readability."
+  - id: jiangzhe
+    label: "江浙菜"
+    reference_brand: "绿茶餐厅"
+    source_url: "https://www.china-greentea.com.cn/brand-positioning"
+    source_kind: official_brand_page
+    visual_takeaway: "Moon white and blue-gray, elegant low-contrast daylight, pale stone or beech support, uncluttered refinement."
+  - id: northeast_chinese
+    label: "东北菜"
+    reference_brand: "米村拌饭"
+    source_url: "https://www.micun.com/food/"
+    source_kind: official_product_page
+    visual_takeaway: "Warm substantial wood or stone, honest bright light, wide plate footprint, robust but not rustic clutter."
+  - id: northwest_xinjiang
+    label: "西北/新疆菜"
+    reference_brand: "耶里夏丽"
+    source_url: "https://www.dianping.com/shop/21173577/photos"
+    source_kind: public_restaurant_photo_index
+    visual_takeaway: "Sand gold, iron red, warm wood and charcoal, medium contrast, broad support for large meat platters."
+  - id: northern_lu
+    label: "北方/鲁菜"
+    reference_brand: "丰泽园"
+    source_url: "https://fzy.quanjude.com.cn/html/characteristics/"
+    source_kind: official_product_page
+    visual_takeaway: "Warm white and jujube red, formal neutral light, deep wood or gray stone, centered complete plate."
+  - id: fujian_taiwan
+    label: "闽台菜"
+    reference_brand: "鼎泰丰"
+    source_url: "https://www.dintaifung.com.tw/food.php?cid=7"
+    source_kind: official_product_page
+    visual_takeaway: "Sea-salt white, bamboo and pale cyan-gray, high-key diffused light, delicate wrapper and soup clarity."
+  - id: home_stir_fry
+    label: "家常小炒"
+    reference_brand: "小菜园"
+    source_url: "https://www.xiaocaiyuan.com/cn/our-flavor/signature-dishes/"
+    source_kind: official_product_page
+    visual_takeaway: "Warm home-window light, real wood or warm stone, natural color, polished but not luxury-staged."
+  - id: fish_seafood
+    label: "鱼/海鲜"
+    reference_brand: "探鱼"
+    source_url: "https://www.tanyuchina.com/food"
+    source_kind: official_product_page
+    visual_takeaway: "Cool white and sea-blue-gray, clean stone, transparent side-back light, wide room for elongated platters."
+  - id: beef_lamb_pot
+    label: "牛羊锅"
+    reference_brand: "小肥羊"
+    source_url: "https://www.littlesheep.com/Menu/GuoDi"
+    source_kind: official_product_page
+    visual_takeaway: "Caramel, dark red and charcoal heat-safe materials, warm directional top-side light, broad pot anchor."
+  - id: braised_cooked_food
+    label: "卤味/熟食/凉菜"
+    reference_brand: "周黑鸭"
+    source_url: "https://www.zhouheiya.cn/qidiaochanpin.html"
+    source_kind: official_product_page
+    visual_takeaway: "Sauce-brown, deep honey wood and charcoal, soft side light that preserves glaze without crushed shadows."
+  - id: soup_stew
+    label: "汤羹/炖品"
+    reference_brand: "老乡鸡"
+    source_url: "https://www.lxjchina.com.cn/product.php?class_id=108"
+    source_kind: official_product_page
+    visual_takeaway: "Cream and apricot, high-key diffused light, low-glare warm stone, clear bowl rim and subtle steam space."
+  - id: steamed_claypot
+    label: "蒸菜/煲仔"
+    reference_brand: "煲仔皇"
+    source_url: "https://www.baozaihuang.com/dishs/"
+    source_kind: official_product_page
+    visual_takeaway: "Top-down-forward camera, terracotta and warm wood, broad soft overhead light, full pot circumference visible."
+  - id: milk_fruit_tea
+    label: "奶茶/果茶"
+    reference_brand: "蜜雪冰城"
+    source_url: "https://www.mxbc.com/"
+    source_kind: official_brand_page
+    visual_takeaway: "Low camera for upright cups, cream and fresh pastel supports, side-back light for transparency, blank label area."
+  - id: coffee_cocoa
+    label: "咖啡/可可"
+    reference_brand: "星巴克中国"
+    source_url: "https://www.starbucks.com.cn/menu/beverages/"
+    source_kind: official_menu_page
+    visual_takeaway: "Low upright-product angle, walnut or graphite support, large controlled side light, restrained reflection."
+  - id: bottled_drinks
+    label: "瓶装/酒水饮料"
+    reference_brand: "可口可乐中国"
+    source_url: "https://www.coca-cola.com/cn/zh/brands"
+    source_kind: official_product_index
+    visual_takeaway: "Low upright-product angle, cool white and graphite, edge-defining back-side light, room for bottle condensation."
+  - id: fresh_drinks
+    label: "鲜榨饮品"
+    reference_brand: "Boost Juice"
+    source_url: "https://www.boostjuice.com.au/drinks/"
+    source_kind: official_product_page
+    visual_takeaway: "Low upright-product angle, white and citrus accents, top and back-side light for pulp translucency."
+  - id: dessert_bakery
+    label: "甜品/烘焙"
+    reference_brand: "Paris Baguette"
+    source_url: "https://www.parisbaguette.com/menu/"
+    source_kind: official_menu_page
+    visual_takeaway: "Cream, berry and pistachio pastels, bright soft light, fine stone or honey wood that preserves pastry texture."
+  - id: fried_snacks
+    label: "炸物小食"
+    reference_brand: "夸父炸串"
+    source_url: "https://www.kuafood.com/product"
+    source_kind: official_product_page
+    visual_takeaway: "Warm cream and chili orange, honey wood or charcoal, directional side light that reveals crisp shell."
+  - id: fruit
+    label: "水果/果切"
+    reference_brand: "百果园"
+    source_url: "https://www.pagoda.com.cn/fruite"
+    source_kind: official_product_page
+    visual_takeaway: "High top-down camera, cool white and fresh blue-green supports, natural side-back light for juice and translucency."

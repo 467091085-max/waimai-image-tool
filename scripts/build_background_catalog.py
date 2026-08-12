@@ -36,6 +36,7 @@ def normalize_prompt_version(value: Any) -> str:
     allowed = {
         DEFAULT_PROMPT_VERSION,
         background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+        background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
     }
     if version not in allowed:
         raise ValueError(f"unsupported background prompt version: {version}")
@@ -676,7 +677,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--prompt-version",
         default=DEFAULT_PROMPT_VERSION,
-        help="Explicit versioned prompt namespace; v12 is mixed_rice-only.",
+        help=(
+            "Explicit versioned prompt namespace; v12 is mixed_rice-only and "
+            "v13 supports the complete 40-category benchmarked catalog."
+        ),
     )
     parser.add_argument(
         "--output",
