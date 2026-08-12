@@ -11,6 +11,7 @@ from unittest import mock
 from PIL import Image, ImageDraw
 
 import app as app_module
+import provider_capacity
 
 
 def save_image(path: Path, color: tuple[int, int, int] = (220, 90, 60)) -> None:
@@ -346,7 +347,7 @@ class AppGenerationTests(unittest.TestCase):
         tokenhub.assert_called_once()
         legacy.assert_not_called()
 
-    def test_tokenhub_generation_is_serialized_within_the_service_process(self) -> None:
+    def test_unverified_tokenhub_capacity_is_serialized_within_the_service_process(self) -> None:
         state_lock = threading.Lock()
         in_flight = 0
         max_in_flight = 0
@@ -396,6 +397,237 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(len(responses), 4)
         self.assertEqual(max_in_flight, 1)
         legacy.assert_not_called()
+
+    def test_verified_tokenhub_capacity_allows_ten_and_never_exceeds_ten(self) -> None:
+        state_lock = threading.Lock()
+        in_flight = 0
+        max_in_flight = 0
+        first_wave_ready = threading.Event()
+        gate = provider_capacity.build_provider_concurrency_gate(
+            provider_capacity.GenerationCapacity.from_env(
+                {
+                    "FINAL_GENERATION_WORKERS": "10",
+                    "TENCENT_TOKENHUB_MAX_CONCURRENCY": "10",
+                    "TENCENT_TOKENHUB_VERIFIED_CONCURRENCY": "10",
+                }
+            ),
+            {},
+        )
+
+        def fake_tokenhub(
+            payload: dict[str, object],
+            timeout: int = 70,
+        ) -> dict[str, object]:
+            del timeout
+            nonlocal in_flight, max_in_flight
+            with state_lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+                if in_flight == 10:
+                    first_wave_ready.set()
+            first_wave_ready.wait(timeout=2)
+            time.sleep(0.01)
+            with state_lock:
+                in_flight -= 1
+            return {
+                "ResultImage": "https://cdn.example.test/tokenhub.jpg",
+                "RequestId": str(payload.get("Prompt") or "job"),
+                "_Endpoint": "tokenhub.tencentmaas.com",
+                "_Action": "TokenHubHyImageV3",
+                "_Model": "hy-image-v3",
+            }
+
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3",
+                    "TENCENT_TOKENHUB_PROTOCOL": "wand-sync-v1",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_TOKENHUB_GENERATION_GATE",
+                gate,
+            ),
+            mock.patch.object(
+                app_module,
+                "tokenhub_image_request",
+                side_effect=fake_tokenhub,
+            ),
+        ):
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                responses = list(
+                    executor.map(
+                        lambda index: app_module.tencent_api_request(
+                            "TextToImageLite",
+                            {"Prompt": f"测试-{index}"},
+                        ),
+                        range(20),
+                    )
+                )
+
+        self.assertEqual(len(responses), 20)
+        self.assertEqual(max_in_flight, 10)
+        self.assertEqual(gate.snapshot()["peak"], 10)
+
+    def test_tokenhub_current_hy_image_v3_uses_official_sync_adapter(self) -> None:
+        response = {
+            "request_id": "wand-request-1",
+            "seed": 73,
+            "data": [{"url": "https://cdn.example.test/hy-image-v3.jpg"}],
+        }
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3",
+                    "TENCENT_TOKENHUB_PROTOCOL": "wand-sync-v1",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                app_module,
+                "tokenhub_http_post",
+                return_value=response,
+            ) as post,
+        ):
+            result = app_module.tokenhub_image_request(
+                {
+                    "Prompt": "招牌牛肉饭外卖主图",
+                    "Resolution": "1024:768",
+                    "Revise": 0,
+                    "Seed": 73,
+                    "Images": ["https://cdn.example.test/background.jpg"],
+                },
+                timeout=55,
+            )
+
+        post.assert_called_once_with(
+            app_module.TENCENT_TOKENHUB_HY_V3_URL,
+            {
+                "model": "hy-image-v3",
+                "prompt": "招牌牛肉饭外卖主图",
+                "size": "1024x768",
+                "seed": 73,
+                "revise": False,
+                "images": ["https://cdn.example.test/background.jpg"],
+            },
+            timeout=app_module.TENCENT_TOKENHUB_POLL_TIMEOUT,
+        )
+        self.assertEqual(result["ResultImage"], response["data"][0]["url"])
+        self.assertEqual(result["RequestId"], "wand-request-1")
+        self.assertEqual(result["_Protocol"], "wand-sync-v1")
+
+    def test_hundred_image_batch_scheduler_runs_ten_rows_concurrently(self) -> None:
+        rows = [
+            menu_row(index, f"菜品{index}", "单品", [])
+            for index in range(1, 101)
+        ]
+        state_lock = threading.Lock()
+        first_wave_ready = threading.Event()
+        active = 0
+        peak = 0
+
+        def fake_materialize(
+            row,
+            selected_style,
+            quality,
+            status,
+            reason,
+            source_candidate,
+            item_result,
+            selected_background=None,
+            execution_guard=None,
+            exact_failure_cache=None,
+        ):
+            del (
+                row,
+                selected_style,
+                quality,
+                status,
+                reason,
+                source_candidate,
+                selected_background,
+                execution_guard,
+                exact_failure_cache,
+            )
+            nonlocal active, peak
+            with state_lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 10:
+                    first_wave_ready.set()
+            first_wave_ready.wait(timeout=2)
+            time.sleep(0.005)
+            with state_lock:
+                active -= 1
+            item = {
+                **item_result,
+                "provider": "tencent-hunyuan",
+                "action": "TextToImageLite",
+                "status": "succeeded",
+                "succeeded": True,
+            }
+            return {
+                "succeeded": 1,
+                "fallback": 0,
+                "localFallback": 0,
+                "actionFallback": 0,
+                "failed": 0,
+                "pending": 0,
+                "errors": [],
+                "actions": {"TextToImageLite": 1},
+                "item": item,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", Path(tmp)),
+                mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 120),
+                mock.patch.object(app_module, "FINAL_GENERATION_WORKERS", 10),
+                mock.patch.object(
+                    app_module,
+                    "tencent_status_payload",
+                    return_value={
+                        "provider": "tencent-hunyuan",
+                        "configured": True,
+                        "capacity": {"providerGate": {"limit": 10}},
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_first_generation_enabled",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_asset_library_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "materialize_final_row",
+                    side_effect=fake_materialize,
+                ),
+            ):
+                generation = app_module.materialize_final_images(
+                    {"results": rows},
+                    "style-1",
+                    "standard",
+                )
+
+        self.assertEqual(peak, 10)
+        self.assertEqual(generation["workers"], 10)
+        self.assertEqual(generation["activeWorkers"], 10)
+        self.assertEqual(generation["attempted"], 100)
+        self.assertEqual(generation["succeeded"], 100)
+        self.assertEqual(generation["limited"], 0)
+        self.assertEqual(len(generation["items"]), 100)
+        self.assertTrue(generation["performance"]["oneHourTargetObserved"])
 
     def test_tokenhub_payload_maps_legacy_text_to_image_fields(self) -> None:
         with mock.patch.dict(

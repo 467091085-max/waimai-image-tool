@@ -242,3 +242,85 @@
 - Permanent provider rejections do not enter the Worker retry loop. Transient
   quota, rate-limit, timeout, and server failures may use the existing bounded
   retry policy.
+
+## Product Image Prompt Compiler
+- Menu rows may not go directly from parsing to provider generation. The
+  required flow is menu semantics, explicit-choice resolution, background
+  scene contract, deterministic Prompt Compiler, Prompt QA, provider request,
+  and visual QA.
+- The Prompt Compiler is a pure deterministic module. It does not read files,
+  environment variables, or network state, and it emits the resolved dish,
+  full prompt, provider payload, seed, placement contract, and audit digests.
+- Every foreground prompt must inherit the selected background camera pitch,
+  lens, support plane, subject anchor, and lighting direction. A foreground
+  generated without that scene contract is not eligible for exact-background
+  composition.
+- Prompt length limits are enforced by complete priority segments. Mandatory
+  constraints may never be silently cut in the middle of a sentence.
+- Formal full-menu generation stays blocked until the six representative
+  samples pass semantic, background, perspective, contact, and aesthetic QA.
+
+## Generation Capacity And Gemini Contracts
+- A 100-image formal store batch has a structural target of ten concurrent
+  provider calls and completion within 3600 seconds. Configuration support is
+  not production proof: provider quota and measured p95 latency must be stored
+  separately before the one-hour target can be marked verified.
+- The 100-image and 3600-second values are immutable product constants. Runtime
+  environment variables may not weaken either acceptance threshold.
+- TokenHub capacity covers the entire paid request until a terminal generation
+  result. Redis-backed deployments request up to ten leased account-level slots
+  shared by every process, but activate only the lesser of requested and
+  verified account concurrency. An unverified account activates one slot;
+  local/staging without Redis uses the same bounded rule process-locally.
+- `TENCENT_HUNYUAN_SYNC_LIMIT` remains as a backward-compatible environment
+  name, but its formal-batch default is 120 rather than the old six-image cap.
+- TokenHub supports two explicit protocols: the existing legacy submit/query
+  path and Tencent's current official synchronous `hy-image-v3` path. Protocol
+  selection is frozen by deployment configuration; a paid POST is never
+  automatically repeated after an ambiguous outcome.
+- Gemini refinement jobs freeze provider, model, official endpoint, prompt
+  version, output format, aspect-ratio policy, and canvas normalization into
+  the idempotency digest before debit. Web and Revision Worker must share the
+  same non-secret configuration, while the API key remains a Render secret.
+- Gemini refinements use a dedicated Redis queue and Revision Worker so a
+  100-image Hunyuan batch cannot head-of-line block single-image adjustments.
+- Production throughput is verified only when all three values are present:
+  real account concurrency of at least ten, provider P95 within the active-wave
+  budget, and one complete 100-image end-to-end batch within 3600 seconds.
+  Partial batches and projections remain diagnostics, never acceptance proof.
+- The provider-slot lease must outlive request timeout plus legacy poll timeout
+  with a 60-second margin. Local Chroma Mask extraction is the normal fast
+  path; serialized cloud Mask extraction is only a validation fallback.
+- Capacity readiness requires a SHA-256-bound real-mode evidence JSON for one
+  complete 100-image batch. Scalar environment timings are diagnostic only.
+  A lost Redis lease heartbeat or failed release retains the ambiguous slot
+  until lease expiry instead of allowing a second paid request into that slot.
+- Cloud Mask fallback is disabled by default. It may be enabled only with a
+  separately verified Mask concurrency value; otherwise Chroma validation
+  failure stops the row instead of serializing the whole store. In staging and
+  production, enabled Mask fallback additionally requires a Redis-distributed
+  account gate shared by Web and Worker processes.
+- Gemini's default HTTP transport never follows redirects. PostgreSQL outbox
+  dispatch and settlement select `product-generate` versus `product-revision`
+  from the frozen job type; Worker heartbeat alone is insufficient queue-flow
+  evidence.
+
+## Background Prompt Version Binding
+- Background Scene Contract v2 includes the background's prompt version. A v11
+  background uses its actual 25-degree camera contract; only v12 assets use the
+  new high-angle style templates. Runtime may not relabel an old asset with a
+  newer scene contract.
+- A new background prompt version is promoted only after all six category
+  assets pass paid generation, integrity, and human visual review. Until then,
+  approved v11 assets remain active and formal generation remains visually
+  blocked where applicable.
+- Runtime v12 activation is scoped to `mixed_rice` through
+  `MIXED_RICE_BACKGROUND_PROMPT_VERSION`; it cannot change another category.
+  The selected background prompt version is duplicated at the frozen snapshot
+  boundary, validated against Scene Contract v2, and restored from that
+  contract by the Worker. Catalog prompt hashes must use the manifest's exact
+  prompt version for both COS and PostgreSQL backends.
+- Exact-background output compatibility is pipeline v6. Tencent output reuse
+  requires the current row-specific compiler digest and scene digest; approved
+  library reuse requires the exact current background scene digest. Future
+  compiler compatibility changes must bump the pipeline version.

@@ -19,6 +19,7 @@ def candidate(**overrides: Any) -> dict[str, Any]:
         "job_id": "job-1",
         "owner_user_id": "user-1",
         "request_sha256": DIGEST,
+        "job_type": "menu_batch_generation",
         "job_status": "running",
         "fence": 3,
         "cancel_requested": False,
@@ -68,8 +69,10 @@ class FakeQueue:
     def __init__(self, tasks: dict[str, dict[str, Any]] | None = None) -> None:
         self.tasks = tasks or {}
         self.heartbeats: list[dict[str, Any]] = []
+        self.get_calls: list[str] = []
 
     def get(self, job_id: str) -> dict[str, Any]:
+        self.get_calls.append(job_id)
         if job_id not in self.tasks:
             raise TaskNotFound(job_id)
         return self.tasks[job_id]
@@ -112,8 +115,11 @@ def test_terminal_redis_task_is_completed_and_settled(
 def test_revision_task_uses_revision_completion_parser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = FakeStore([candidate()])
-    queue = FakeQueue(
+    store = FakeStore(
+        [candidate(job_type="delivery_asset_revision_batch")]
+    )
+    product_queue = FakeQueue()
+    revision_queue = FakeQueue(
         {
             "job-1": {
                 "status": "done",
@@ -142,13 +148,16 @@ def test_revision_task_uses_revision_completion_parser(
 
     report = reconciler.reconcile_once(
         store,
-        queue,
+        product_queue,
+        revision_queue=revision_queue,
         reconciler_id="reconciler-1",
     )
 
     assert report["completed"] == 1
     assert report["failed"] == 0
     assert applied == ["job-1"]
+    assert product_queue.get_calls == []
+    assert revision_queue.get_calls == ["job-1"]
 
 
 def test_active_task_is_left_unchanged(

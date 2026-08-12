@@ -89,6 +89,85 @@ reproducible automatic second paid generation remains. DNS connection binding,
 strict DNS/body wall-clock enforcement, and cross-process result-download
 recovery remain explicit P2 production work.
 
+Step 98 in progress: the generation capacity layer now defaults to ten batch
+workers, requests up to ten TokenHub slots, sets a 120-call formal-batch
+budget, and exposes an explicit 100-images/3600-seconds performance contract.
+Redis deployments share the active slots across Web, Product Worker, and
+Prompt Worker through leased distributed slots; a missing Redis uses only a
+process-local staging gate. Active provider concurrency is the lesser of the
+requested and verified account limits, defaulting to one until a paid quota
+test records the real value.
+Both the working legacy TokenHub submit/query protocol and Tencent's current
+official `hy-image-v3` synchronous protocol are supported without retrying a
+paid POST. Gemini remains disabled without a key, but its official endpoint,
+model, timeout, source-aspect output contract, frozen provider snapshot,
+dedicated revision queue, and ten-consumer Revision Worker are now represented
+in the candidate architecture. The formal API now rejects a batch above the
+configured call limit before point debit. Capacity/Gemini/queue focused
+verification passed `223 passed, 16 subtests passed`; the simulated 100-row
+scheduler reached exactly ten concurrent row workers. Full regression,
+staging deploy, real provider quota measurement, and visual acceptance remain
+pending for this step.
+
+Step 99 complete: background prompt-version binding now survives the complete
+API snapshot, frozen batch contract, object storage, and Worker restore path.
+Runtime v12 promotion is category-scoped to `mixed_rice` through
+`MIXED_RICE_BACKGROUND_PROMPT_VERSION`; every other category remains on the
+approved v11 contract. COS and PostgreSQL catalog validation now recompute
+prompt hashes with the requested manifest version. Focused background,
+contract, capacity, and acceptance verification passed `96 passed`. The
+default remains v11 until six real v12 mixed-rice backgrounds pass paid visual
+review.
+
+Step 100 complete: the post-hardening full regression passed `1431 passed, 20
+skipped` in 25.44 seconds. The skips remain live PostgreSQL/Redis integration
+gates; the only warning is the pre-existing Python 3.9 LibreSSL warning. A
+fresh deterministic run of the exact real menu plus static/security checks is
+the next action before commit and staging deployment.
+
+Step 101 complete: the exact 60-row mixed-rice workbook passed all eight
+deterministic acceptance stages. The menu classified as `mixed_rice` with 96
+confidence; six unique backgrounds, six representative free samples, 60
+formal outputs including 26 combo rows, selected-background identity, point
+arithmetic, 60 downloaded asset hashes, and a 61-entry Meituan ZIP all passed.
+The report is `/tmp/waimai-mixed-rice-e2e-final.json`; it explicitly records
+`deterministic-local`, `realProviderSmokePassed=false`, and no 100-image
+capacity evidence. Generated repository test artifacts were removed.
+
+Step 102 complete: the four capacity re-review findings are corrected. Real
+acceptance now starts ten row workers, while the paid gate still clamps calls
+to verified account concurrency. The 100-image/3600-second target is immutable
+in code; ambiguous Redis release results retain the slot; and cloud Mask uses
+an account-wide Redis gate in staging/production. Focused capacity, acceptance,
+generation, selected-background, and Render checks passed `91 passed` plus
+Python compilation and `git diff --check`.
+
+Step 103 complete: the final post-capacity full regression passed `1435
+passed, 20 skipped` in 24.89 seconds. The same live PostgreSQL/Redis skips and
+pre-existing LibreSSL warning remain. Independent final capacity re-review is
+running before the staging-branch commit.
+
+Step 104 complete: the exact 60-row deterministic acceptance was repeated
+after all capacity fixes and again passed all eight stages. The report remains
+`/tmp/waimai-mixed-rice-e2e-final.json`, explicitly non-production and
+non-paid. Generated repository artifacts were removed again.
+
+Step 105 complete: the final cloud-Mask bypass is closed at the provider-call
+boundary. Every staging/production cloud-Mask invocation, including the legacy
+direct path when Chroma is disabled, now requires verified concurrency and a
+Redis-distributed gate before any provider request. Focused verification
+passed `92 passed`.
+
+Step 106 complete: the final full regression after closing the direct cloud
+Mask path passed `1436 passed, 20 skipped` in 25.53 seconds. Commit/push and
+staging deployment remain pending the last independent review response.
+
+Step 107 complete: independent final capacity review returned PASS for all
+four negative boundaries and found no new P1. Background-version review and
+Gemini/queue review also returned PASS. The candidate is ready for commit and
+push to `codex/gemini-dual-provider-staging`; paid 10-way quota, paid 100-image
+evidence, and v12 visual approval remain external gates, not claimed results.
+
 ## Status
 - 2026-08-11 live Render inventory: one free Python Web Service
   `waimai-image-tool-1`, branch `codex/gemini-dual-provider-staging`, commit
@@ -1522,3 +1601,98 @@ recovery remain explicit P2 production work.
   actually sent through TokenHub v3. Lite and legacy cloud may still report
   their provider-generated output seed, but no longer claim the requested seed
   was applied.
+- Render deploy `dep-d9tq6i8ae00c73bjhnv0` made commit `50a6e1f` live. The
+  exact 60-row workbook again passed upload, `mixed_rice`, six approved
+  background hashes, and six real sample generations in about 313 seconds.
+  Structural verification was 6/6. Visual QA confirmed the explicit-choice
+  row now shows only the fixed egg and the self-select meal has no printed
+  text, but rejected three samples because `烤排` still looked like pink
+  western steak.
+- Root cause of the remaining visual error is positive-prompt contamination:
+  the Chinese prompt repeatedly named the unwanted steak while negating it,
+  and Hunyuan rendered that noun. Prompt contract v4 removes the unwanted noun
+  entirely and describes only the required visual: fully cooked light-brown
+  Chinese black-pepper boneless pork cut into six slices, with fully cooked
+  positive descriptions for chicken and pork cutlets. The version bump
+  prevents reuse of the rejected v3 foregrounds. Formal generation remains
+  blocked until a fresh six-image visual review passes.
+- Step 98 in progress: the current six `mixed_rice` backgrounds were visually
+  rejected 0/6. Their low and inconsistent camera geometry, visible table
+  edges, missing placement anchors, and generic repeated styling make dishes
+  appear upright or pasted even when the provider call succeeds.
+- Added the pure `product-image-compiler.v1` foundation. It resolves menu
+  choices and food semantics, binds them to one of six structured background
+  camera/light/support contracts, writes a complete prompt without arbitrary
+  truncation, performs pre-provider Prompt QA, and derives deterministic
+  prompt/payload/scene digests plus the generation seed. Wiring it into the
+  provider and compositor is the active next step; no paid generation was
+  started in this step.
+- Step 99 in progress: both reference-conditioned and Chroma foreground paths
+  now consume the compiler output. Exact-background pipeline v5 caches are
+  bound to the compiler digest and scene-contract digest, and batch-contract
+  schema v3 freezes the SHA-bound scene contract for the Worker.
+- The compositor now uses the compiled subject anchor and dimensions instead
+  of fixed bottom alignment. It adds a light-direction-aware contact shadow
+  inside the verified modification mask, preserving every selected-background
+  pixel outside the union of dish and shadow.
+- Focused compiler, scene-contract, batch-contract, cache, compositor, and
+  selected-background verification passed `58 passed, 4 subtests passed`.
+  Full regression and the isolated `mixed_rice` v12 catalog path remain next;
+  no paid provider request was made in these steps.
+
+- Step 100 local verification complete: the final focused capacity/Gemini
+  suite passed `225 passed, 16 subtests passed`; the full repository regression
+  passed `1409 passed, 20 skipped, 157 subtests passed`. Python compilation,
+  both JavaScript syntax checks, and `git diff --check` also passed.
+- A deterministic end-to-end run used the real 60-row workbook
+  `运营数据_美滋滋烤肉拌饭（成都店）.xlsx`. It classified the menu as
+  `mixed_rice`, generated and SHA-verified six unique backgrounds, bound one
+  selected background to six free samples and all 60 formal images, and
+  exported all 60 Meituan images plus the manifest. Formal generation took
+  36.251 seconds in this local deterministic boundary.
+- This run made no Hunyuan or Gemini paid request and is not evidence of real
+  image quality, provider quota, or production throughput. The 100-row
+  scheduler test reached exactly ten workers, but the live gate remains one
+  provider slot until account concurrency is verified. Next action is staging
+  branch review/deploy, followed by fail-closed Gemini readiness verification;
+  the one-hour target requires a real 100-image run with verified provider
+  concurrency and measured p95 latency.
+- Step 101 in progress: production throughput readiness now requires three
+  independent facts: ten provider slots verified on the real account, measured
+  provider P95 within the active-wave budget, and one complete 100-image
+  end-to-end batch observed within 3600 seconds. Configuration alone can no
+  longer report the target as verified.
+- The distributed provider lease now has a safety floor of request timeout plus
+  legacy poll timeout plus 60 seconds. This keeps a paid call's slot reserved
+  through the configured worst-case provider window even if Redis heartbeat
+  renewal is interrupted. Focused capacity verification passed `8 passed`.
+- Gemini transport and queue wiring review is complete. The default client now
+  refuses HTTP redirects before the API key can be forwarded and malformed
+  endpoint ports fail readiness cleanly. PostgreSQL revision outbox records are
+  routed only to `product-revision`, and the settlement reconciler reads each
+  job from the queue selected by its frozen database job type.
+- The non-PostgreSQL compatibility path now compensates a fresh paid debit and
+  marks the persisted job failed when Redis reports an idempotency conflict.
+  Focused Gemini, refinement, outbox, settlement, and job-store verification
+  passed `111 passed`. No Gemini request or debit occurred.
+- Background Scene Contract v2 now binds the source background prompt version.
+  Existing v11 assets compile dish geometry at their actual 25-degree camera;
+  only v12 assets compile against the new 52-62 degree camera templates. The
+  runtime still selects approved v11 assets until six real v12 mixed-rice
+  backgrounds pass visual review, so no unreviewed catalog was promoted.
+- Exact-background pipeline v6 invalidates old output/library records. Tencent
+  cache reuse now requires the current row-specific compiler digest and scene
+  digest; approved library reuse requires the exact current background scene
+  digest. The current official `TokenHubHyImageV3` action also records that its
+  deterministic seed was applied. Focused prompt/background/cache verification
+  passed `130 passed, 1 skipped`; the skip requires external infrastructure.
+- Step 101 code verification is complete. With the declared Redis dependency
+  installed only in `/tmp`, the complete repository suite passed
+  `1421 passed, 20 skipped` in 23.92 seconds. Python compilation, both frontend
+  syntax checks, `git diff --check`, and tracked plus untracked Gitleaks scans
+  passed. The skips still require live PostgreSQL/Redis services.
+- A fresh deterministic run of the real 60-row mixed-rice Excel passed all
+  eight stages. Formal generation completed in 38.866 seconds; all 60 outputs
+  retained the selected background SHA and the Meituan ZIP contained 60 images
+  plus its manifest. Report: `/tmp/waimai-mixed-rice-e2e-v6.json`. This remains
+  local deterministic evidence, not paid-provider visual or throughput proof.

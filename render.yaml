@@ -14,10 +14,30 @@ envVarGroups:
         value: generate
       - key: REDIS_PRODUCT_QUEUE
         value: product-generate
+      - key: REDIS_REVISION_QUEUE
+        value: product-revision
       - key: REDIS_TERMINAL_TASK_TTL_SECONDS
         value: "604800"
       - key: REDIS_IDEMPOTENCY_TTL_SECONDS
         value: "604800"
+      - key: FINAL_GENERATION_WORKERS
+        value: "10"
+      - key: TENCENT_TOKENHUB_MAX_CONCURRENCY
+        value: "10"
+      - key: TENCENT_TOKENHUB_VERIFIED_CONCURRENCY
+        value: "0"
+      - key: TENCENT_TOKENHUB_MEASURED_P95_SECONDS
+        value: "0"
+      - key: GENERATION_TARGET_BATCH_OBSERVED_SECONDS
+        value: "0"
+      - key: TENCENT_TOKENHUB_CONCURRENCY_ACQUIRE_TIMEOUT_SECONDS
+        value: "600"
+      - key: TENCENT_TOKENHUB_CONCURRENCY_LEASE_SECONDS
+        value: "300"
+      - key: GENERATION_TARGET_BATCH_IMAGES
+        value: "100"
+      - key: GENERATION_TARGET_SECONDS
+        value: "3600"
 
   - name: waimai-image-tool-product-runtime
     envVars:
@@ -37,6 +57,10 @@ envVarGroups:
         value: waimai
       - key: PRODUCT_WORKER_SERVICE_ID
         value: product-worker
+      - key: REVISION_WORKER_ENABLED
+        value: "true"
+      - key: REVISION_WORKER_SERVICE_ID
+        value: revision-worker
       - key: ENABLE_LOCAL_DEMO_BILLING
         value: "false"
       - key: ENABLE_LOCAL_DEMO_AUTH
@@ -56,9 +80,23 @@ envVarGroups:
       - key: TENCENT_HUNYUAN_MODE
         value: auto
       - key: TENCENT_HUNYUAN_SYNC_LIMIT
-        value: "6"
+        value: "120"
+      - key: EXACT_BACKGROUND_CHROMA_FAST_PATH
+        value: "true"
+      - key: EXACT_BACKGROUND_CLOUD_MASK_FALLBACK
+        value: "false"
+      - key: TENCENT_MASK_VERIFIED_CONCURRENCY
+        value: "0"
+      - key: TENCENT_MASK_CONCURRENCY_ACQUIRE_TIMEOUT_SECONDS
+        value: "600"
+      - key: TENCENT_MASK_CONCURRENCY_LEASE_SECONDS
+        value: "300"
+      - key: MIXED_RICE_BACKGROUND_PROMPT_VERSION
+        value: style-background.v11
       - key: TENCENT_TOKENHUB_IMAGE_MODEL
-        value: hy-image-v3.0
+        value: hy-image-v3
+      - key: TENCENT_TOKENHUB_PROTOCOL
+        value: wand-sync-v1
       - key: TENCENT_TOKENHUB_POLL_TIMEOUT
         value: "120"
       - key: TENCENTCLOUD_REGION
@@ -71,6 +109,12 @@ envVarGroups:
         value: ai-assets
       - key: AI_ASSET_UPLOAD_TO_COS
         value: "true"
+      - key: GEMINI_IMAGE_EDIT_MODEL
+        value: gemini-3.1-flash-image
+      - key: GEMINI_INTERACTIONS_URL
+        value: https://generativelanguage.googleapis.com/v1beta/interactions
+      - key: GEMINI_IMAGE_EDIT_TIMEOUT_SECONDS
+        value: "180"
 
 services:
   # Preserve the existing public customer website and its current service name.
@@ -192,7 +236,9 @@ services:
       - key: TENCENT_TOKENHUB_ENABLED
         value: "true"
       - key: TENCENT_TOKENHUB_IMAGE_MODEL
-        value: hy-image-v3.0
+        value: hy-image-v3
+      - key: TENCENT_TOKENHUB_PROTOCOL
+        value: wand-sync-v1
       - key: TENCENT_REQUEST_TIMEOUT
         value: "55"
       - key: TENCENT_TOKENHUB_POLL_TIMEOUT
@@ -212,6 +258,8 @@ services:
         value: "180"
       - key: WORKER_SERVICE_HEARTBEAT_TTL_SECONDS
         value: "30"
+      - key: WORKER_CONCURRENCY
+        value: "10"
       - key: PROMPT_WORKER_SERVICE_ID
         value: prompt-worker
 
@@ -334,6 +382,62 @@ services:
         value: "30"
       - key: GROWTH_WORKER_HEARTBEAT_TTL_SECONDS
         value: "30"
+
+  - type: worker
+    name: waimai-image-tool-revision-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m worker.worker
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - fromGroup: waimai-image-tool-core
+      - fromGroup: waimai-image-tool-product-runtime
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: waimai-image-tool-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: waimai-image-tool-postgres
+          property: connectionString
+      - key: WORKER_TASK_MODE
+        value: revision
+      - key: WORKER_CONCURRENCY
+        value: "10"
+      - key: WORKER_PRODUCT_BATCH_TIMEOUT
+        value: "600"
+      - key: WORKER_SERVICE_HEARTBEAT_TTL_SECONDS
+        value: "30"
+      - key: REVISION_WORKER_SERVICE_ID
+        value: revision-worker
+      - key: OBJECT_STORAGE_BUCKET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: OBJECT_STORAGE_BUCKET
+      - key: TENCENT_COS_BUCKET
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENT_COS_BUCKET
+      - key: TENCENTCLOUD_SECRET_ID
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENTCLOUD_SECRET_ID
+      - key: TENCENTCLOUD_SECRET_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: TENCENTCLOUD_SECRET_KEY
+      - key: GEMINI_API_KEY
+        fromService:
+          type: web
+          name: waimai-image-tool
+          envVarKey: GEMINI_API_KEY
 
   - type: worker
     name: waimai-image-tool-settlement-reconciler

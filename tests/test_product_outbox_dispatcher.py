@@ -351,6 +351,28 @@ def test_dispatches_supported_contract_without_mutating_digest(
     assert store.claim_calls[0]["claim_token"]
 
 
+def test_revision_outbox_is_published_only_to_dedicated_revision_queue() -> None:
+    store = FakeStore([outbox_claim("delivery_asset_revision_batch")])
+    product_queue = FakeQueue()
+    revision_queue = FakeQueue()
+    revision_queue.config = RedisQueueConfig(queue_name="product-revision")
+
+    report = dispatch_once(
+        store,
+        product_queue,
+        revision_queue=revision_queue,
+        dispatcher_id="dispatcher-1",
+    )
+
+    assert report["published"] == 1
+    assert product_queue.enqueue_calls == []
+    assert len(revision_queue.enqueue_calls) == 1
+    assert (
+        revision_queue.enqueue_calls[0]["payload"]["taskType"]
+        == "product_revision"
+    )
+
+
 def test_unknown_job_type_fails_closed_without_enqueue_or_publish() -> None:
     store = FakeStore([outbox_claim("unknown_batch")])
     queue = FakeQueue()

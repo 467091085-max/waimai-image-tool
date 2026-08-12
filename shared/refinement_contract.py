@@ -3,19 +3,33 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from shared.batch_contract import BatchContractError, canonical_json
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 JOB_TYPE = "delivery_asset_revision_batch"
 PRICING_VERSION = "revision-v1"
 REWORK_POINTS = {"standard": 10, "premium": 20}
 REFINE_POINTS = 10
 MAX_DISH_NAME_LENGTH = 160
 MAX_REFINE_PROMPT_LENGTH = 500
+DEFAULT_PROVIDER_SNAPSHOT = {
+    "provider": "google-gemini",
+    "model": "gemini-3.1-flash-image",
+    "apiSurface": "interactions-v1beta",
+    "endpoint": "https://generativelanguage.googleapis.com/v1beta/interactions",
+    "promptVersion": "food-refinement.v1",
+    "output": {
+        "mimeType": "image/jpeg",
+        "imageSize": "1K",
+        "aspectRatio": "source-nearest-supported",
+        "canvasNormalization": "same-as-source.v1",
+    },
+}
 
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 OBJECT_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,511}")
@@ -37,6 +51,7 @@ def freeze_revision_batch_contract(
     mode: str,
     refine_prompt: str | None,
     idempotency_key: str,
+    provider_snapshot: Mapping[str, Any] | None = None,
     free_rework_quota_verified: bool = False,
     debit_order_id: str | None = None,
     refund_order_id: str | None = None,
@@ -51,6 +66,11 @@ def freeze_revision_batch_contract(
     clean_quality = _quality(quality)
     clean_mode = _mode(mode)
     clean_prompt = _refine_prompt(refine_prompt, clean_mode)
+    clean_provider_snapshot = _provider_snapshot(
+        DEFAULT_PROVIDER_SNAPSHOT
+        if provider_snapshot is None
+        else provider_snapshot
+    )
     clean_free_rework = _bool(
         free_rework_quota_verified,
         "billing.freeReworkQuotaVerified",
@@ -97,6 +117,7 @@ def freeze_revision_batch_contract(
         },
         "mode": clean_mode,
         "refinePrompt": clean_prompt,
+        "providerSnapshot": clean_provider_snapshot,
         "billing": {
             "snapshotVersion": 1,
             "pricingVersion": clean_pricing_version,
@@ -128,6 +149,7 @@ def revision_request_sha256(contract: Mapping[str, Any]) -> str:
         "quality": contract.get("quality"),
         "mode": contract.get("mode"),
         "refinePrompt": contract.get("refinePrompt"),
+        "providerSnapshot": contract.get("providerSnapshot"),
         "billing": _billing_request_basis(contract.get("billing")),
     }
     return hashlib.sha256(canonical_json(basis).encode("utf-8")).hexdigest()
@@ -140,6 +162,14 @@ def public_revision_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
     quality = _mapping(source.get("quality"), "quality")
     billing = _mapping(source.get("billing"), "billing")
     idempotency = _mapping(source.get("idempotency"), "idempotency")
+    provider_snapshot = _mapping(
+        source.get("providerSnapshot"),
+        "providerSnapshot",
+    )
+    provider_output = _mapping(
+        provider_snapshot.get("output"),
+        "providerSnapshot.output",
+    )
     return {
         "schemaVersion": source.get("schemaVersion"),
         "jobType": source.get("jobType"),
@@ -161,6 +191,13 @@ def public_revision_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
         },
         "mode": source.get("mode"),
         "refinePrompt": source.get("refinePrompt"),
+        "providerSnapshot": {
+            "provider": provider_snapshot.get("provider"),
+            "model": provider_snapshot.get("model"),
+            "apiSurface": provider_snapshot.get("apiSurface"),
+            "promptVersion": provider_snapshot.get("promptVersion"),
+            "output": dict(provider_output),
+        },
         "billing": {
             key: billing.get(key)
             for key in (
@@ -213,6 +250,91 @@ def _background_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "sha256": _sha256(source.get("sha256"), "selectedBackground.sha256"),
     }
+
+
+def _provider_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    source = _mapping(value, "providerSnapshot")
+    output = _mapping(source.get("output"), "providerSnapshot.output")
+    endpoint = _text(
+        source.get("endpoint"),
+        "providerSnapshot.endpoint",
+        max_length=300,
+    )
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+    except ValueError as exc:
+        raise RefinementContractError(
+            "invalid_provider_endpoint",
+            "providerSnapshot.endpoint is invalid",
+            field="providerSnapshot.endpoint",
+        ) from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "generativelanguage.googleapis.com"
+        or parsed.port not in {None, 443}
+        or parsed.path.rstrip("/") != "/v1beta/interactions"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RefinementContractError(
+            "invalid_provider_endpoint",
+            "providerSnapshot.endpoint is invalid",
+            field="providerSnapshot.endpoint",
+        )
+    clean_output = {
+        "mimeType": _text(
+            output.get("mimeType"),
+            "providerSnapshot.output.mimeType",
+            max_length=40,
+        ),
+        "imageSize": _clean_id(
+            output.get("imageSize"),
+            "providerSnapshot.output.imageSize",
+        ),
+        "aspectRatio": _clean_id(
+            output.get("aspectRatio"),
+            "providerSnapshot.output.aspectRatio",
+        ),
+        "canvasNormalization": _clean_id(
+            output.get("canvasNormalization"),
+            "providerSnapshot.output.canvasNormalization",
+        ),
+    }
+    if clean_output != DEFAULT_PROVIDER_SNAPSHOT["output"]:
+        raise RefinementContractError(
+            "invalid_provider_output_contract",
+            "providerSnapshot.output is unsupported",
+            field="providerSnapshot.output",
+        )
+    clean = {
+        "provider": _clean_id(
+            source.get("provider"),
+            "providerSnapshot.provider",
+        ),
+        "model": _clean_id(
+            source.get("model"),
+            "providerSnapshot.model",
+        ),
+        "apiSurface": _clean_id(
+            source.get("apiSurface"),
+            "providerSnapshot.apiSurface",
+        ),
+        "endpoint": endpoint,
+        "promptVersion": _clean_id(
+            source.get("promptVersion"),
+            "providerSnapshot.promptVersion",
+        ),
+        "output": clean_output,
+    }
+    if clean["provider"] != "google-gemini":
+        raise RefinementContractError(
+            "invalid_provider",
+            "providerSnapshot.provider is unsupported",
+            field="providerSnapshot.provider",
+        )
+    return clean
 
 
 def _billing_request_basis(value: Any) -> dict[str, Any]:

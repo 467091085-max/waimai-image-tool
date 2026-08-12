@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 import background_profiles
+import prompt_compiler
 from matching_engine import TAXONOMY_RULES
 
 
@@ -73,6 +76,38 @@ def test_two_slots_are_seamless_and_four_slots_are_edge_to_edge_tables() -> None
     assert "一张普通浅色石材餐桌的连续桌面" in prompt
     assert "从左右与下边缘铺满" in prompt
     assert "桌面前沿和厚度位于画幅下方不可见" in prompt
+
+
+def test_mixed_rice_v12_pilot_binds_all_six_scene_contracts() -> None:
+    prompts = []
+    for style_id in background_profiles.STYLE_IDS:
+        contract = prompt_compiler.scene_contract_for(style_id, "mixed_rice")
+        prompt = background_profiles.pure_background_prompt(
+            "mixed_rice",
+            style_id,
+            prompt_version=background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+        )
+        prompts.append(prompt)
+
+        assert f"上方{contract.camera.pitch_degrees}度俯拍" in prompt
+        assert f"约{contract.camera.lens_mm}mm标准镜头" in prompt
+        assert contract.surface_description in prompt
+        assert "整张画面必须是一个可承托餐盘的连续平面" in prompt
+        assert "绝不能看见桌沿、桌面厚度、桌腿" in prompt
+        assert "中央约70%区域保持完整、干净、连续" in prompt
+        assert "真实摄影，不是3D渲染" in prompt
+
+    assert len(prompts) == 6
+    assert len(set(prompts)) == 6
+
+
+def test_mixed_rice_v12_pilot_rejects_other_categories() -> None:
+    with pytest.raises(ValueError, match="restricted to mixed_rice"):
+        background_profiles.pure_background_prompt(
+            "light_food",
+            "style-1",
+            prompt_version=background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+        )
 
 
 def test_unapproved_v11_profiles_forbid_multicolor_table_surfaces() -> None:

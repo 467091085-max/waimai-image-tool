@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+from prompt_compiler import PlacementSpec
 
 
 DEFAULT_MIN_MASK_RATIO = 0.01
@@ -45,6 +47,7 @@ def compose_selected_background(
     bottom_margin_ratio: float = 0.06,
     min_mask_ratio: float = DEFAULT_MIN_MASK_RATIO,
     max_mask_ratio: float = DEFAULT_MAX_MASK_RATIO,
+    placement: PlacementSpec | None = None,
 ) -> CompositionResult:
     if mask is None:
         raise CompositionError("foreground_mask_required", "a foreground mask is required")
@@ -74,8 +77,18 @@ def compose_selected_background(
     normalized_background = normalize_background(background, canvas_size)
     canvas_width, canvas_height = normalized_background.size
 
-    max_width = max(1, round(canvas_width * float(max_subject_width_ratio)))
-    max_height = max(1, round(canvas_height * float(max_subject_height_ratio)))
+    resolved_width_ratio = (
+        placement.max_subject_width_ratio
+        if placement is not None
+        else float(max_subject_width_ratio)
+    )
+    resolved_height_ratio = (
+        placement.max_subject_height_ratio
+        if placement is not None
+        else float(max_subject_height_ratio)
+    )
+    max_width = max(1, round(canvas_width * resolved_width_ratio))
+    max_height = max(1, round(canvas_height * resolved_height_ratio))
     scale = min(max_width / crop_foreground.width, max_height / crop_foreground.height)
     subject_size = (
         max(1, round(crop_foreground.width * scale)),
@@ -84,22 +97,62 @@ def compose_selected_background(
     resized_foreground = crop_foreground.resize(subject_size, Image.Resampling.LANCZOS)
     resized_mask = crop_mask.resize(subject_size, Image.Resampling.LANCZOS)
 
-    x = (canvas_width - subject_size[0]) // 2
-    bottom_margin = round(canvas_height * float(bottom_margin_ratio))
-    y = max(0, canvas_height - bottom_margin - subject_size[1])
+    if placement is None:
+        x = (canvas_width - subject_size[0]) // 2
+        bottom_margin = round(canvas_height * float(bottom_margin_ratio))
+        y = max(0, canvas_height - bottom_margin - subject_size[1])
+    else:
+        x = round((canvas_width * placement.center_x) - (subject_size[0] / 2))
+        y = round((canvas_height * placement.center_y) - (subject_size[1] / 2))
+        x = min(max(0, x), max(0, canvas_width - subject_size[0]))
+        y = min(max(0, y), max(0, canvas_height - subject_size[1]))
     foreground_canvas = Image.new("RGBA", normalized_background.size, (0, 0, 0, 0))
     mask_canvas = Image.new("L", normalized_background.size, 0)
-    foreground_canvas.alpha_composite(resized_foreground, (x, y))
     mask_canvas.paste(resized_mask, (x, y))
+    masked_foreground = resized_foreground.copy()
+    masked_foreground.putalpha(resized_mask)
+    foreground_canvas.alpha_composite(masked_foreground, (x, y))
 
-    output = Image.composite(foreground_canvas, normalized_background, mask_canvas)
-    outside_preserved = outside_mask_pixels_equal(normalized_background, output, mask_canvas)
+    modification_mask = mask_canvas
+    shadow_metadata: dict[str, Any] = {"enabled": False}
+    output = normalized_background.copy().convert("RGBA")
+    if placement is not None and placement.shadow_opacity > 0:
+        blur_radius = max(
+            1,
+            round(min(canvas_width, canvas_height) * placement.shadow_blur_ratio),
+        )
+        offset_x = round(canvas_width * placement.shadow_offset_x_ratio)
+        offset_y = round(canvas_height * placement.shadow_offset_y_ratio)
+        blurred = mask_canvas.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        shifted = Image.new("L", normalized_background.size, 0)
+        shifted.paste(blurred, (offset_x, offset_y))
+        shadow_alpha = shifted.point(
+            lambda value: round(value * min(1.0, max(0.0, placement.shadow_opacity)))
+        )
+        shadow_layer = Image.new("RGBA", normalized_background.size, (0, 0, 0, 0))
+        shadow_layer.putalpha(shadow_alpha)
+        output.alpha_composite(shadow_layer)
+        modification_mask = ImageChops.lighter(mask_canvas, shadow_alpha)
+        shadow_metadata = {
+            "enabled": True,
+            "offsetX": offset_x,
+            "offsetY": offset_y,
+            "blurRadius": blur_radius,
+            "opacity": placement.shadow_opacity,
+        }
+    output.alpha_composite(foreground_canvas)
+
+    outside_preserved = outside_mask_pixels_equal(
+        normalized_background,
+        output,
+        modification_mask,
+    )
     if not outside_preserved:
         raise CompositionError("background_identity_mismatch", "pixels outside the foreground mask changed")
 
     return CompositionResult(
         image=output,
-        foreground_mask=mask_canvas,
+        foreground_mask=modification_mask,
         normalized_background=normalized_background,
         metadata={
             "backgroundIdentityVerified": True,
@@ -111,6 +164,12 @@ def compose_selected_background(
                 "width": subject_size[0],
                 "height": subject_size[1],
             },
+            "subjectCenter": {
+                "x": round((x + (subject_size[0] / 2)) / canvas_width, 6),
+                "y": round((y + (subject_size[1] / 2)) / canvas_height, 6),
+            },
+            "placementContract": placement.payload() if placement is not None else None,
+            "contactShadow": shadow_metadata,
             "canvas": {"width": canvas_width, "height": canvas_height},
         },
     )

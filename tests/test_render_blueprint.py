@@ -13,8 +13,10 @@ BLUEPRINT = yaml.safe_load(BLUEPRINT_SOURCE)
 
 CUSTOMER_WEB = "waimai-image-tool"
 API_SERVER = "waimai-image-tool-api"
+PROMPT_WORKER = "waimai-image-tool-prompt-worker"
 OUTBOX_DISPATCHER = "waimai-image-tool-outbox-dispatcher"
 PRODUCT_WORKER = "waimai-image-tool-product-worker"
+REVISION_WORKER = "waimai-image-tool-revision-worker"
 GROWTH_EVENT_WORKER = "waimai-image-tool-growth-event-worker"
 SETTLEMENT_RECONCILER = "waimai-image-tool-settlement-reconciler"
 REDIS_SERVICE = "waimai-image-tool-redis"
@@ -66,7 +68,9 @@ def test_api_and_workers_use_real_independent_entrypoints() -> None:
     services = _services()
     api = services[API_SERVER]
     outbox = services[OUTBOX_DISPATCHER]
+    prompt_worker = services[PROMPT_WORKER]
     worker = services[PRODUCT_WORKER]
+    revision_worker = services[REVISION_WORKER]
     growth_worker = services[GROWTH_EVENT_WORKER]
     reconciler = services[SETTLEMENT_RECONCILER]
 
@@ -84,6 +88,14 @@ def test_api_and_workers_use_real_independent_entrypoints() -> None:
     assert worker["startCommand"] == "python -m worker.worker"
     assert worker["plan"] != "free"
     assert _env_entries(worker)["WORKER_TASK_MODE"]["value"] == "product"
+    assert prompt_worker["type"] == "worker"
+    assert prompt_worker["startCommand"] == "python -m worker.prompt_worker"
+    assert prompt_worker["plan"] != "free"
+    assert revision_worker["type"] == "worker"
+    assert revision_worker["startCommand"] == "python -m worker.worker"
+    assert revision_worker["plan"] != "free"
+    assert _env_entries(revision_worker)["WORKER_TASK_MODE"]["value"] == "revision"
+    assert _env_entries(revision_worker)["WORKER_CONCURRENCY"]["value"] == "10"
     assert growth_worker["type"] == "worker"
     assert growth_worker["startCommand"] == "python -m worker.growth_worker"
     assert growth_worker["plan"] != "free"
@@ -96,6 +108,7 @@ def test_api_and_workers_use_real_independent_entrypoints() -> None:
     for relative_path in (
         "api-server/app.py",
         "worker/outbox_dispatcher.py",
+        "worker/prompt_worker.py",
         "worker/worker.py",
         "worker/growth_worker.py",
         "worker/product_settlement_reconciler.py",
@@ -111,8 +124,10 @@ def test_all_active_compute_services_share_explicit_redis_contract() -> None:
     for service_name in (
         CUSTOMER_WEB,
         API_SERVER,
+        PROMPT_WORKER,
         OUTBOX_DISPATCHER,
         PRODUCT_WORKER,
+        REVISION_WORKER,
         GROWTH_EVENT_WORKER,
         SETTLEMENT_RECONCILER,
     ):
@@ -128,6 +143,7 @@ def test_all_active_compute_services_share_explicit_redis_contract() -> None:
         CUSTOMER_WEB,
         OUTBOX_DISPATCHER,
         PRODUCT_WORKER,
+        REVISION_WORKER,
         GROWTH_EVENT_WORKER,
         SETTLEMENT_RECONCILER,
     ):
@@ -139,6 +155,47 @@ def test_all_active_compute_services_share_explicit_redis_contract() -> None:
         }
 
     assert "DATABASE_URL" not in _env_entries(services[API_SERVER])
+    assert "DATABASE_URL" not in _env_entries(services[PROMPT_WORKER])
+
+
+def test_generation_capacity_and_dual_provider_contracts_are_explicit() -> None:
+    groups = {
+        str(group["name"]): group
+        for group in BLUEPRINT["envVarGroups"]
+    }
+    core = _env_entries(groups["waimai-image-tool-core"])
+    product = _env_entries(groups["waimai-image-tool-product-runtime"])
+    services = _services()
+    prompt = _env_entries(services[PROMPT_WORKER])
+    revision = _env_entries(services[REVISION_WORKER])
+
+    assert core["FINAL_GENERATION_WORKERS"]["value"] == "10"
+    assert core["TENCENT_TOKENHUB_MAX_CONCURRENCY"]["value"] == "10"
+    assert core["GENERATION_TARGET_BATCH_IMAGES"]["value"] == "100"
+    assert core["GENERATION_TARGET_SECONDS"]["value"] == "3600"
+    assert core["REDIS_REVISION_QUEUE"]["value"] == "product-revision"
+    assert core["TENCENT_TOKENHUB_VERIFIED_CONCURRENCY"]["value"] == "0"
+    assert core["TENCENT_TOKENHUB_MEASURED_P95_SECONDS"]["value"] == "0"
+    assert core["GENERATION_TARGET_BATCH_OBSERVED_SECONDS"]["value"] == "0"
+
+    assert product["TENCENT_HUNYUAN_SYNC_LIMIT"]["value"] == "120"
+    assert product["EXACT_BACKGROUND_CHROMA_FAST_PATH"]["value"] == "true"
+    assert product["EXACT_BACKGROUND_CLOUD_MASK_FALLBACK"]["value"] == "false"
+    assert product["TENCENT_MASK_VERIFIED_CONCURRENCY"]["value"] == "0"
+    assert product["TENCENT_TOKENHUB_IMAGE_MODEL"]["value"] == "hy-image-v3"
+    assert product["TENCENT_TOKENHUB_PROTOCOL"]["value"] == "wand-sync-v1"
+    assert product["REVISION_WORKER_ENABLED"]["value"] == "true"
+    assert product["REVISION_WORKER_SERVICE_ID"]["value"] == "revision-worker"
+    assert product["GEMINI_IMAGE_EDIT_MODEL"]["value"] == "gemini-3.1-flash-image"
+    assert product["GEMINI_INTERACTIONS_URL"]["value"] == (
+        "https://generativelanguage.googleapis.com/v1beta/interactions"
+    )
+
+    assert prompt["TENCENT_TOKENHUB_IMAGE_MODEL"]["value"] == "hy-image-v3"
+    assert prompt["TENCENT_TOKENHUB_PROTOCOL"]["value"] == "wand-sync-v1"
+    assert prompt["WORKER_CONCURRENCY"]["value"] == "10"
+    assert revision["WORKER_CONCURRENCY"]["value"] == "10"
+    assert revision["GEMINI_API_KEY"]["fromService"]["name"] == CUSTOMER_WEB
 
 
 def test_growth_event_worker_uses_durable_runtime_and_real_ttl_heartbeat() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -484,6 +485,46 @@ def test_worker_run_loop_publishes_service_liveness(monkeypatch) -> None:
     assert live is not None
     assert live["instanceId"] == worker.worker_id
     assert live["ttlSeconds"] == 9
+
+
+def test_worker_run_loop_can_start_ten_independent_queue_consumers(monkeypatch) -> None:
+    queue = RedisTaskQueue(
+        RedisTestDouble(),
+        RedisQueueConfig(namespace="test", queue_name="product-revision"),
+    )
+    worker = GenerationWorker(queue, service_id="revision-worker")
+    state_lock = threading.Lock()
+    first_wave_ready = threading.Event()
+    active = 0
+    peak = 0
+    interrupt_sent = False
+
+    def observe_consumers(*, timeout_seconds: int) -> bool:
+        del timeout_seconds
+        nonlocal active, peak, interrupt_sent
+        with state_lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 10:
+                first_wave_ready.set()
+        first_wave_ready.wait(timeout=2)
+        time.sleep(0.005)
+        should_interrupt = False
+        with state_lock:
+            active -= 1
+            if not interrupt_sent:
+                interrupt_sent = True
+                should_interrupt = True
+        if should_interrupt:
+            raise KeyboardInterrupt
+        return False
+
+    monkeypatch.setattr(worker, "process_one", observe_consumers)
+
+    with pytest.raises(KeyboardInterrupt):
+        worker.run_forever(timeout_seconds=0, concurrency=10)
+
+    assert peak == 10
 
 
 def _load_api_server_module():

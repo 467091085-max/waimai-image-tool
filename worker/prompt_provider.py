@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
+import provider_capacity
 from shared.json_limits import (
     InvalidJsonValue,
     JsonSizeLimitExceeded,
@@ -25,6 +26,9 @@ from shared.prompt_limits import (
 TOKENHUB_IMAGE_LITE_URL = "https://tokenhub.tencentmaas.com/v1/api/image/lite"
 TOKENHUB_IMAGE_SUBMIT_URL = "https://tokenhub.tencentmaas.com/v1/api/image/submit"
 TOKENHUB_IMAGE_QUERY_URL = "https://tokenhub.tencentmaas.com/v1/api/image/query"
+TOKENHUB_HY_V3_URL = (
+    "https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v3-generation"
+)
 MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_PROMPT_CHARS = DEFAULT_MAX_PROMPT_CHARS
 MAX_PROMPT_BYTES = DEFAULT_MAX_PROMPT_BYTES
@@ -33,7 +37,10 @@ MAX_PROVIDER_REQUEST_BYTES = 64 * 1024
 _SUPPORTED_PROVIDERS = frozenset(
     {"tencent-hunyuan", "tencent-tokenhub", "tokenhub"}
 )
-_SUPPORTED_MODELS = frozenset({"hy-image-v3.0", "hy-image-lite"})
+_SUPPORTED_MODELS = frozenset({"hy-image-v3", "hy-image-v3.0", "hy-image-lite"})
+_SUPPORTED_PROTOCOLS = frozenset(
+    {"auto", "legacy-submit-query-v1", "wand-sync-v1"}
+)
 _SUCCESS_STATUSES = frozenset(
     {"completed", "finish", "finished", "succeeded", "success"}
 )
@@ -45,7 +52,9 @@ HttpPost = Callable[[str, Mapping[str, Any], float], Mapping[str, Any]]
 
 
 class PromptProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class PromptProviderConfigurationError(PromptProviderError):
@@ -59,6 +68,7 @@ class TokenHubPromptConfig:
     request_timeout_seconds: float = 55
     poll_timeout_seconds: float = 120
     poll_interval_seconds: float = 3
+    protocol: str = "auto"
 
     @classmethod
     def from_env(
@@ -94,6 +104,17 @@ class TokenHubPromptConfig:
             raise PromptProviderConfigurationError(
                 f"unsupported TokenHub prompt image model: {model or 'missing'}"
             )
+        protocol = str(
+            values.get("TENCENT_TOKENHUB_PROTOCOL") or "auto"
+        ).strip().lower()
+        if protocol not in _SUPPORTED_PROTOCOLS:
+            raise PromptProviderConfigurationError(
+                f"unsupported TokenHub protocol: {protocol or 'missing'}"
+            )
+        if protocol == "wand-sync-v1" and model != "hy-image-v3":
+            raise PromptProviderConfigurationError(
+                "wand-sync-v1 requires TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3"
+            )
         return cls(
             api_key=api_key,
             model=model,
@@ -112,7 +133,18 @@ class TokenHubPromptConfig:
                 default=3,
                 name="TENCENT_TOKENHUB_POLL_INTERVAL",
             ),
+            protocol=protocol,
         )
+
+    @property
+    def resolved_protocol(self) -> str:
+        if self.protocol == "auto":
+            return (
+                "wand-sync-v1"
+                if self.model == "hy-image-v3"
+                else "legacy-submit-query-v1"
+            )
+        return self.protocol
 
 
 class TokenHubPromptProvider:
@@ -123,11 +155,18 @@ class TokenHubPromptProvider:
         http_post: HttpPost | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        concurrency_gate: Any | None = None,
     ) -> None:
         self.config = config
         self._http_post = http_post or self._post_json
         self._monotonic = monotonic
         self._sleep = sleep
+        self._concurrency_gate = concurrency_gate or (
+            provider_capacity.build_provider_concurrency_gate(
+                provider_capacity.GenerationCapacity.from_env({}),
+                {},
+            )
+        )
 
     def generate(self, prompt: str) -> dict[str, Any]:
         try:
@@ -142,6 +181,24 @@ class TokenHubPromptProvider:
             "model": self.config.model,
             "prompt": clean_prompt,
         }
+        with self._concurrency_gate.slot():
+            return self._generate_once(request_payload)
+
+    def _generate_once(self, request_payload: Mapping[str, Any]) -> dict[str, Any]:
+        if self.config.resolved_protocol == "wand-sync-v1":
+            response = self._request(
+                TOKENHUB_HY_V3_URL,
+                {
+                    **request_payload,
+                    "model": "hy-image-v3",
+                    "revise": False,
+                },
+                timeout=max(
+                    self.config.request_timeout_seconds,
+                    self.config.poll_timeout_seconds,
+                ),
+            )
+            return self._result(response)
         if self.config.model == "hy-image-lite":
             response = self._request(
                 TOKENHUB_IMAGE_LITE_URL,

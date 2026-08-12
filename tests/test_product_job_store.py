@@ -1747,6 +1747,7 @@ class ProductJobStoreTests(unittest.TestCase):
             "job_id": "job-1",
             "owner_user_id": "user-1",
             "request_sha256": DIGEST_A,
+            "job_type": "menu_batch_generation",
             "job_status": "running",
             "fence": 1,
             "cancel_requested": False,

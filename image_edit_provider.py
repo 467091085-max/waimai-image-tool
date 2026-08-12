@@ -4,21 +4,26 @@ import base64
 import binascii
 import io
 import json
+import math
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 DEFAULT_GEMINI_IMAGE_EDIT_MODEL = "gemini-3.1-flash-image"
 DEFAULT_GEMINI_INTERACTIONS_URL = (
     "https://generativelanguage.googleapis.com/v1beta/interactions"
 )
+GEMINI_IMAGE_EDIT_PROMPT_VERSION = "food-refinement.v1"
+GEMINI_IMAGE_EDIT_API_SURFACE = "interactions-v1beta"
+GEMINI_IMAGE_EDIT_OUTPUT_SIZE = "1K"
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
 MAX_OUTPUT_BYTES = 30 * 1024 * 1024
 MAX_OUTPUT_BASE64_CHARS = ((MAX_OUTPUT_BYTES + 2) // 3) * 4 + 256
@@ -44,6 +49,20 @@ class ImageEditProviderError(RuntimeError):
         self.retryable = retryable
 
 
+class _RejectGeminiRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_GEMINI_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    _RejectGeminiRedirects()
+)
+
+
+def _gemini_urlopen(request: Any, *, timeout: float) -> Any:
+    return _GEMINI_NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
 @dataclass(frozen=True)
 class ImageEditResult:
     image_bytes: bytes
@@ -51,6 +70,21 @@ class ImageEditResult:
     provider: str
     model: str
     request_id: str
+    latency_seconds: float = 0.0
+    source_size: tuple[int, int] | None = None
+    provider_size: tuple[int, int] | None = None
+    normalized_to_source: bool = False
+
+
+class ImageEditProvider(Protocol):
+    def edit(
+        self,
+        source_bytes: bytes,
+        edit_prompt: str,
+        *,
+        source_mime_type: str = "image/png",
+    ) -> ImageEditResult:
+        ...
 
 
 def gemini_image_edit_config(
@@ -70,15 +104,38 @@ def gemini_image_edit_config(
         values.get("GEMINI_INTERACTIONS_URL")
         or DEFAULT_GEMINI_INTERACTIONS_URL
     ).strip()
+    timeout_seconds, timeout_valid = _configured_timeout(values)
     return {
         "ready": bool(
             api_key
             and MODEL_RE.fullmatch(model)
             and _valid_gemini_interactions_endpoint(endpoint)
+            and timeout_valid
         ),
         "apiKey": api_key,
         "model": model,
         "endpoint": endpoint,
+        "timeoutSeconds": timeout_seconds,
+        "timeoutValid": timeout_valid,
+    }
+
+
+def gemini_image_edit_provider_snapshot(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    config = gemini_image_edit_config(env)
+    return {
+        "provider": "google-gemini",
+        "model": config["model"],
+        "apiSurface": GEMINI_IMAGE_EDIT_API_SURFACE,
+        "endpoint": config["endpoint"],
+        "promptVersion": GEMINI_IMAGE_EDIT_PROMPT_VERSION,
+        "output": {
+            "mimeType": "image/jpeg",
+            "imageSize": GEMINI_IMAGE_EDIT_OUTPUT_SIZE,
+            "aspectRatio": "source-nearest-supported",
+            "canvasNormalization": "same-as-source.v1",
+        },
     }
 
 
@@ -95,10 +152,16 @@ def gemini_image_edit_readiness(
         blocking.append("gemini_image_edit_model_invalid")
     if not _valid_gemini_interactions_endpoint(str(config["endpoint"])):
         blocking.append("gemini_image_edit_endpoint_invalid")
+    if not bool(config["timeoutValid"]):
+        blocking.append("gemini_image_edit_timeout_invalid")
     return {
         "ready": not blocking,
         "provider": "google-gemini",
         "model": config["model"],
+        "apiSurface": GEMINI_IMAGE_EDIT_API_SURFACE,
+        "promptVersion": GEMINI_IMAGE_EDIT_PROMPT_VERSION,
+        "outputSpec": gemini_image_edit_provider_snapshot(env)["output"],
+        "timeoutSeconds": config["timeoutSeconds"],
         "missingConfig": missing,
         "blockingIssues": blocking,
     }
@@ -112,7 +175,7 @@ class GeminiImageEditProvider:
         model: str = DEFAULT_GEMINI_IMAGE_EDIT_MODEL,
         endpoint: str = DEFAULT_GEMINI_INTERACTIONS_URL,
         timeout_seconds: float = 180,
-        opener: Callable[..., Any] = urllib.request.urlopen,
+        opener: Callable[..., Any] = _gemini_urlopen,
     ) -> None:
         self.api_key = str(api_key or "").strip()
         self.model = str(model or "").strip()
@@ -134,13 +197,22 @@ class GeminiImageEditProvider:
                 "gemini_image_edit_endpoint_invalid",
                 "Gemini 图片精修地址无效",
             )
+        if (
+            not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds < 1
+            or self.timeout_seconds > 900
+        ):
+            raise ImageEditProviderError(
+                "gemini_image_edit_timeout_invalid",
+                "Gemini 图片精修超时配置无效",
+            )
 
     @classmethod
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
         *,
-        opener: Callable[..., Any] = urllib.request.urlopen,
+        opener: Callable[..., Any] = _gemini_urlopen,
     ) -> "GeminiImageEditProvider":
         values = os.environ if env is None else env
         config = gemini_image_edit_config(values)
@@ -148,9 +220,7 @@ class GeminiImageEditProvider:
             api_key=str(config["apiKey"]),
             model=str(config["model"]),
             endpoint=str(config["endpoint"]),
-            timeout_seconds=float(
-                values.get("GEMINI_IMAGE_EDIT_TIMEOUT_SECONDS") or 180
-            ),
+            timeout_seconds=float(config["timeoutSeconds"]),
             opener=opener,
         )
 
@@ -168,6 +238,7 @@ class GeminiImageEditProvider:
         )
         prompt = _validated_prompt(edit_prompt)
         mime_type = _normalized_mime_type(source_mime_type)
+        source_size = _image_dimensions(source)
         payload = {
             "model": self.model,
             "store": False,
@@ -185,7 +256,8 @@ class GeminiImageEditProvider:
             "response_format": {
                 "type": "image",
                 "mime_type": "image/jpeg",
-                "image_size": "1K",
+                "image_size": GEMINI_IMAGE_EDIT_OUTPUT_SIZE,
+                "aspect_ratio": _nearest_supported_aspect_ratio(*source_size),
             },
         }
         request = urllib.request.Request(
@@ -201,6 +273,7 @@ class GeminiImageEditProvider:
             },
             method="POST",
         )
+        request_started = time.monotonic()
         try:
             with self.opener(
                 request,
@@ -269,30 +342,120 @@ class GeminiImageEditProvider:
             max_bytes=MAX_OUTPUT_BYTES,
             code="gemini_image_edit_invalid_image",
         )
+        output, provider_size, normalized_to_source, output_mime = (
+            _normalize_output_canvas(
+                output,
+                output_mime,
+                source_size=source_size,
+            )
+        )
         return ImageEditResult(
             image_bytes=output,
-            mime_type=_normalized_mime_type(output_mime),
+            mime_type=output_mime,
             provider="google-gemini",
             model=self.model,
             request_id=str(response_payload.get("id") or ""),
+            latency_seconds=round(time.monotonic() - request_started, 6),
+            source_size=source_size,
+            provider_size=provider_size,
+            normalized_to_source=normalized_to_source,
         )
 
 
 def _valid_gemini_interactions_endpoint(value: str) -> bool:
     try:
         parsed = urllib.parse.urlsplit(str(value or "").strip())
+        port = parsed.port
     except ValueError:
         return False
     return (
         parsed.scheme.lower() == "https"
         and (parsed.hostname or "").lower() == GEMINI_API_HOST
-        and parsed.port in {None, 443}
+        and port in {None, 443}
         and parsed.path.rstrip("/") == GEMINI_INTERACTIONS_PATH
         and not parsed.username
         and not parsed.password
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _configured_timeout(values: Mapping[str, str]) -> tuple[float, bool]:
+    raw = values.get("GEMINI_IMAGE_EDIT_TIMEOUT_SECONDS")
+    try:
+        timeout = float(180 if raw in (None, "") else raw)
+    except (TypeError, ValueError):
+        return 180.0, False
+    if not math.isfinite(timeout) or timeout < 1 or timeout > 900:
+        return timeout, False
+    return timeout, True
+
+
+def _image_dimensions(value: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(value)) as image:
+        width, height = image.size
+    return int(width), int(height)
+
+
+_SUPPORTED_ASPECT_RATIOS = (
+    ("1:1", 1.0),
+    ("4:3", 4 / 3),
+    ("3:4", 3 / 4),
+    ("16:9", 16 / 9),
+    ("9:16", 9 / 16),
+    ("3:2", 3 / 2),
+    ("2:3", 2 / 3),
+    ("5:4", 5 / 4),
+    ("4:5", 4 / 5),
+    ("21:9", 21 / 9),
+)
+
+
+def _nearest_supported_aspect_ratio(width: int, height: int) -> str:
+    ratio = width / max(1, height)
+    return min(
+        _SUPPORTED_ASPECT_RATIOS,
+        key=lambda item: abs(item[1] - ratio),
+    )[0]
+
+
+def _normalize_output_canvas(
+    value: bytes,
+    mime_type: str,
+    *,
+    source_size: tuple[int, int],
+) -> tuple[bytes, tuple[int, int], bool, str]:
+    clean_mime_type = _normalized_mime_type(mime_type)
+    with Image.open(io.BytesIO(value)) as image:
+        image.load()
+        provider_size = (int(image.width), int(image.height))
+        if provider_size == source_size:
+            return value, provider_size, False, clean_mime_type
+        source_ratio = source_size[0] / max(1, source_size[1])
+        provider_ratio = provider_size[0] / max(1, provider_size[1])
+        relative_error = abs(provider_ratio - source_ratio) / max(
+            source_ratio,
+            1e-9,
+        )
+        if relative_error > 0.02:
+            raise ImageEditProviderError(
+                "gemini_image_edit_output_aspect_ratio_mismatch",
+                "Gemini 图片精修返回比例与源图不一致",
+                retryable=False,
+            )
+        normalized = ImageOps.exif_transpose(image).convert("RGB").resize(
+            source_size,
+            Image.Resampling.LANCZOS,
+        )
+        output = io.BytesIO()
+        normalized.save(output, "JPEG", quality=95, optimize=True)
+    normalized_bytes = output.getvalue()
+    _validated_image_bytes(
+        normalized_bytes,
+        max_bytes=MAX_OUTPUT_BYTES,
+        code="gemini_image_edit_invalid_image",
+    )
+    return normalized_bytes, provider_size, True, "image/jpeg"
 
 
 def _validated_prompt(value: str) -> str:

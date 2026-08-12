@@ -6,6 +6,7 @@ import unicodedata
 from typing import Any
 
 import background_catalog
+import prompt_compiler
 from matching_engine import (
     TAXONOMY_COMBO,
     TAXONOMY_LABELS,
@@ -16,6 +17,8 @@ from matching_engine import (
 
 
 BACKGROUND_PROFILE_VERSION = "2026-08-01.v12"
+DEFAULT_BACKGROUND_PROMPT_VERSION = "style-background.v11"
+MIXED_RICE_PILOT_PROMPT_VERSION = "style-background.v12"
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
 
@@ -264,8 +267,59 @@ def pure_background_style_prompt(category_id: str, style_id: str) -> str:
     return prompt.replace("点缀", "配色").replace("细节", "纹理").strip("，；。")
 
 
-def pure_background_prompt(category_id: str, style_id: str) -> str:
+def mixed_rice_pilot_background_prompt(style_id: str) -> str:
+    contract = prompt_compiler.scene_contract_for(
+        style_id,
+        "mixed_rice",
+        prompt_version=MIXED_RICE_PILOT_PROMPT_VERSION,
+    )
+    peripheral = {
+        "style-1": "画面中不放任何道具，只有连续的暖象牙色承托面和自然明暗。",
+        "style-2": "画面中不放任何道具，只有连续的陶土红承托面和自然明暗。",
+        "style-3": "只允许左上角出现少量米白亚麻布，面积不超过画面6%，中央不得被遮挡。",
+        "style-4": "只允许右上角一双木筷和左上角少量深灰餐巾，合计面积不超过8%。",
+        "style-5": "只允许右上角浅木筷和左侧边缘奶油色餐巾，合计面积不超过7%。",
+        "style-6": "只允许左上角暗亚麻餐巾和右上角一双细筷，合计面积不超过8%。",
+    }[contract.style_id]
+    return (
+        "为中式拌饭、烤肉饭制作一张高品质商业食物摄影空背景，4:3横图，"
+        "1024x768。只生成背景，不生成菜品、餐盘、餐盒、杯子、食材、人物、"
+        "文字、数字、logo或水印。"
+        f"视觉风格为“{contract.style_name}”：{contract.scene_description}；"
+        f"承托材质严格为{contract.surface_description}。"
+        f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，"
+        f"约{contract.camera.lens_mm}mm标准镜头，横平竖直，透视自然。"
+        "整张画面必须是一个可承托餐盘的连续平面，材质铺满四边；"
+        "绝不能看见桌沿、桌面厚度、桌腿、墙桌分界、地平线、桌下黑洞、"
+        "悬浮平台、中央石板、第二层台面、矩形垫板、拼接材质或展示台。"
+        f"中央约70%区域保持完整、干净、连续，餐盘落点位于画面"
+        f"({contract.support.center_x:.2f},{contract.support.center_y:.2f})附近。"
+        f"{peripheral}"
+        f"主光从{contract.lighting.direction}照射，使用{contract.lighting.source}，"
+        f"约{contract.lighting.color_temperature_k}K；光线柔和、有层次、有食欲，"
+        "不做廉价影楼光、不做洞穴暗角、不做无来源阴影。真实摄影，不是3D渲染。"
+    )
+
+
+def pure_background_prompt(
+    category_id: str,
+    style_id: str,
+    prompt_version: str | None = None,
+) -> str:
     normalized_category = normalize_category_id(category_id)
+    resolved_prompt_version = (
+        str(prompt_version or DEFAULT_BACKGROUND_PROMPT_VERSION).strip()
+    )
+    if resolved_prompt_version == MIXED_RICE_PILOT_PROMPT_VERSION:
+        if normalized_category != "mixed_rice":
+            raise ValueError(
+                "style-background.v12 pilot is restricted to mixed_rice"
+            )
+        return mixed_rice_pilot_background_prompt(style_id)
+    if resolved_prompt_version != DEFAULT_BACKGROUND_PROMPT_VERSION:
+        raise ValueError(
+            f"unsupported background prompt version: {resolved_prompt_version}"
+        )
     slot = background_catalog.style_slot(style_id)
     if slot.scene_type == "seamless-solid":
         geometry = (

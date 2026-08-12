@@ -18,6 +18,8 @@
 - 品牌水印：支持文字水印和透明 PNG Logo，支持角标和平铺。
 - 正式图预览：按单品图片、套餐图片、其他图片分组显示。
 - 正式出图异步任务：新的 SaaS 骨架已拆出 `api-server/`、`worker/`、`shared/`，标准接口固定为 `POST /generate`（只接受 `prompt` 并返回 `task_id`）和 `GET /status/<task_id>`（只返回 `status`、`image_url`），API Server 只写 Redis 队列和查询状态，AI 生成由独立 Worker 执行。
+- 提示词编译：菜单语义先经过确定性的 Prompt Compiler，冻结菜名、套餐组成、背景镜头、主体占比、光线、摆放和禁用元素，再调用图片供应商。
+- 整店并发：正式批次默认 10 个行级 Worker、整店调用上限 120；TokenHub 使用跨进程 Redis 槽位统一限流，未验证账号并发额度时自动降为 1 路。
 - 重做额度：每单提供免费换版额度，用完后按 10 积分/张。
 - 导出：当前统一导出 JPG，支持勾选、全选、单品、套餐导出，并按平台上限压缩文件大小。
 - 平台尺寸：支持美团、淘宝外卖/饿了么、京东外卖/京东秒送导出，不裁掉主体，按目标尺寸留边适配。
@@ -90,6 +92,7 @@ Render 拓扑以仓库根目录的 `render.yaml` 为准。蓝图关闭了自动�
 - Prompt Worker：`python -m worker.prompt_worker`，独占 `generate` 队列和 TokenHub provider 调用；启动时要求 `AI_IMAGE_PROVIDER=tencent-tokenhub` 与 `TENCENT_TOKENHUB_API_KEY`。
 - Outbox Dispatcher：`python -m worker.outbox_dispatcher`。
 - Product Worker：`python -m worker.worker`，并设置 `WORKER_TASK_MODE=product`。
+- Revision Worker：`python -m worker.worker`，设置 `WORKER_TASK_MODE=revision`、`WORKER_CONCURRENCY=10`，独占 `product-revision` 队列并执行 Gemini 单图精修。
 - Settlement Reconciler：`python -m worker.product_settlement_reconciler`，独立验证 Redis 终态、PostgreSQL fence、manifest 摘要和退款结算；客户是否轮询不影响最终结算。
 - Redis/Key Value：所有活动进程通过 `fromService` 共用内部 `REDIS_URL`；队列配置为 `noeviction`，PostgreSQL/outbox 才是持久任务事实源。
 - PostgreSQL：客户网站和 Outbox Dispatcher 通过 `fromDatabase` 获取 `DATABASE_URL`；蓝图不会自动执行 `migrations/`。
@@ -105,7 +108,8 @@ Render 拓扑以仓库根目录的 `render.yaml` 为准。蓝图关闭了自动�
 ```text
 AI_IMAGE_PROVIDER=tencent-tokenhub
 TENCENT_TOKENHUB_API_KEY=<Render secret>
-TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3
+TENCENT_TOKENHUB_PROTOCOL=wand-sync-v1
 ```
 
 独立 API 还必须配置 `PROMPT_API_TOKEN`。`POST /generate` 和
@@ -333,7 +337,7 @@ data/library/_ai_asset_library/manifest.jsonl
 
 当前版本支持两套腾讯云图像接口：
 
-- TokenHub `HY-Image-3.0` / `HY-Image-Lite`：用于背景风格图、无图库命中时的文生图，优先消耗 TokenHub 图像额度。
+- TokenHub `HY-Image-3.0` / `HY-Image-Lite`：用于背景风格图、无图库命中时的文生图，优先消耗 TokenHub 图像额度；当前默认走 `hy-image-v3` 同步协议，旧 `hy-image-v3.0` submit/query 仅保留兼容。
 - 旧版 `TextToImageLite` / `ReplaceBackground`：作为 fallback，并继续用于 COS、商品背景旧接口等路径。
 
 Render 环境变量：
@@ -341,14 +345,27 @@ Render 环境变量：
 ```text
 TENCENT_HUNYUAN_ENABLED=true
 TENCENT_TOKENHUB_API_KEY=你的 TokenHub API Key
-TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3
+TENCENT_TOKENHUB_PROTOCOL=wand-sync-v1
 TENCENT_TOKENHUB_POLL_TIMEOUT=120
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool.onrender.com
 TENCENT_HUNYUAN_MODE=auto
-TENCENT_HUNYUAN_SYNC_LIMIT=6
+FINAL_GENERATION_WORKERS=10
+TENCENT_TOKENHUB_MAX_CONCURRENCY=10
+TENCENT_HUNYUAN_SYNC_LIMIT=120
+GENERATION_TARGET_BATCH_IMAGES=100
+GENERATION_TARGET_SECONDS=3600
+GENERATION_TARGET_BATCH_OBSERVED_SECONDS=0
+GENERATION_TARGET_BATCH_EVIDENCE_FILE=
+GENERATION_TARGET_BATCH_EVIDENCE_SHA256=
+EXACT_BACKGROUND_CHROMA_FAST_PATH=true
+EXACT_BACKGROUND_CLOUD_MASK_FALLBACK=false
+TENCENT_MASK_VERIFIED_CONCURRENCY=0
+TENCENT_MASK_CONCURRENCY_ACQUIRE_TIMEOUT_SECONDS=600
+TENCENT_MASK_CONCURRENCY_LEASE_SECONDS=300
 TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
 TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
@@ -365,7 +382,7 @@ ALIPAY_PUBLIC_KEY=支付宝公钥
 说明：
 
 - `TENCENT_TOKENHUB_API_KEY` 是新 TokenHub 平台的 API Key，和腾讯云访问管理里的 `SecretId/SecretKey` 不是同一个东西。购买 `HY-Image-3.0` 额度后，必须创建并配置这个 Key，Render 才能消耗对应额度。
-- `TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0` 会使用异步 submit/query 生成，质量优先；如果要更快预览，可以改成 `hy-image-lite`，但需要确认该模型有可用额度或后付费。
+- `TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3` 与 `TENCENT_TOKENHUB_PROTOCOL=wand-sync-v1` 使用当前 HY-Image 3.0 同步入口。旧 `hy-image-v3.0` 会自动走 submit/query 兼容协议。
 - 商品背景生成要求腾讯云能下载 `ProductUrl`。Render 域名在腾讯云侧可能下载失败，所以正式联调建议配置腾讯 COS。
 - 当前腾讯 COS 临时图桶是 `waimai-image-tool-inputs-1311836560`，地域是 `ap-guangzhou`。
 - `TENCENT_COS_BUCKET` 需要使用完整 bucket 名，例如 `waimai-image-tool-125xxxxxxx`。
@@ -373,7 +390,12 @@ ALIPAY_PUBLIC_KEY=支付宝公钥
 
 - `PUBLIC_BASE_URL` 用于把内部参考图或生成图地址拼成腾讯云可下载的公网 URL。
 - `TENCENT_HUNYUAN_MODE=auto` 会优先尝试商品背景生成，条件不满足时走文生图。
-- `TENCENT_HUNYUAN_SYNC_LIMIT` 是同步请求内最多真实调用腾讯云的图片数，默认 6。正式商用时不要在 Web 请求里一次同步生成 100 多张；正式图应继续走异步任务，并替换为跨进程 worker。
+- `FINAL_GENERATION_WORKERS=10` 和 `TENCENT_TOKENHUB_MAX_CONCURRENCY=10` 表示代码可调度 10 路；正式图仍由 Redis + Product Worker 异步执行，不在 Web 请求中等待整店完成。100 张和 3600 秒是代码内不可降低的产品验收常量，环境变量不能把目标改成更少图片或更长时间。
+- `TENCENT_HUNYUAN_SYNC_LIMIT=120` 是单个整店任务最多发起的供应商调用数。菜单张数超过该值时会在扣积分前拒绝任务，不会生成一半后才发现容量不足。
+- 未设置 `TENCENT_TOKENHUB_VERIFIED_CONCURRENCY` 时，实际供应商并发自动限制为 1。生产 readiness 只有在真实账号验证 10 路、记录供应商 P95，并提供一份 SHA-256 校验通过的真实 100 张端到端证据 JSON 后才承认目标达标；证据必须绑定真实付费模式、供应商、模型、100 张成功结果、峰值并发、完整输出 manifest 摘要和 3600 秒以内耗时。`GENERATION_TARGET_BATCH_OBSERVED_SECONDS` 只做诊断显示，不能单独让 readiness 变绿。
+- `MIXED_RICE_BACKGROUND_PROMPT_VERSION` 默认保持 `style-background.v11`。只有拌饭品类的六张 v12 背景完成真实付费生成、完整性校验和人工视觉审核后，才可将该值切到 `style-background.v12`；切换不会改变其他 39 个品类的版本。
+- `EXACT_BACKGROUND_CHROMA_FAST_PATH=true` 让每张菜品只进行一次 TokenHub 前景生成，并优先使用本地 Chroma 抠图。它移除了正常路径中的第二次云调用，但不会绕过供应商账号并发额度。
+- 云 Mask 回退默认关闭，避免少量 Chroma 失败把整店任务拖回串行路径。只有单独验证腾讯云 Mask 并发后，才同时设置 `EXACT_BACKGROUND_CLOUD_MASK_FALLBACK=true` 和 `TENCENT_MASK_VERIFIED_CONCURRENCY=<实测并发>`；Render 的 Web 和 Worker 通过 Redis 共享同一组 Mask 租约，Redis 不可用时测试/生产环境会拒绝开启回退。否则该行明确失败并可重试，不会悄悄排队一整天。
 - `PAYMENT_PROVIDER=alipay` 会启用支付宝电脑网站支付下单链接；`ALIPAY_PRIVATE_KEY` 用于服务端生成 RSA2 签名，`ALIPAY_PUBLIC_KEY` 用于验签支付宝异步通知。
 - 本地未配置腾讯云密钥时，系统会自动使用本地演示图兜底，保证上传、预览、导出流程不断。
 
@@ -385,6 +407,22 @@ curl https://waimai-image-tool.onrender.com/api/tencent-status
 
 返回里的 `configured` 为 `true` 才代表 Render 已读取到密钥。
 返回里的 `tokenhubReady` 为 `true` 才代表 Render 可以调用 TokenHub `HY-Image-3.0`。
+
+## Gemini 精修接口
+
+Gemini 接口、请求契约、独立 Redis 队列、Revision Worker、结果尺寸归一化和扣费前 readiness 已完成。现在没有 API Key 也可以部署代码，但精修提交会 fail closed，不会扣积分或写入待执行任务。
+
+```text
+GEMINI_API_KEY=<申请后写入 Render secret>
+GEMINI_IMAGE_EDIT_MODEL=gemini-3.1-flash-image
+GEMINI_INTERACTIONS_URL=https://generativelanguage.googleapis.com/v1beta/interactions
+GEMINI_IMAGE_EDIT_TIMEOUT_SECONDS=180
+REDIS_REVISION_QUEUE=product-revision
+REVISION_WORKER_ENABLED=true
+REVISION_WORKER_SERVICE_ID=revision-worker
+```
+
+每个精修任务会冻结 provider、model、API surface、提示词版本和输出画布规则。Gemini 返回图必须与源图同宽高比，并在入库前归一化到源图精确尺寸；背景仍由服务端锁定合成，不允许精修结果暗中替换客户已选背景。
 
 ## 2026-06-20 交付说明
 
@@ -417,13 +455,16 @@ Render 部署需要的核心环境变量：
 ```text
 TENCENT_HUNYUAN_ENABLED=true
 TENCENT_TOKENHUB_API_KEY=你的 TokenHub API Key
-TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3.0
+TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3
+TENCENT_TOKENHUB_PROTOCOL=wand-sync-v1
 TENCENTCLOUD_SECRET_ID=你的 SecretId
 TENCENTCLOUD_SECRET_KEY=你的 SecretKey
 TENCENTCLOUD_REGION=ap-guangzhou
 PUBLIC_BASE_URL=https://waimai-image-tool.onrender.com
 TENCENT_HUNYUAN_MODE=auto
-TENCENT_HUNYUAN_SYNC_LIMIT=6
+FINAL_GENERATION_WORKERS=10
+TENCENT_TOKENHUB_MAX_CONCURRENCY=10
+TENCENT_HUNYUAN_SYNC_LIMIT=120
 TENCENT_COS_BUCKET=waimai-image-tool-inputs-1311836560
 TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=waimai-model-inputs
@@ -439,6 +480,6 @@ curl https://waimai-image-tool.onrender.com/api/library-status
 
 当前仍然保留的限制：
 
-- `TENCENT_HUNYUAN_SYNC_LIMIT=6` 只约束网页中的六张风格/样图小批量请求；整店正式图和精修改图走 PostgreSQL outbox、Redis Worker 和独立 reconciler。
+- 六张背景/样图与整店正式图共享同一 TokenHub Redis 并发门；整店正式图走 Product Worker，精修改图走独立 Revision Worker，避免 Web 进程串行等待。
 - 真实短信、支付商户、COS IAM、付费图像供应商及生产迁移仍需外部授权和验收；缺失时 live readiness 会 fail closed。
 - 如果腾讯云额度、权限或接口报错，前端会显示「模型生成失败」或「待正式生成」，不会用占位图假装成功。

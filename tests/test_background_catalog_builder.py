@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from PIL import Image
+import pytest
 
 import object_storage_service
 from scripts import build_background_catalog as builder
@@ -27,6 +28,45 @@ def test_builder_default_plan_is_exactly_240_assets(capsys) -> None:
     assert '"categoryCount": 40' in output
     assert '"styleCount": 6' in output
     assert '"plannedAssetCount": 240' in output
+
+
+def test_v12_builder_plan_is_isolated_to_six_mixed_rice_assets(capsys) -> None:
+    with mock.patch.object(
+        builder,
+        "PROMPT_VERSION",
+        builder.DEFAULT_PROMPT_VERSION,
+    ):
+        assert builder.main(
+            [
+                "--prompt-version",
+                builder.background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+                "--category",
+                "mixed_rice",
+            ]
+        ) == 0
+
+    output = capsys.readouterr().out
+    assert '"promptVersion": "style-background.v12"' in output
+    assert '"categoryCount": 1' in output
+    assert '"styleCount": 6' in output
+    assert '"plannedAssetCount": 6' in output
+
+
+def test_v12_builder_refuses_a_multi_category_plan() -> None:
+    with (
+        mock.patch.object(
+            builder,
+            "PROMPT_VERSION",
+            builder.DEFAULT_PROMPT_VERSION,
+        ),
+        pytest.raises(SystemExit, match="isolated mixed_rice pilot"),
+    ):
+        builder.main(
+            [
+                "--prompt-version",
+                builder.background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+            ]
+        )
 
 
 def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:

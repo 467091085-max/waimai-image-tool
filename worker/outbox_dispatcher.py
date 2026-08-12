@@ -30,6 +30,7 @@ from shared.redis_queue import (
     QueueError,
     RedisTaskQueue,
     product_queue_from_env,
+    revision_queue_from_env,
 )
 
 
@@ -89,6 +90,7 @@ class PreparedDispatch:
     idempotency_key: str
     claim_token: str
     fence: int
+    task_type: str
     task_payload: dict[str, Any]
 
 
@@ -184,6 +186,7 @@ def prepare_dispatch(claim: Mapping[str, Any]) -> PreparedDispatch:
         idempotency_key=idempotency_key,
         claim_token=claim_token,
         fence=fence,
+        task_type=task_type,
         task_payload=task_payload,
     )
 
@@ -192,8 +195,10 @@ def dispatch_claim(
     store: Any,
     queue: RedisTaskQueue,
     claim: Mapping[str, Any],
+    *,
+    prepared: PreparedDispatch | None = None,
 ) -> dict[str, Any]:
-    prepared = prepare_dispatch(claim)
+    prepared = prepared or prepare_dispatch(claim)
     recovered_after_error = False
     try:
         task = queue.enqueue_idempotent(
@@ -269,6 +274,7 @@ def dispatch_once(
     store: Any,
     queue: RedisTaskQueue,
     *,
+    revision_queue: RedisTaskQueue | None = None,
     dispatcher_id: str,
     limit: int = 10,
     lease_seconds: int = 60,
@@ -299,7 +305,23 @@ def dispatch_once(
             else ""
         )
         try:
-            results.append(dispatch_claim(store, queue, claim))
+            prepared = prepare_dispatch(claim)
+            destination = (
+                revision_queue
+                if (
+                    prepared.task_type == PRODUCT_REVISION_TASK_TYPE
+                    and revision_queue is not None
+                )
+                else queue
+            )
+            results.append(
+                dispatch_claim(
+                    store,
+                    destination,
+                    claim,
+                    prepared=prepared,
+                )
+            )
         except (OutboxDispatcherError, QueueError) as exc:
             failures.append((outbox_id or "unknown", exc))
             LOGGER.warning(
@@ -412,6 +434,7 @@ def run_dispatch_loop(
     *,
     store_factory: Callable[[], Any],
     queue_factory: Callable[[], RedisTaskQueue],
+    revision_queue_factory: Callable[[], RedisTaskQueue] | None = None,
     stop_event: Event,
     dispatcher_id: str,
     batch_limit: int = 10,
@@ -434,6 +457,7 @@ def run_dispatch_loop(
     wait_for_stop = wait or stop_event.wait
     store: Any | None = None
     queue: RedisTaskQueue | None = None
+    revision_queue: RedisTaskQueue | None = None
     consecutive_failures = 0
 
     try:
@@ -443,9 +467,16 @@ def run_dispatch_loop(
                     store = store_factory()
                 if queue is None:
                     queue = queue_factory()
+                if revision_queue is None:
+                    revision_queue = (
+                        revision_queue_factory()
+                        if revision_queue_factory is not None
+                        else queue
+                    )
                 report = dispatch_once(
                     store,
                     queue,
+                    revision_queue=revision_queue,
                     dispatcher_id=dispatcher_id,
                     limit=batch_limit,
                     lease_seconds=lease_seconds,
@@ -470,6 +501,7 @@ def run_dispatch_loop(
                 _close_store(store)
                 store = None
                 queue = None
+                revision_queue = None
                 delay = min(
                     max_backoff,
                     initial_backoff * (2 ** (consecutive_failures - 1)),
@@ -510,6 +542,7 @@ def main() -> int:
     run_dispatch_loop(
         store_factory=lambda: product_job_store_from_env(values),
         queue_factory=lambda: product_queue_from_env(values),
+        revision_queue_factory=lambda: revision_queue_from_env(values),
         stop_event=stop_event,
         dispatcher_id=dispatcher_id,
         batch_limit=_env_positive_int(

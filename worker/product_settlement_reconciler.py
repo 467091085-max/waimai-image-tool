@@ -38,12 +38,15 @@ from shared.redis_queue import (
     RedisTaskQueue,
     TaskNotFound,
     product_queue_from_env,
+    revision_queue_from_env,
 )
 
 
 LOGGER = logging.getLogger("waimai.product-settlement-reconciler")
 RECONCILER_SERVICE_ID = "product-settlement-reconciler"
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
+MENU_BATCH_JOB_TYPE = "menu_batch_generation"
+REVISION_BATCH_JOB_TYPE = "delivery_asset_revision_batch"
 
 
 class ProductSettlementReconcilerError(RuntimeError):
@@ -67,6 +70,7 @@ def reconcile_once(
     store: Any,
     queue: RedisTaskQueue,
     *,
+    revision_queue: RedisTaskQueue | None = None,
     reconciler_id: str,
     limit: int = 100,
     settlement_reclaim_after_seconds: int = 300,
@@ -109,8 +113,16 @@ def reconcile_once(
                 report["settled"] += 1
                 continue
 
+            destination = (
+                revision_queue
+                if (
+                    candidate["job_type"] == REVISION_BATCH_JOB_TYPE
+                    and revision_queue is not None
+                )
+                else queue
+            )
             try:
-                task = queue.get(candidate["job_id"])
+                task = destination.get(candidate["job_id"])
             except TaskNotFound:
                 if (
                     candidate["job_status"] == "running"
@@ -215,6 +227,7 @@ def run_reconciler_loop(
     *,
     store_factory: Callable[[], Any],
     queue_factory: Callable[[], RedisTaskQueue],
+    revision_queue_factory: Callable[[], RedisTaskQueue] | None = None,
     stop_event: Event,
     reconciler_id: str,
     batch_limit: int = 100,
@@ -242,6 +255,7 @@ def run_reconciler_loop(
     wait_for_stop = wait or stop_event.wait
     store: Any | None = None
     queue: RedisTaskQueue | None = None
+    revision_queue: RedisTaskQueue | None = None
     failures = 0
     try:
         while not stop_event.is_set():
@@ -250,9 +264,16 @@ def run_reconciler_loop(
                     store = store_factory()
                 if queue is None:
                     queue = queue_factory()
+                if revision_queue is None:
+                    revision_queue = (
+                        revision_queue_factory()
+                        if revision_queue_factory is not None
+                        else queue
+                    )
                 report = reconcile_once(
                     store,
                     queue,
+                    revision_queue=revision_queue,
                     reconciler_id=reconciler_id,
                     limit=batch_limit,
                     settlement_reclaim_after_seconds=(
@@ -277,6 +298,7 @@ def run_reconciler_loop(
                 _close_store(store)
                 store = None
                 queue = None
+                revision_queue = None
                 delay = min(
                     max_backoff,
                     initial_backoff * (2 ** (failures - 1)),
@@ -304,6 +326,7 @@ def main() -> int:
     run_reconciler_loop(
         store_factory=lambda: product_job_store_from_env(values),
         queue_factory=lambda: product_queue_from_env(values),
+        revision_queue_factory=lambda: revision_queue_from_env(values),
         stop_event=stop_event,
         reconciler_id=reconciler_id,
         batch_limit=_env_positive_int(
@@ -371,6 +394,11 @@ def _candidate(value: Any) -> dict[str, Any]:
         raise ProductSettlementReconcilerError(
             "running PostgreSQL job must have a positive fence"
         )
+    job_type = _required_text(value.get("job_type"), "job_type")
+    if job_type not in {MENU_BATCH_JOB_TYPE, REVISION_BATCH_JOB_TYPE}:
+        raise ProductSettlementReconcilerError(
+            f"unsupported PostgreSQL job type: {job_type}"
+        )
     return {
         "job_id": _required_text(value.get("job_id"), "job_id"),
         "owner_user_id": _required_text(
@@ -381,6 +409,7 @@ def _candidate(value: Any) -> dict[str, Any]:
             value.get("request_sha256"),
             "request_sha256",
         ),
+        "job_type": job_type,
         "job_status": job_status,
         "fence": fence,
         "outbox_status": outbox_status,

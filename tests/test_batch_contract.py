@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 
 import pytest
+import prompt_compiler
 
 from shared.batch_contract import (
     BatchContractError,
@@ -81,7 +82,7 @@ def test_freeze_contract_calculates_server_owned_billing_snapshot() -> None:
         )
     )
 
-    assert contract["schemaVersion"] == 2
+    assert contract["schemaVersion"] == 3
     assert contract["jobType"] == "menu_batch_generation"
     assert contract["quality"] == {"id": "premium", "pointsPerImage": 20}
     assert [platform["id"] for platform in contract["platforms"]] == ["meituan", "jd"]
@@ -98,6 +99,53 @@ def test_freeze_contract_calculates_server_owned_billing_snapshot() -> None:
     assert contract["generationProvenance"] == TEST_GENERATION_PROVENANCE
     assert len(contract["idempotency"]["requestSha256"]) == 64
     assert contract["idempotency"]["requestSha256"] == request_sha256(contract)
+
+
+def test_v12_background_prompt_version_survives_contract_freeze() -> None:
+    selected = dict(valid_input()["selected_background"])
+    scene = prompt_compiler.scene_contract_for(
+        selected["styleId"],
+        "mixed_rice",
+        asset_id=selected["assetId"],
+        asset_sha256=selected["sha256"],
+        prompt_version=prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION,
+    )
+    selected["backgroundPromptVersion"] = (
+        prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION
+    )
+    selected["sceneContract"] = scene.payload()
+
+    contract = freeze_menu_batch_contract(
+        **valid_input(selected_background=selected)
+    )
+
+    frozen = contract["selectedBackground"]
+    assert frozen["backgroundPromptVersion"] == "style-background.v12"
+    assert (
+        frozen["sceneContract"]["backgroundPromptVersion"]
+        == "style-background.v12"
+    )
+    assert frozen["sceneContract"]["contractSha256"] == scene.contract_sha256
+
+
+def test_background_prompt_version_must_match_scene_contract() -> None:
+    selected = dict(valid_input()["selected_background"])
+    scene = prompt_compiler.scene_contract_for(
+        selected["styleId"],
+        "mixed_rice",
+        asset_id=selected["assetId"],
+        asset_sha256=selected["sha256"],
+        prompt_version=prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION,
+    )
+    selected["backgroundPromptVersion"] = "style-background.v11"
+    selected["sceneContract"] = scene.payload()
+
+    with pytest.raises(BatchContractError) as raised:
+        freeze_menu_batch_contract(
+            **valid_input(selected_background=selected)
+        )
+
+    assert raised.value.code == "invalid_background_prompt_version"
 
 
 def test_request_hash_is_stable_across_job_ids_timestamps_and_platform_order() -> None:

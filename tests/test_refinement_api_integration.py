@@ -11,7 +11,13 @@ from PIL import Image
 
 import app as app_module
 import object_storage_service
-from shared.redis_queue import QueueError, RedisQueueConfig, RedisTaskQueue, TaskNotFound
+from shared.redis_queue import (
+    IdempotencyConflict,
+    QueueError,
+    RedisQueueConfig,
+    RedisTaskQueue,
+    TaskNotFound,
+)
 from shared.refinement_contract import freeze_revision_batch_contract
 from tests.redis_test_double import RedisTestDouble
 
@@ -423,6 +429,83 @@ def test_enqueue_failure_refunds_only_original_paid_revision() -> None:
     assert contract_updates[-1]["status"] == "failed"
 
 
+def test_enqueue_idempotency_conflict_refunds_fresh_non_postgres_debit() -> None:
+    failing_queue = SimpleNamespace(
+        enqueue_idempotent=mock.Mock(
+            side_effect=IdempotencyConflict(
+                task_id="other-revision",
+                request_sha256="b" * 64,
+            )
+        ),
+    )
+    contract_updates: list[dict] = []
+
+    with (
+        mock.patch.object(
+            app_module,
+            "generation_request_principal",
+            return_value=_principal(),
+        ),
+        mock.patch.object(
+            app_module,
+            "persisted_revision_record",
+            side_effect=TaskNotFound("missing"),
+        ),
+        mock.patch.object(
+            app_module,
+            "gemini_image_edit_readiness",
+            return_value={"ready": True},
+        ),
+        mock.patch.object(
+            app_module,
+            "product_redis_queue",
+            return_value=failing_queue,
+        ),
+        mock.patch.object(
+            app_module,
+            "resolve_parent_delivery_asset_snapshot",
+            return_value=(
+                _parent_record(),
+                _source_snapshot(),
+                _background_snapshot(),
+            ),
+        ),
+        mock.patch.object(
+            app_module,
+            "revision_free_rework_usage",
+            return_value=99,
+        ),
+        mock.patch.object(
+            app_module,
+            "persist_revision_batch_contract",
+            return_value=({"status": "queued"}, True),
+        ),
+        mock.patch.object(
+            app_module.billing,
+            "debit_account",
+            return_value={"idempotent": False},
+        ),
+        mock.patch.object(app_module, "refund_revision_batch") as refund,
+        mock.patch.object(
+            app_module,
+            "update_persisted_generation_job",
+            side_effect=lambda _job_id, **updates: contract_updates.append(
+                updates
+            ),
+        ),
+    ):
+        response = app_module.app.test_client().post(
+            "/api/image-refinements",
+            json=_post_payload(),
+        )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "idempotency_conflict"
+    refund.assert_called_once()
+    assert refund.call_args.kwargs["reason"] == "idempotency_conflict"
+    assert contract_updates[-1]["status"] == "failed"
+
+
 def test_source_snapshot_requires_asset_row_binding_and_background_sha(
     tmp_path: Path,
 ) -> None:
@@ -591,15 +674,32 @@ def test_refinement_readiness_blocks_live_without_gemini_key() -> None:
     assert "gemini_image_edit_api_key_required" in readiness["blockingIssues"]
 
 
-def test_refinement_readiness_is_green_with_configured_gemini_key() -> None:
-    with mock.patch.dict(
-        app_module.os.environ,
-        {
-            "APP_ENV": "render",
-            "GEMINI_API_KEY": "test-key",
-            "GOOGLE_API_KEY": "",
-        },
-        clear=False,
+def test_refinement_readiness_is_green_with_configured_gemini_and_live_worker() -> None:
+    queue = mock.Mock()
+    queue.service_liveness.return_value = {
+        "queueName": "product-revision",
+        "ageMs": 120,
+        "ttlSeconds": 30,
+    }
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {
+                "APP_ENV": "render",
+                "GEMINI_API_KEY": "test-key",
+                "GOOGLE_API_KEY": "",
+                "REDIS_URL": "redis://test.invalid/0",
+                "REDIS_REVISION_QUEUE": "product-revision",
+                "REVISION_WORKER_ENABLED": "true",
+                "REVISION_WORKER_SERVICE_ID": "revision-worker",
+            },
+            clear=False,
+        ),
+        mock.patch.object(
+            app_module,
+            "redis_revision_queue_from_env",
+            return_value=queue,
+        ),
     ):
         readiness = app_module.image_refinement_readiness()
         report = app_module.deployment_config_report()

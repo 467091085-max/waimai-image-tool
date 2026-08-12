@@ -7,6 +7,8 @@ import subprocess
 import sys
 
 import pandas as pd
+import provider_capacity
+from scripts import menu_e2e_acceptance as acceptance
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -193,3 +195,64 @@ def test_real_mode_blocks_before_app_import_and_redacts_credentials(
         )
     )
     assert "zero provider calls made" in completed.stdout
+
+
+def test_real_hundred_image_report_emits_capacity_evidence_contract(
+    tmp_path: Path,
+) -> None:
+    report = acceptance.AcceptanceReport(
+        mode="real",
+        report_path=tmp_path / "real-100-report.json",
+    )
+    report.add_stage(
+        "formal-generation",
+        acceptance.PASS,
+        elapsed_seconds=1700,
+        details={
+            "jobId": "real-paid-job-100",
+            "peakProviderConcurrency": 10,
+        },
+    )
+    report.add_stage(
+        "manifest",
+        acceptance.PASS,
+        elapsed_seconds=100,
+        details={"outputManifestSha256": "a" * 64},
+    )
+
+    evidence = acceptance.write_capacity_evidence(
+        report,
+        row_count=100,
+        provider_model="hy-image-v3",
+    )
+
+    assert evidence is not None
+    capacity = provider_capacity.GenerationCapacity.from_env(
+        {
+            "TENCENT_TOKENHUB_VERIFIED_CONCURRENCY": "10",
+            "TENCENT_TOKENHUB_MEASURED_P95_SECONDS": "30",
+            "GENERATION_TARGET_BATCH_EVIDENCE_FILE": evidence["path"],
+            "GENERATION_TARGET_BATCH_EVIDENCE_SHA256": evidence["sha256"],
+        }
+    )
+    contract = capacity.public_contract()
+    assert contract["productionTargetVerified"] is True
+    assert contract["targetBatchEvidence"]["runId"] == "real-paid-job-100"
+
+
+def test_real_acceptance_environment_allows_ten_row_workers(
+    tmp_path: Path,
+) -> None:
+    with acceptance.isolated_environment(
+        tmp_path,
+        row_count=100,
+        mode="real",
+    ):
+        assert acceptance.os.environ["FINAL_GENERATION_WORKERS"] == "10"
+
+    with acceptance.isolated_environment(
+        tmp_path,
+        row_count=100,
+        mode="deterministic",
+    ):
+        assert acceptance.os.environ["FINAL_GENERATION_WORKERS"] == "2"

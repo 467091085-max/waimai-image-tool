@@ -11,16 +11,23 @@ import background_profiles
 import object_storage_service
 
 
-def approved_record(style_id: str, *, suffix: str = "") -> dict[str, object]:
+def approved_record(
+    style_id: str,
+    *,
+    suffix: str = "",
+    category_id: str = "light_food",
+    category_name: str = "轻食/沙拉",
+    prompt_version: str = "style-background.v11",
+) -> dict[str, object]:
     index = int(style_id.rsplit("-", 1)[1])
     return {
         "id": "asset-" + f"{index:040x}"[:-len(suffix) or None] + suffix,
         "taxonomy_version": app_module.TAXONOMY_VERSION,
-        "category_id": "light_food",
-        "category_name": "轻食/沙拉",
+        "category_id": category_id,
+        "category_name": category_name,
         "style_id": style_id,
-        "prompt_version": "style-background.v11",
-        "pipeline_version": "style-background.v11",
+        "prompt_version": prompt_version,
+        "pipeline_version": prompt_version,
         "source_provider": "tencent-hunyuan",
         "model_name": "hy-image-v3.0",
         "original_sha256": f"{index:064x}",
@@ -56,6 +63,15 @@ def light_food_context() -> dict[str, object]:
         "taxonomyId": "light_food",
         "category": "轻食/沙拉",
         "confidence": 91,
+        "selectionReason": "menu_taxonomy_evidence",
+    }
+
+
+def mixed_rice_context() -> dict[str, object]:
+    return {
+        "taxonomyId": "mixed_rice",
+        "category": "盖饭/拌饭/便当",
+        "confidence": 96,
         "selectionReason": "menu_taxonomy_evidence",
     }
 
@@ -111,6 +127,64 @@ def test_complete_approved_runtime_manifest_is_ready() -> None:
     assert len(CatalogStore.calls) == 1
     assert CatalogStore.calls[0]["tenant_id"] == "waimai-shared"
     assert CatalogStore.calls[0]["pipeline_version"] == "style-background.v11"
+
+
+def test_v12_promotion_is_scoped_to_mixed_rice() -> None:
+    with mock.patch.dict(
+        app_module.os.environ,
+        {"MIXED_RICE_BACKGROUND_PROMPT_VERSION": "style-background.v12"},
+    ):
+        assert (
+            app_module.active_background_prompt_version("mixed_rice")
+            == "style-background.v12"
+        )
+        assert (
+            app_module.active_background_prompt_version("light_food")
+            == "style-background.v11"
+        )
+
+
+def test_complete_v12_postgres_manifest_uses_v12_prompt_hashes() -> None:
+    records = [
+        approved_record(
+            style_id,
+            category_id="mixed_rice",
+            category_name="盖饭/拌饭/便当",
+            prompt_version="style-background.v12",
+        )
+        for style_id in background_catalog.STYLE_IDS
+    ]
+    patches = catalog_patches(records)
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {"MIXED_RICE_BACKGROUND_PROMPT_VERSION": "style-background.v12"},
+        ),
+        mock.patch.object(
+            app_module,
+            "active_category_context",
+            side_effect=mixed_rice_context,
+        ),
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+    ):
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is True
+    assert manifest["promptVersion"] == "style-background.v12"
+    assert CatalogStore.calls[0]["pipeline_version"] == "style-background.v12"
+    for entry in manifest["assets"]:
+        expected = background_profiles.pure_background_prompt(
+            "mixed_rice",
+            entry["styleId"],
+            prompt_version="style-background.v12",
+        )
+        assert entry["promptSha256"] == hashlib.sha256(
+            expected.encode("utf-8")
+        ).hexdigest()
 
 
 def test_duplicate_approved_runtime_slot_fails_closed() -> None:
@@ -304,6 +378,97 @@ def test_complete_approved_cos_manifest_is_ready(tmp_path) -> None:
     assert manifest["_recordsByStyle"]["style-1"][
         "original_object_ref"
     ].startswith("ai-assets/waimai-shared/background-catalog/")
+
+
+def test_complete_v12_cos_manifest_uses_v12_prompt_hashes(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    assets = []
+    for style_id in background_catalog.STYLE_IDS:
+        raw = f"mixed-rice-v12-{style_id}".encode("utf-8")
+        asset_sha = hashlib.sha256(raw).hexdigest()
+        prompt = background_profiles.pure_background_prompt(
+            "mixed_rice",
+            style_id,
+            prompt_version="style-background.v12",
+        )
+        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        object_key = background_catalog.catalog_object_key(
+            category_id="mixed_rice",
+            style_id=style_id,
+            prompt_version="style-background.v12",
+            prompt_sha256=prompt_sha,
+            asset_sha256=asset_sha,
+        )
+        storage.put_bytes(raw, object_key=object_key)
+        assets.append(
+            {
+                "catalogVersion": background_catalog.CATALOG_VERSION,
+                "taxonomyVersion": app_module.TAXONOMY_VERSION,
+                "categoryId": "mixed_rice",
+                "categoryName": "盖饭/拌饭/便当",
+                "styleId": style_id,
+                "promptVersion": "style-background.v12",
+                "promptSha256": prompt_sha,
+                "provider": "tencent-hunyuan",
+                "model": "hy-image-v3.0",
+                "objectKey": object_key,
+                "sha256": asset_sha,
+                "fileSize": len(raw),
+                "reviewStatus": "approved",
+                "createdAt": "2026-08-11T00:00:00Z",
+            }
+        )
+    document = {
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": app_module.TAXONOMY_VERSION,
+        "categoryId": "mixed_rice",
+        "categoryName": "盖饭/拌饭/便当",
+        "promptVersion": "style-background.v12",
+        "reviewStatus": "approved",
+        "assets": assets,
+    }
+    storage.put_bytes(
+        json.dumps(document, ensure_ascii=False).encode("utf-8"),
+        object_key=background_catalog.catalog_manifest_key(
+            "mixed_rice",
+            "style-background.v12",
+        ),
+    )
+
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {"MIXED_RICE_BACKGROUND_PROMPT_VERSION": "style-background.v12"},
+        ),
+        mock.patch.object(
+            app_module,
+            "active_category_context",
+            side_effect=mixed_rice_context,
+        ),
+        mock.patch.object(
+            app_module,
+            "background_catalog_manifest_backend",
+            return_value="object-storage",
+        ),
+        mock.patch.object(
+            app_module.object_storage_service,
+            "assess_object_storage_readiness",
+            return_value={"ready": True},
+        ),
+        mock.patch.object(
+            app_module.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+    ):
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is True
+    assert manifest["promptVersion"] == "style-background.v12"
+    assert {entry["promptVersion"] for entry in manifest["assets"]} == {
+        "style-background.v12"
+    }
 
 
 def test_pending_cos_manifest_fails_closed(tmp_path) -> None:

@@ -6,8 +6,10 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
+import prompt_compiler
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
 JOB_TYPE = "menu_batch_generation"
 PRICING_VERSION = "v1"
 QUALITY_POINTS = {"standard": 10, "premium": 20}
@@ -133,13 +135,56 @@ def _menu_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _background_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
     source = _mapping(value, "selectedBackground")
+    asset_id = _clean_id(source.get("assetId"), "selectedBackground.assetId")
+    style_id = _clean_id(source.get("styleId"), "selectedBackground.styleId")
+    asset_sha256 = _sha256(
+        source.get("sha256"),
+        "selectedBackground.sha256",
+    )
+    raw_scene_contract = source.get("sceneContract")
+    try:
+        scene_contract = (
+            prompt_compiler.scene_contract_from_payload(
+                raw_scene_contract,
+                expected_asset_id=asset_id,
+                expected_asset_sha256=asset_sha256,
+            )
+            if isinstance(raw_scene_contract, Mapping)
+            else prompt_compiler.scene_contract_for(
+                style_id,
+                "unknown",
+                asset_id=asset_id,
+                asset_sha256=asset_sha256,
+                prompt_version=(
+                    prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+                ),
+            )
+        )
+    except prompt_compiler.PromptCompilationError as exc:
+        raise BatchContractError(
+            "invalid_scene_contract",
+            "selectedBackground.sceneContract is invalid",
+            field="selectedBackground.sceneContract",
+        ) from exc
+    prompt_version = str(
+        source.get("backgroundPromptVersion")
+        or scene_contract.background_prompt_version
+    ).strip()
+    if prompt_version != scene_contract.background_prompt_version:
+        raise BatchContractError(
+            "invalid_background_prompt_version",
+            "selectedBackground.backgroundPromptVersion does not match sceneContract",
+            field="selectedBackground.backgroundPromptVersion",
+        )
     snapshot = {
-        "assetId": _clean_id(source.get("assetId"), "selectedBackground.assetId"),
-        "styleId": _clean_id(source.get("styleId"), "selectedBackground.styleId"),
-        "sha256": _sha256(source.get("sha256"), "selectedBackground.sha256"),
+        "assetId": asset_id,
+        "styleId": style_id,
+        "sha256": asset_sha256,
         "objectKey": _object_key(source.get("objectKey"), "selectedBackground.objectKey"),
         "width": _bounded_dimension(source.get("width"), "selectedBackground.width"),
         "height": _bounded_dimension(source.get("height"), "selectedBackground.height"),
+        "backgroundPromptVersion": scene_contract.background_prompt_version,
+        "sceneContract": scene_contract.payload(),
     }
     library_asset_id = str(source.get("libraryAssetId") or "").strip()
     if library_asset_id:

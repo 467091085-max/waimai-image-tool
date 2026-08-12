@@ -23,6 +23,7 @@ from shared.redis_queue import (
     RedisTaskQueue,
     product_queue_from_env,
     queue_from_env,
+    revision_queue_from_env,
 )
 from worker.product_batch_handler import (
     NonRetryableProductBatchError,
@@ -197,7 +198,8 @@ class GenerationWorker:
                 return True
             except Exception as exc:  # noqa: BLE001 - worker must capture provider failures
                 LOGGER.exception("generation task failed", extra={"task_id": task_id, "attempt": attempts})
-                if attempts > self.max_retries:
+                retryable = getattr(exc, "retryable", True) is not False
+                if not retryable or attempts > self.max_retries:
                     try:
                         self.queue.ack_failed(
                             task_id,
@@ -363,8 +365,16 @@ class GenerationWorker:
             ttl_seconds=self.service_heartbeat_ttl_seconds,
         )
 
-    def run_forever(self, *, timeout_seconds: int = 5) -> None:
+    def run_forever(
+        self,
+        *,
+        timeout_seconds: int = 5,
+        concurrency: int = 1,
+    ) -> None:
+        consumer_count = max(1, min(int(concurrency), 32))
         heartbeat_stop = Event()
+        consumer_stop = Event()
+        fatal_errors: list[BaseException] = []
         heartbeat_interval = max(
             1.0,
             self.service_heartbeat_ttl_seconds / 3,
@@ -384,19 +394,49 @@ class GenerationWorker:
             daemon=True,
         )
         heartbeat_thread.start()
-        retry_delay = 0.5
-        try:
-            while True:
+
+        def consumer_loop(*, propagate_interrupt: bool = False) -> None:
+            retry_delay = 0.5
+            while not consumer_stop.is_set():
                 try:
                     self.process_one(timeout_seconds=timeout_seconds)
                     retry_delay = 0.5
-                except KeyboardInterrupt:
-                    raise
+                except KeyboardInterrupt as exc:
+                    consumer_stop.set()
+                    if propagate_interrupt:
+                        raise
+                    fatal_errors.append(exc)
+                    return
                 except Exception:  # noqa: BLE001 - transient Redis errors must not stop Worker
                     LOGGER.exception("worker loop failed; retrying")
-                    time.sleep(retry_delay)
+                    if consumer_stop.wait(retry_delay):
+                        return
                     retry_delay = min(retry_delay * 2, 30)
+
+        consumers: list[Thread] = []
+        try:
+            if consumer_count == 1:
+                consumer_loop(propagate_interrupt=True)
+            else:
+                for index in range(consumer_count):
+                    thread = Thread(
+                        target=consumer_loop,
+                        name=f"queue-consumer-{index + 1}",
+                        daemon=True,
+                    )
+                    consumers.append(thread)
+                    thread.start()
+                while not consumer_stop.wait(0.5):
+                    if fatal_errors or not any(
+                        thread.is_alive() for thread in consumers
+                    ):
+                        break
+                if fatal_errors:
+                    raise fatal_errors[0]
         finally:
+            consumer_stop.set()
+            for thread in consumers:
+                thread.join(timeout=max(1, timeout_seconds + 1))
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=1)
 
@@ -404,11 +444,12 @@ class GenerationWorker:
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     task_mode = str(os.environ.get("WORKER_TASK_MODE") or "prompt").strip().lower()
-    queue = (
-        product_queue_from_env()
-        if task_mode == "product"
-        else queue_from_env()
-    )
+    if task_mode == "product":
+        queue = product_queue_from_env()
+    elif task_mode == "revision":
+        queue = revision_queue_from_env()
+    else:
+        queue = queue_from_env()
     worker = GenerationWorker(
         queue,
         max_retries=int(os.environ.get("WORKER_MAX_RETRIES", "2")),
@@ -420,7 +461,15 @@ def main() -> None:
         worker_id=os.environ.get("WORKER_ID"),
         lease_seconds=float(os.environ.get("WORKER_LEASE_SECONDS", "0")) or None,
         service_id=(
-            str(os.environ.get("PRODUCT_WORKER_SERVICE_ID") or "product-worker")
+            str(
+                os.environ.get("REVISION_WORKER_SERVICE_ID")
+                or "revision-worker"
+            )
+            if task_mode == "revision"
+            else str(
+                os.environ.get("PRODUCT_WORKER_SERVICE_ID")
+                or "product-worker"
+            )
             if task_mode == "product"
             else str(
                 os.environ.get("GENERATION_WORKER_SERVICE_ID")
@@ -431,7 +480,10 @@ def main() -> None:
             os.environ.get("WORKER_SERVICE_HEARTBEAT_TTL_SECONDS", "30")
         ),
     )
-    worker.run_forever(timeout_seconds=int(os.environ.get("WORKER_BRPOP_TIMEOUT", "5")))
+    worker.run_forever(
+        timeout_seconds=int(os.environ.get("WORKER_BRPOP_TIMEOUT", "5")),
+        concurrency=max(1, int(os.environ.get("WORKER_CONCURRENCY", "1"))),
+    )
 
 
 if __name__ == "__main__":

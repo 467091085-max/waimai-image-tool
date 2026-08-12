@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Any, Mapping, Protocol
 
+import provider_capacity
 from shared.redis_queue import RedisTaskQueue, queue_from_env
 from worker.prompt_provider import (
     PromptProviderError,
@@ -45,9 +46,19 @@ def build_prompt_worker(
     provider: PromptProvider | None = None,
 ) -> GenerationWorker:
     values = os.environ if env is None else env
-    resolved_provider = provider or TokenHubPromptProvider(
-        TokenHubPromptConfig.from_env(values)
-    )
+    if provider is None:
+        capacity = provider_capacity.GenerationCapacity.from_env(values)
+        resolved_provider = TokenHubPromptProvider(
+            TokenHubPromptConfig.from_env(values),
+            concurrency_gate=(
+                provider_capacity.build_provider_concurrency_gate(
+                    capacity,
+                    values,
+                )
+            ),
+        )
+    else:
+        resolved_provider = provider
     return GenerationWorker(
         queue or queue_from_env(values),
         handler=PromptTaskHandler(resolved_provider),
@@ -90,6 +101,13 @@ def build_prompt_worker(
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     worker = build_prompt_worker()
+    capacity = provider_capacity.GenerationCapacity.from_env()
+    requested_consumers = _env_int(
+        os.environ,
+        "WORKER_CONCURRENCY",
+        10,
+        minimum=1,
+    )
     LOGGER.info(
         "prompt worker started",
         extra={
@@ -103,7 +121,11 @@ def main() -> None:
             "WORKER_BRPOP_TIMEOUT",
             5,
             minimum=0,
-        )
+        ),
+        concurrency=min(
+            requested_consumers,
+            capacity.active_provider_concurrency,
+        ),
     )
 
 

@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw
 
 from background_compositor import CompositionError, compose_selected_background, outside_mask_pixels_equal
 from image_pipeline import fit_to_platform
+from prompt_compiler import PlacementSpec
 
 
 def sample_inputs() -> tuple[Image.Image, Image.Image, Image.Image]:
@@ -64,3 +65,34 @@ def test_platform_fit_uses_full_frame_cover_crop():
     assert fitted.size == (800, 600)
     assert fitted.getpixel((0, 0))[:3] == (220, 30, 30)
     assert fitted.getpixel((799, 599))[:3] == (220, 30, 30)
+
+
+def test_compositor_uses_scene_anchor_and_contact_shadow():
+    background, foreground, mask = sample_inputs()
+    placement = PlacementSpec(
+        center_x=0.42,
+        center_y=0.48,
+        max_subject_width_ratio=0.72,
+        max_subject_height_ratio=0.62,
+        shadow_offset_x_ratio=0.01,
+        shadow_offset_y_ratio=0.015,
+        shadow_blur_ratio=0.02,
+        shadow_opacity=0.18,
+    )
+
+    result = compose_selected_background(
+        background,
+        foreground,
+        mask,
+        placement=placement,
+    )
+
+    assert result.metadata["placementContract"] == placement.payload()
+    assert result.metadata["contactShadow"]["enabled"] is True
+    assert result.metadata["subjectCenter"]["x"] == pytest.approx(0.42, abs=0.01)
+    assert result.metadata["subjectCenter"]["y"] == pytest.approx(0.48, abs=0.01)
+    assert outside_mask_pixels_equal(
+        result.normalized_background,
+        result.image,
+        result.foreground_mask,
+    )

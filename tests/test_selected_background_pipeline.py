@@ -12,6 +12,7 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 import pytest
+import prompt_compiler
 
 import app as app_module
 
@@ -91,6 +92,63 @@ def test_provider_image_write_failure_keeps_previous_complete_file() -> None:
 
 
 class SelectedBackgroundPipelineTests(unittest.TestCase):
+    def test_v12_background_contract_survives_worker_materialization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "background.png"
+            save_image(source, (1024, 768), (235, 228, 214))
+            raw = source.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            storage = app_module.object_storage_service.ObjectStorageService(
+                root / "objects"
+            )
+            object_key = storage.put_bytes(
+                raw,
+                object_key="generated/selected-backgrounds/bg-v12/image.png",
+            )
+            scene = prompt_compiler.scene_contract_for(
+                "style-3",
+                "mixed_rice",
+                asset_id="bg-v12",
+                asset_sha256=digest,
+                prompt_version=prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION,
+            )
+            contract = {
+                "menu": {"sha256": "1" * 64},
+                "selectedBackground": {
+                    "assetId": "bg-v12",
+                    "styleId": "style-3",
+                    "sha256": digest,
+                    "objectKey": object_key,
+                    "width": 1024,
+                    "height": 768,
+                    "backgroundPromptVersion": "style-background.v12",
+                    "sceneContract": scene.payload(),
+                },
+            }
+
+            with (
+                mock.patch.object(
+                    app_module.object_storage_service,
+                    "get_object_storage_service",
+                    return_value=storage,
+                ),
+                mock.patch.object(app_module, "MODEL_INPUT_DIR", root / "model"),
+            ):
+                restored = app_module.selected_background_from_batch_contract(
+                    contract
+                )
+
+            self.assertEqual(
+                restored.background_prompt_version,
+                "style-background.v12",
+            )
+            self.assertEqual(
+                restored.scene_contract.background_prompt_version,
+                "style-background.v12",
+            )
+            self.assertEqual(restored.scene_contract.camera.pitch_degrees, 56)
+
     def test_mixed_rice_combo_prompt_disambiguates_food_and_choices(self) -> None:
         row = menu_row(
             10,
@@ -114,7 +172,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             prompt = app_module.prompt_for_chroma_foreground(row, "standard")
 
         self.assertIn("必须清楚出现白米饭", prompt)
-        self.assertIn("不是整块西式牛排", prompt)
+        self.assertIn("全熟浅棕色中式黑椒无骨猪排", prompt)
+        self.assertIn("切成6片整齐排列", prompt)
+        self.assertNotIn("牛排", prompt)
         self.assertIn("三拼必须呈现3种不同肉类", prompt)
         self.assertIn("本图只呈现煎蛋", prompt)
         self.assertNotIn("热狗肠", prompt)
@@ -269,6 +329,12 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 "seedApplied": True,
             },
         )
+        self.assertTrue(
+            app_module.dish_generation_seed_metadata(
+                {"_Action": "TokenHubHyImageV3"},
+                requested,
+            )["seedApplied"]
+        )
 
     def test_exact_product_identity_keeps_similar_combo_names_separate(self) -> None:
         first = menu_row(1, "【霸气任选】 三拼饭+赠品五选一")
@@ -304,6 +370,8 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 quality: str | None,
                 target: Path,
                 selected: app_module.SelectedBackgroundAsset,
+                *,
+                compiled=None,
             ) -> dict[str, object]:
                 calls["foreground"] += 1
                 time.sleep(0.05)
@@ -501,6 +569,8 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 quality: str | None,
                 target: Path,
                 selected: app_module.SelectedBackgroundAsset,
+                *,
+                compiled=None,
             ) -> dict[str, object]:
                 calls["foreground"] += 1
                 save_image(target, (640, 480), (190, 55, 35))
@@ -594,6 +664,13 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
+                compiled = app_module.compile_product_generation(
+                    item,
+                    selected.style_id,
+                    quality,
+                    "reference",
+                    selected,
+                )
                 return {
                     "provider": "tencent-hunyuan",
                     "action": "DeterministicBackgroundComposite",
@@ -601,6 +678,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                     "backgroundIdentityVerified": True,
                     "persistedOutputBackgroundVerified": True,
                     "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "compilerVersion": app_module.prompt_compiler.COMPILER_VERSION,
+                    "compileDigest": compiled.compile_digest,
+                    "sceneContractSha256": compiled.scene_contract_sha256,
                     "outputSha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 }
 
@@ -640,6 +720,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 item: dict[str, object],
                 quality: str | None,
                 target: Path,
+                selected: app_module.SelectedBackgroundAsset,
+                *,
+                compiled=None,
             ) -> dict[str, object]:
                 image = Image.new("RGB", (640, 480), (0, 245, 245))
                 ImageDraw.Draw(image).ellipse((120, 70, 520, 440), fill=(190, 55, 35))
@@ -689,6 +772,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 item: dict[str, object],
                 quality: str | None,
                 target: Path,
+                selected: app_module.SelectedBackgroundAsset,
+                *,
+                compiled=None,
             ) -> dict[str, object]:
                 image = Image.new("RGB", (640, 480), (0, 245, 245))
                 draw = ImageDraw.Draw(image)
@@ -722,6 +808,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 mock.patch.object(app_module, "LIBRARY_DIR", root),
                 mock.patch.object(app_module, "current_menu_cache_key", return_value="menu-test"),
                 mock.patch.object(app_module, "chroma_foreground_fast_path_enabled", return_value=True),
+                mock.patch.object(app_module, "cloud_mask_fallback_enabled", return_value=True),
                 mock.patch.object(app_module, "tencent_chroma_foreground", side_effect=fake_chroma),
                 mock.patch.object(app_module, "tencent_extract_foreground_mask", side_effect=fake_cloud_mask) as cloud_mask,
             ):
@@ -743,6 +830,172 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 "local-chroma-key",
             )
             self.assertTrue(detail["persistedOutputBackgroundVerified"])
+
+    def test_invalid_chroma_fails_fast_when_cloud_mask_is_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            background_path = root / "background.jpg"
+            save_image(background_path, (800, 600), (35, 90, 145))
+            background = selected_background(background_path)
+
+            def fake_chroma(
+                _item: dict[str, object],
+                _quality: str | None,
+                target: Path,
+                _selected: app_module.SelectedBackgroundAsset,
+                *,
+                compiled=None,
+            ) -> dict[str, object]:
+                del compiled
+                save_image(target, (640, 480), (0, 245, 245))
+                return {
+                    "provider": "tencent-hunyuan",
+                    "action": "TokenHubImageV3",
+                    "promptType": "chroma_foreground",
+                }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "chroma_foreground_fast_path_enabled",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "cloud_mask_fallback_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_chroma_foreground",
+                    side_effect=fake_chroma,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "extract_chroma_mask",
+                    side_effect=app_module.ChromaExtractionError(
+                        "chroma_spill_too_large",
+                        "invalid foreground",
+                    ),
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_extract_foreground_mask",
+                ) as cloud_mask,
+            ):
+                with self.assertRaisesRegex(
+                    app_module.SelectedBackgroundError,
+                    "云 Mask 并发尚未验证",
+                ):
+                    app_module.tencent_exact_background_image(
+                        menu_row(),
+                        background,
+                        "standard",
+                        root / "blocked.png",
+                    )
+
+            cloud_mask.assert_not_called()
+
+    def test_staging_cloud_mask_fallback_requires_distributed_gate(self) -> None:
+        local_gate = mock.Mock()
+        local_gate.snapshot.return_value = {"distributed": False}
+        distributed_gate = mock.Mock()
+        distributed_gate.snapshot.return_value = {"distributed": True}
+
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {"EXACT_BACKGROUND_CLOUD_MASK_FALLBACK": "true"},
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_VERIFIED_CONCURRENCY",
+                10,
+            ),
+            mock.patch.object(
+                app_module,
+                "runtime_environment_label",
+                return_value="staging",
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_EXTRACTION_GATE",
+                local_gate,
+            ),
+        ):
+            self.assertFalse(app_module.cloud_mask_fallback_enabled())
+
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {"EXACT_BACKGROUND_CLOUD_MASK_FALLBACK": "true"},
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_VERIFIED_CONCURRENCY",
+                10,
+            ),
+            mock.patch.object(
+                app_module,
+                "runtime_environment_label",
+                return_value="staging",
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_EXTRACTION_GATE",
+                distributed_gate,
+            ),
+        ):
+            self.assertTrue(app_module.cloud_mask_fallback_enabled())
+
+    def test_staging_direct_cloud_mask_rejects_process_local_gate(self) -> None:
+        local_gate = mock.Mock()
+        local_gate.snapshot.return_value = {"distributed": False}
+
+        with (
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_VERIFIED_CONCURRENCY",
+                10,
+            ),
+            mock.patch.object(
+                app_module,
+                "runtime_environment_label",
+                return_value="staging",
+            ),
+            mock.patch.object(
+                app_module,
+                "TENCENT_MASK_EXTRACTION_GATE",
+                local_gate,
+            ),
+            mock.patch.object(
+                app_module,
+                "tencent_cloud_ready",
+                return_value=True,
+            ) as provider_ready,
+            mock.patch.object(
+                app_module,
+                "tencent_api_request",
+            ) as provider,
+        ):
+            with self.assertRaisesRegex(
+                app_module.SelectedBackgroundError,
+                "Redis 分布式并发闸门",
+            ):
+                app_module.tencent_extract_foreground_mask(
+                    menu_row(),
+                    Path("foreground.png"),
+                    Path("mask.png"),
+                )
+
+        provider_ready.assert_not_called()
+        provider.assert_not_called()
 
     def test_preview_mask_failure_never_falls_back_to_unverified_local_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -914,6 +1167,13 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 **_kwargs: object,
             ) -> dict[str, object]:
                 save_image(target, (120, 90), (80, 120, 60))
+                compiled = app_module.compile_product_generation(
+                    item,
+                    selected.style_id,
+                    quality,
+                    "reference",
+                    selected,
+                )
                 return {
                     "provider": "tencent-hunyuan",
                     "action": "DeterministicBackgroundComposite",
@@ -921,6 +1181,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                     "backgroundIdentityVerified": True,
                     "persistedOutputBackgroundVerified": True,
                     "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
+                    "compilerVersion": app_module.prompt_compiler.COMPILER_VERSION,
+                    "compileDigest": compiled.compile_digest,
+                    "sceneContractSha256": compiled.scene_contract_sha256,
                     "outputSha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 }
 
@@ -980,6 +1243,8 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                     final_metadata,
                     final_path,
                     background,
+                    row,
+                    "standard",
                 )
             )
 
@@ -1056,6 +1321,14 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             save_image(background_path, (800, 600), (35, 90, 145))
             save_image(output_path, (800, 600), (80, 120, 60))
             background = selected_background(background_path)
+            row = menu_row()
+            compiled = app_module.compile_product_generation(
+                row,
+                background.style_id,
+                "standard",
+                "reference",
+                background,
+            )
             output_sha = hashlib.sha256(output_path.read_bytes()).hexdigest()
             metadata = {
                 "status": "succeeded",
@@ -1064,6 +1337,10 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 "persistedOutputBackgroundVerified": True,
                 "pipelineVersion": app_module.EXACT_BACKGROUND_PIPELINE_VERSION,
                 "dishPromptVersion": app_module.DISH_GENERATION_PROMPT_VERSION,
+                "promptType": "text_to_image",
+                "compilerVersion": app_module.prompt_compiler.COMPILER_VERSION,
+                "compileDigest": compiled.compile_digest,
+                "sceneContractSha256": compiled.scene_contract_sha256,
                 "outputSha256": output_sha,
                 **app_module.selected_background_metadata(background),
             }
@@ -1073,9 +1350,48 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             }
 
             self.assertTrue(
-                app_module.verified_exact_output_metadata(metadata, output_path, background)
+                app_module.verified_exact_output_metadata(
+                    metadata,
+                    output_path,
+                    background,
+                    row,
+                    "standard",
+                )
             )
-            self.assertTrue(app_module.verified_exact_candidate(candidate, background))
+            self.assertTrue(
+                app_module.verified_exact_candidate(
+                    candidate,
+                    background,
+                    row,
+                    "standard",
+                )
+            )
+
+            wrong_compile = {
+                **metadata,
+                "compileDigest": "b" * 64,
+            }
+            wrong_compile_candidate = {
+                **wrong_compile,
+                "path": str(output_path),
+            }
+            self.assertFalse(
+                app_module.verified_exact_output_metadata(
+                    wrong_compile,
+                    output_path,
+                    background,
+                    row,
+                    "standard",
+                )
+            )
+            self.assertFalse(
+                app_module.verified_exact_candidate(
+                    wrong_compile_candidate,
+                    background,
+                    row,
+                    "standard",
+                )
+            )
 
             with mock.patch.object(
                 app_module,
@@ -1087,21 +1403,38 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                         metadata,
                         output_path,
                         background,
+                        row,
+                        "standard",
                     )
                 )
                 self.assertFalse(
                     app_module.verified_exact_candidate(
                         candidate,
                         background,
+                        row,
+                        "standard",
                     )
                 )
 
             save_image(output_path, (800, 600), (170, 40, 35))
 
             self.assertFalse(
-                app_module.verified_exact_output_metadata(metadata, output_path, background)
+                app_module.verified_exact_output_metadata(
+                    metadata,
+                    output_path,
+                    background,
+                    row,
+                    "standard",
+                )
             )
-            self.assertFalse(app_module.verified_exact_candidate(candidate, background))
+            self.assertFalse(
+                app_module.verified_exact_candidate(
+                    candidate,
+                    background,
+                    row,
+                    "standard",
+                )
+            )
 
     def test_live_preview_requires_complete_selected_background_identity(self) -> None:
         client = app_module.app.test_client()

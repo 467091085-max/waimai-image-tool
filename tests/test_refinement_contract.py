@@ -44,13 +44,26 @@ def valid_input(**overrides):
 def test_standard_rework_freezes_asset_bindings_and_server_price() -> None:
     contract = freeze_revision_batch_contract(**valid_input())
 
-    assert contract["schemaVersion"] == 1
+    assert contract["schemaVersion"] == 2
     assert contract["jobType"] == "delivery_asset_revision_batch"
     assert contract["parentGenerationJobId"] == "gen_test_001"
     assert contract["userId"] == "user_test_001"
     assert contract["sourceDeliveryAsset"]["rowNumber"] == 7
     assert contract["sourceDeliveryAsset"]["dishName"] == "招牌牛肉饭"
     assert contract["selectedBackground"]["assetId"] == "background_asset_001"
+    assert contract["providerSnapshot"] == {
+        "provider": "google-gemini",
+        "model": "gemini-3.1-flash-image",
+        "apiSurface": "interactions-v1beta",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/interactions",
+        "promptVersion": "food-refinement.v1",
+        "output": {
+            "mimeType": "image/jpeg",
+            "imageSize": "1K",
+            "aspectRatio": "source-nearest-supported",
+            "canvasNormalization": "same-as-source.v1",
+        },
+    }
     assert contract["quality"] == {"id": "standard"}
     assert contract["mode"] == "rework"
     assert contract["refinePrompt"] == ""
@@ -60,6 +73,14 @@ def test_standard_rework_freezes_asset_bindings_and_server_price() -> None:
     assert contract["billing"]["debitOrderId"] == "revision:revision_test_001:debit"
     assert contract["billing"]["refundOrderId"] == "revision:revision_test_001:refund"
     assert contract["idempotency"]["requestSha256"] == revision_request_sha256(contract)
+
+
+def test_provider_snapshot_is_part_of_revision_request_hash() -> None:
+    contract = freeze_revision_batch_contract(**valid_input())
+    changed = copy.deepcopy(contract)
+    changed["providerSnapshot"]["model"] = "gemini-3-pro-image-preview"
+
+    assert revision_request_sha256(changed) != contract["idempotency"]["requestSha256"]
 
 
 def test_premium_rework_is_server_priced_at_twenty_points() -> None:

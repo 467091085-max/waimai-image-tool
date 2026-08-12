@@ -716,6 +716,15 @@ def product_queue_from_env(env: Mapping[str, str] | None = None) -> RedisTaskQue
     return queue_from_env(values)
 
 
+def revision_queue_from_env(env: Mapping[str, str] | None = None) -> RedisTaskQueue:
+    values = dict(os.environ if env is None else env)
+    values["REDIS_GENERATION_QUEUE"] = (
+        str(values.get("REDIS_REVISION_QUEUE") or "product-revision").strip()
+        or "product-revision"
+    )
+    return queue_from_env(values)
+
+
 def public_task_payload(task: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "task_id": str(task.get("task_id") or ""),

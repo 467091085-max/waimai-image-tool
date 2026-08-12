@@ -222,6 +222,84 @@ def default_report_path(mode: str) -> Path:
     return REPO_ROOT / "scripts" / "reports" / f"menu-e2e-{mode}-{timestamp}.json"
 
 
+def write_capacity_evidence(
+    report: AcceptanceReport,
+    *,
+    row_count: int,
+    provider_model: str,
+) -> dict[str, str] | None:
+    if report.data.get("mode") != "real" or row_count != 100:
+        return None
+    stages = {
+        str(record.get("name") or ""): record
+        for record in report.data.get("stages") or []
+        if isinstance(record, dict)
+    }
+    formal = stages.get("formal-generation") or {}
+    manifest = stages.get("manifest") or {}
+    formal_details = (
+        formal.get("details")
+        if isinstance(formal.get("details"), dict)
+        else {}
+    )
+    manifest_details = (
+        manifest.get("details")
+        if isinstance(manifest.get("details"), dict)
+        else {}
+    )
+    peak = int(formal_details.get("peakProviderConcurrency") or 0)
+    elapsed = round(
+        sum(
+            float(record.get("elapsedSeconds") or 0)
+            for record in stages.values()
+        ),
+        3,
+    )
+    output_manifest_sha256 = str(
+        manifest_details.get("outputManifestSha256") or ""
+    )
+    if not (
+        formal.get("status") == PASS
+        and manifest.get("status") == PASS
+        and peak >= 10
+        and 0 < elapsed <= 3600
+        and re.fullmatch(r"[a-f0-9]{64}", output_manifest_sha256)
+    ):
+        return None
+    document = {
+        "schemaVersion": 1,
+        "mode": "real",
+        "runId": str(formal_details.get("jobId") or ""),
+        "paidProviderVerified": True,
+        "provider": "tencent-hunyuan",
+        "model": provider_model,
+        "requestedImages": 100,
+        "succeededImages": 100,
+        "elapsedSeconds": elapsed,
+        "peakProviderConcurrency": peak,
+        "outputManifestSha256": output_manifest_sha256,
+    }
+    raw = (
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    path = report.path.with_name(
+        f"{report.path.stem}-capacity-evidence.json"
+    )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(raw)
+    os.replace(temporary, path)
+    return {
+        "path": str(path),
+        "sha256": sha256_bytes(raw),
+    }
+
+
 @contextmanager
 def retained_work_directory(path: Path) -> Iterator[Path]:
     yield path
@@ -431,7 +509,7 @@ def isolated_environment(
                 ),
                 "TENCENT_HUNYUAN_SYNC_LIMIT": str(max(6, row_count)),
                 "FINAL_GENERATION_WORKERS": (
-                    "1" if mode == "real" else "2"
+                    "10" if mode == "real" else "2"
                 ),
             }
         )
@@ -573,8 +651,10 @@ def provider_boundary(
                 quality: str | None,
                 target: Path,
                 selected_background: Any | None = None,
+                *,
+                compiled: Any | None = None,
             ) -> dict[str, Any]:
-                del selected_background
+                del selected_background, compiled
                 counters["foregroundGeneration"] += 1
                 write_deterministic_foreground(
                     target,
@@ -1021,6 +1101,18 @@ def validate_manifest(
         "manifestBackgroundSha256Values": sorted(background_shas),
         "backgroundIdentityVerifiedCount": identity_verified,
         "outputDimensions": dict(output_sizes),
+        "outputManifestSha256": sha256_bytes(
+            json.dumps(
+                {
+                    "backgroundSha256": selected_sha,
+                    "dishNames": actual_names,
+                    "outputSha256Values": output_digests,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ),
     }
 
 
@@ -1580,6 +1672,21 @@ def execute_pipeline(
             if isinstance(result_payload.get("generationBatch"), dict)
             else {}
         )
+        generation_runtime = (
+            result_payload.get("generation")
+            if isinstance(result_payload.get("generation"), dict)
+            else {}
+        )
+        provider_gate = (
+            generation_runtime.get("providerGate")
+            if isinstance(generation_runtime.get("providerGate"), dict)
+            else {}
+        )
+        peak_provider_concurrency = int(
+            provider_gate.get("peak")
+            or provider_gate.get("peakInProcess")
+            or 0
+        )
         charged_points = int(submission_billing.get("chargedPoints") or 0)
         refunded_points = int(terminal_billing.get("refundedPoints") or 0)
         account_after = response_json(
@@ -1606,6 +1713,7 @@ def execute_pipeline(
             "status": last_status,
             "pollCount": polls,
             "requestedImageCount": expected_count,
+            "peakProviderConcurrency": peak_provider_concurrency,
             "balanceBefore": balance_before,
             "balanceAfter": balance_after,
             "chargedPoints": charged_points,
@@ -1893,6 +2001,7 @@ def main(argv: list[str] | None = None) -> int:
         "foregroundGeneration": 0,
         "maskExtraction": 0,
     }
+    provider_model = ""
     try:
         with temp_context:
             with isolated_environment(
@@ -1903,6 +2012,9 @@ def main(argv: list[str] | None = None) -> int:
                 import importlib
 
                 app_module = importlib.import_module("app")
+                provider_model = str(
+                    app_module.tokenhub_config().get("model") or ""
+                )
                 configure_app_paths(app_module, runtime_root)
                 with provider_boundary(
                     app_module,
@@ -1994,6 +2106,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "real"
         else "deterministic-local"
     )
+    capacity_evidence = write_capacity_evidence(
+        report,
+        row_count=int(evidence["rowCount"]),
+        provider_model=provider_model,
+    )
     report.finish(
         PASS,
         production_provider_verified=args.mode == "real",
@@ -2005,6 +2122,7 @@ def main(argv: list[str] | None = None) -> int:
             "providerCalls": provider_calls,
             "deterministicLocalSmokePassed": args.mode == "deterministic",
             "realProviderSmokePassed": args.mode == "real",
+            "capacityEvidence": capacity_evidence,
             "runtimeWorkDir": (
                 str(runtime_root)
                 if args.keep_work_dir or not automatic_work_dir

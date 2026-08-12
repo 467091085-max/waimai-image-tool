@@ -160,6 +160,91 @@ def test_authenticated_generation_uses_product_redis_without_web_ai(
     assert forbidden_memory_queue.enqueue.call_count == 0
 
 
+def test_generation_rejects_oversized_paid_batch_before_debit_or_enqueue(
+    tmp_path: Path,
+) -> None:
+    selected_background = SimpleNamespace(
+        public_payload=lambda: {"assetId": "bg_test", "sha256": "2" * 64}
+    )
+    menu_upload_id = "menu_" + ("a" * 32)
+    menu_snapshot = {
+        "id": menu_upload_id,
+        "objectKey": "menus/menu.xlsx",
+        "sha256": "1" * 64,
+        "parserVersion": 1,
+        "summary": {"count": 121},
+    }
+    background_snapshot = {
+        "assetId": "bg_test",
+        "styleId": "style-1",
+        "sha256": "2" * 64,
+        "objectKey": "generated/selected-backgrounds/bg_test/image",
+        "width": 1024,
+        "height": 768,
+    }
+    debit = mock.Mock(
+        side_effect=AssertionError("capacity failure must happen before debit")
+    )
+    queue_lookup = mock.Mock(
+        side_effect=AssertionError("capacity failure must happen before queue lookup")
+    )
+
+    with (
+        mock.patch.object(
+            app_module,
+            "generation_request_principal",
+            return_value=_principal(),
+        ),
+        mock.patch.object(
+            app_module,
+            "resolve_menu_upload_snapshot",
+            return_value=menu_snapshot,
+        ),
+        mock.patch.object(
+            app_module,
+            "materialize_menu_upload_snapshot",
+            return_value=tmp_path / "menu.xlsx",
+        ),
+        mock.patch.object(app_module, "public_style_ids", return_value={"style-1"}),
+        mock.patch.object(
+            app_module,
+            "requested_selected_background",
+            return_value=selected_background,
+        ),
+        mock.patch.object(
+            app_module,
+            "selected_background_batch_snapshot",
+            return_value=background_snapshot,
+        ),
+        mock.patch.object(
+            app_module,
+            "batch_watermark_snapshot",
+            return_value={"enabled": False},
+        ),
+        mock.patch.object(app_module, "tencent_ready", return_value=True),
+        mock.patch.object(app_module, "TENCENT_SYNC_LIMIT", 120),
+        mock.patch.object(app_module, "product_redis_queue", queue_lookup),
+        mock.patch.object(app_module.billing, "debit_account", debit),
+    ):
+        response = app_module.app.test_client().post(
+            "/api/generation-jobs",
+            json={
+                "style": "style-1",
+                "quality": "standard",
+                "menuUploadId": menu_upload_id,
+                "idempotencyKey": "capacity-test",
+                "platforms": ["meituan"],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "generation_batch_capacity_insufficient"
+    assert response.get_json()["requestedImages"] == 121
+    assert response.get_json()["batchCallLimit"] == 120
+    debit.assert_not_called()
+    queue_lookup.assert_not_called()
+
+
 def test_completed_product_task_settles_and_hides_private_manifest_pointer() -> None:
     queue = _queue()
     contract = _contract()

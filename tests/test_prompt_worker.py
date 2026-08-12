@@ -14,6 +14,7 @@ from tests.redis_test_double import RedisTestDouble
 from worker.prompt_provider import (
     PromptProviderConfigurationError,
     PromptProviderError,
+    TOKENHUB_HY_V3_URL,
     TOKENHUB_IMAGE_QUERY_URL,
     TOKENHUB_IMAGE_SUBMIT_URL,
     TokenHubPromptConfig,
@@ -47,7 +48,7 @@ class FailingProvider:
 
     def generate(self, _prompt: str) -> Mapping[str, Any]:
         self.calls += 1
-        raise PromptProviderError("provider unavailable")
+        raise PromptProviderError("provider unavailable", retryable=True)
 
 
 def _queue() -> RedisTaskQueue:
@@ -253,6 +254,53 @@ def test_tokenhub_v3_adapter_uses_submit_then_query_without_network() -> None:
     ]
 
 
+def test_tokenhub_current_hy_image_v3_uses_official_sync_protocol() -> None:
+    calls: list[tuple[str, dict[str, Any], float]] = []
+
+    def http_post(
+        url: str,
+        payload: Mapping[str, Any],
+        timeout: float,
+    ) -> Mapping[str, Any]:
+        calls.append((url, dict(payload), timeout))
+        return {
+            "request_id": "wand-prompt-1",
+            "data": [{"url": "https://cdn.example/hy-image-v3.jpg"}],
+        }
+
+    provider = TokenHubPromptProvider(
+        TokenHubPromptConfig(
+            api_key="test-only-key",
+            model="hy-image-v3",
+            protocol="wand-sync-v1",
+            request_timeout_seconds=55,
+            poll_timeout_seconds=120,
+        ),
+        http_post=http_post,
+    )
+
+    result = provider.generate("适合盖饭的干净外卖摄影背景")
+
+    assert result == {
+        "image_url": "https://cdn.example/hy-image-v3.jpg",
+        "model": "hy-image-v3",
+        "provider": "tencent-tokenhub",
+        "provider_job_id": "",
+        "request_id": "wand-prompt-1",
+    }
+    assert calls == [
+        (
+            TOKENHUB_HY_V3_URL,
+            {
+                "model": "hy-image-v3",
+                "prompt": "适合盖饭的干净外卖摄影背景",
+                "revise": False,
+            },
+            120,
+        )
+    ]
+
+
 def test_generate_queue_flows_from_api_to_prompt_worker_done(
     monkeypatch,
 ) -> None:
@@ -318,6 +366,36 @@ def test_prompt_worker_retries_with_bound_then_writes_failed(
     assert result["image_url"] == ""
     assert result["attempts"] == 2
     assert result["error"] == "provider unavailable"
+
+
+def test_prompt_worker_does_not_retry_ambiguous_paid_submission() -> None:
+    queue = _queue()
+    queue.enqueue(
+        {
+            "taskType": "prompt_generation",
+            "prompt": "不要重复付费提交",
+        },
+        task_id="prompt-nonretryable",
+    )
+    provider = FailingProvider()
+
+    def fail_once(_prompt: str) -> Mapping[str, Any]:
+        provider.calls += 1
+        raise PromptProviderError("paid submit outcome unknown")
+
+    provider.generate = fail_once  # type: ignore[method-assign]
+    worker = build_prompt_worker(
+        queue=queue,
+        provider=provider,
+        env={"WORKER_MAX_RETRIES": "2"},
+    )
+
+    assert worker.process_one(timeout_seconds=0) is True
+    result = queue.get("prompt-nonretryable")
+    assert provider.calls == 1
+    assert result["status"] == "failed"
+    assert result["attempts"] == 1
+    assert result["error"] == "paid submit outcome unknown"
 
 
 def test_prompt_worker_publishes_queue_scoped_service_heartbeat() -> None:

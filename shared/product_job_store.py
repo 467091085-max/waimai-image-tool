@@ -558,6 +558,7 @@ SELECT
     j.id AS job_id,
     j.owner_user_id,
     j.request_sha256,
+    j.request_payload->>'jobType' AS job_type,
     j.status AS job_status,
     j.fence,
     j.cancel_requested,

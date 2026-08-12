@@ -52,6 +52,8 @@ import growth_service
 import object_storage_service
 import pandas as pd
 import payment_service
+import prompt_compiler
+import provider_capacity
 import sms_service
 import storage_db
 import withdrawal_service
@@ -100,7 +102,10 @@ from background_compositor import (
 )
 from generation_queue import InMemoryGenerationQueue
 from image_pipeline import PLATFORMS, assess_generated_asset_quality, export_delivery_zip
-from image_edit_provider import gemini_image_edit_readiness
+from image_edit_provider import (
+    gemini_image_edit_provider_snapshot,
+    gemini_image_edit_readiness,
+)
 from matching_engine import (
     TAXONOMY_COMBO,
     TAXONOMY_LABELS,
@@ -168,6 +173,7 @@ from shared.redis_queue import (
     QueueError as RedisQueueError,
     TaskNotFound as RedisTaskNotFound,
     product_queue_from_env as redis_product_queue_from_env,
+    revision_queue_from_env as redis_revision_queue_from_env,
 )
 
 
@@ -212,9 +218,25 @@ TENCENT_HUNYUAN_VERSION = "2023-09-01"
 TENCENT_TOKENHUB_IMAGE_LITE_URL = "https://tokenhub.tencentmaas.com/v1/api/image/lite"
 TENCENT_TOKENHUB_IMAGE_SUBMIT_URL = "https://tokenhub.tencentmaas.com/v1/api/image/submit"
 TENCENT_TOKENHUB_IMAGE_QUERY_URL = "https://tokenhub.tencentmaas.com/v1/api/image/query"
-TENCENT_REQUEST_TIMEOUT = env_int("TENCENT_REQUEST_TIMEOUT", 55)
-TENCENT_SYNC_LIMIT = env_int("TENCENT_HUNYUAN_SYNC_LIMIT", 6)
-TENCENT_TOKENHUB_POLL_TIMEOUT = env_int("TENCENT_TOKENHUB_POLL_TIMEOUT", 120)
+TENCENT_TOKENHUB_HY_V3_URL = (
+    "https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v3-generation"
+)
+TOKENHUB_PROTOCOL_AUTO = "auto"
+TOKENHUB_PROTOCOL_LEGACY = "legacy-submit-query-v1"
+TOKENHUB_PROTOCOL_WAND = "wand-sync-v1"
+TOKENHUB_PROTOCOLS = {
+    TOKENHUB_PROTOCOL_AUTO,
+    TOKENHUB_PROTOCOL_LEGACY,
+    TOKENHUB_PROTOCOL_WAND,
+}
+TENCENT_REQUEST_TIMEOUT = max(
+    1,
+    min(15 * 60, env_int("TENCENT_REQUEST_TIMEOUT", 55)),
+)
+TENCENT_TOKENHUB_POLL_TIMEOUT = max(
+    1,
+    min(60 * 60, env_int("TENCENT_TOKENHUB_POLL_TIMEOUT", 120)),
+)
 TENCENT_TOKENHUB_POLL_INTERVAL = max(1, env_int("TENCENT_TOKENHUB_POLL_INTERVAL", 3))
 REMOTE_IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3
 REMOTE_IMAGE_DOWNLOAD_RETRY_STATUS_CODES = frozenset(
@@ -233,7 +255,9 @@ REMOTE_IMAGE_ALLOWED_HOST_SUFFIXES = tuple(
     ).split(",")
     if suffix.strip()
 )
-FINAL_GENERATION_WORKERS = max(1, env_int("FINAL_GENERATION_WORKERS", 3))
+GENERATION_CAPACITY = provider_capacity.GenerationCapacity.from_env()
+TENCENT_SYNC_LIMIT = GENERATION_CAPACITY.batch_call_limit
+FINAL_GENERATION_WORKERS = GENERATION_CAPACITY.batch_workers
 GENERATION_QUEUE_STALE_AFTER_SECONDS = max(
     1,
     env_int("GENERATION_QUEUE_STALE_AFTER_SECONDS", 5 * 60),
@@ -249,17 +273,25 @@ AI_ASSET_MANIFEST_NAME = "manifest.jsonl"
 MENU_PARSER_VERSION = 1
 MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 11
-DISH_GENERATION_PROMPT_VERSION = 3
-EXACT_BACKGROUND_PIPELINE_VERSION = 4
-CHROMA_FOREGROUND_PROMPT_VERSION = 3
-CHROMA_FOREGROUND_PROMPT_MAX_CHARS = 600
+DISH_GENERATION_PROMPT_VERSION = 5
+EXACT_BACKGROUND_PIPELINE_VERSION = 6
+CHROMA_FOREGROUND_PROMPT_VERSION = 5
+CHROMA_FOREGROUND_PROMPT_MAX_CHARS = prompt_compiler.MAX_COMPILED_PROMPT_CHARS
 EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
 STAGING_E2E_INSTANCE_NONCE_PATH = Path(
     "/tmp/waimai-staging-e2e-instance-nonce"
 )
 AI_ASSET_MANIFEST_LOCK = threading.Lock()
-TENCENT_TOKENHUB_GENERATION_LOCK = threading.Lock()
-TENCENT_MASK_EXTRACTION_LOCK = threading.Lock()
+TENCENT_TOKENHUB_GENERATION_GATE = (
+    provider_capacity.build_provider_concurrency_gate(GENERATION_CAPACITY)
+)
+TENCENT_MASK_VERIFIED_CONCURRENCY = max(
+    0,
+    min(32, env_int("TENCENT_MASK_VERIFIED_CONCURRENCY", 0)),
+)
+TENCENT_MASK_EXTRACTION_GATE = provider_capacity.build_mask_concurrency_gate(
+    TENCENT_MASK_VERIFIED_CONCURRENCY
+)
 EXACT_FOREGROUND_CACHE_LOCKS = tuple(threading.Lock() for _ in range(64))
 GENERATION_BATCH_SUBMIT_LOCK = threading.Lock()
 REVISION_BATCH_SUBMIT_LOCK = threading.Lock()
@@ -385,7 +417,11 @@ class SelectedBackgroundAsset:
     path: Path
     width: int
     height: int
+    background_prompt_version: str = (
+        prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    )
     library_asset_id: str = ""
+    scene_contract: prompt_compiler.BackgroundSceneContract | None = None
 
     def public_payload(self) -> dict[str, Any]:
         payload = {
@@ -395,9 +431,13 @@ class SelectedBackgroundAsset:
             "sha256": self.sha256,
             "width": self.width,
             "height": self.height,
+            "backgroundPromptVersion": self.background_prompt_version,
         }
         if self.library_asset_id:
             payload["libraryAssetId"] = self.library_asset_id
+        if self.scene_contract is not None:
+            payload["sceneContractVersion"] = self.scene_contract.version
+            payload["sceneContractSha256"] = self.scene_contract.contract_sha256
         return payload
 
 
@@ -2293,7 +2333,30 @@ def tokenhub_config() -> dict[str, Any]:
         or "hy-image-v3.0"
     ).strip()
     enabled = env_truthy("TENCENT_TOKENHUB_ENABLED", default=bool(api_key))
-    return {"api_key": api_key, "model": model, "enabled": enabled}
+    protocol = str(
+        os.environ.get("TENCENT_TOKENHUB_PROTOCOL")
+        or TOKENHUB_PROTOCOL_AUTO
+    ).strip().lower()
+    return {
+        "api_key": api_key,
+        "model": model,
+        "enabled": enabled,
+        "protocol": protocol,
+    }
+
+
+def resolved_tokenhub_protocol(config: dict[str, Any] | None = None) -> str:
+    cfg = config or tokenhub_config()
+    protocol = str(cfg.get("protocol") or TOKENHUB_PROTOCOL_AUTO).strip().lower()
+    if protocol not in TOKENHUB_PROTOCOLS:
+        raise RuntimeError("TENCENT_TOKENHUB_PROTOCOL 配置无效")
+    if protocol == TOKENHUB_PROTOCOL_AUTO:
+        return (
+            TOKENHUB_PROTOCOL_WAND
+            if str(cfg.get("model") or "").strip().lower() == "hy-image-v3"
+            else TOKENHUB_PROTOCOL_LEGACY
+        )
+    return protocol
 
 
 def tokenhub_ready() -> bool:
@@ -2370,6 +2433,12 @@ def tencent_status_payload() -> dict[str, Any]:
             missing.append("TENCENTCLOUD_SECRET_ID")
         if not cfg["secret_key"]:
             missing.append("TENCENTCLOUD_SECRET_KEY")
+    try:
+        tokenhub_protocol = resolved_tokenhub_protocol(tokenhub)
+        tokenhub_protocol_error = ""
+    except RuntimeError as exc:
+        tokenhub_protocol = str(tokenhub.get("protocol") or "")
+        tokenhub_protocol_error = str(exc)
     return {
         "provider": "tencent-hunyuan" if tencent_ready() else "local-demo",
         "configured": tencent_ready(),
@@ -2379,6 +2448,12 @@ def tencent_status_payload() -> dict[str, Any]:
         "syncLimit": TENCENT_SYNC_LIMIT,
         "tokenhubReady": tokenhub_ready(),
         "tokenhubModel": tokenhub["model"],
+        "tokenhubProtocol": tokenhub_protocol,
+        "tokenhubProtocolError": tokenhub_protocol_error,
+        "capacity": {
+            **GENERATION_CAPACITY.public_contract(),
+            "providerGate": TENCENT_TOKENHUB_GENERATION_GATE.snapshot(),
+        },
         "cloudApiReady": tencent_cloud_ready(),
         "cosReady": cos["ready"],
         "cosBucket": cos["bucket"] if cos["ready"] else "",
@@ -2416,6 +2491,9 @@ def generation_provider_readiness() -> dict[str, Any]:
     tokenhub_is_ready = bool(status.get("tokenhubReady"))
     cloud_api_is_ready = bool(status.get("cloudApiReady"))
     provider_configured = bool(status.get("configured"))
+    capacity = dict(status.get("capacity") or {})
+    provider_gate = dict(capacity.get("providerGate") or {})
+    production_runtime = app_env in {"production", "prod"}
     errors: list[str] = []
     warnings: list[str] = []
     required_config: list[dict[str, Any]] = []
@@ -2449,6 +2527,17 @@ def generation_provider_readiness() -> dict[str, Any]:
     if cloud_api_is_ready and not tokenhub_is_ready:
         warnings.append("legacy_cloud_api_does_not_consume_tokenhub_hy_image_credits")
 
+    if status.get("tokenhubProtocolError"):
+        errors.append("tokenhub_protocol_invalid")
+    if tokenhub_is_ready and not bool(capacity.get("structureReady")):
+        errors.append("generation_capacity_structure_not_ready")
+    if tokenhub_is_ready and not bool(provider_gate.get("distributed")):
+        issue = "tokenhub_distributed_concurrency_gate_required"
+        (errors if production_runtime else warnings).append(issue)
+    if tokenhub_is_ready and not bool(capacity.get("productionTargetVerified")):
+        issue = "generation_one_hour_target_not_verified"
+        (errors if production_runtime else warnings).append(issue)
+
     return {
         "ready": not errors,
         "provider": status.get("provider"),
@@ -2456,6 +2545,8 @@ def generation_provider_readiness() -> dict[str, Any]:
         "appEnv": app_env,
         "tokenhubReady": tokenhub_is_ready,
         "tokenhubModel": status.get("tokenhubModel"),
+        "tokenhubProtocol": status.get("tokenhubProtocol"),
+        "capacity": capacity,
         "cloudApiReady": cloud_api_is_ready,
         "liveGenerationRequired": live_generation_required,
         "tokenhubRequired": tokenhub_required,
@@ -2829,21 +2920,71 @@ def image_refinement_readiness() -> dict[str, Any]:
     )
     provider = gemini_image_edit_readiness()
     provider_ready = bool(provider.get("ready"))
-    blocking_issues = (
+    blocking_issues: list[str] = (
         list(provider.get("blockingIssues") or [])
         if live_required and not provider_ready
         else []
     )
-    warnings = (
+    warnings: list[str] = (
         ["image_refinement_provider_not_configured_local_only"]
         if not live_required and not provider_ready
         else []
     )
+    redis_configured = bool(str(os.environ.get("REDIS_URL") or "").strip())
+    worker_declared = env_truthy("REVISION_WORKER_ENABLED", default=False)
+    worker_service_id = (
+        str(os.environ.get("REVISION_WORKER_SERVICE_ID") or "revision-worker").strip()
+        or "revision-worker"
+    )
+    worker_liveness: dict[str, Any] = {
+        "ready": False,
+        "serviceId": worker_service_id,
+        "queueName": str(
+            os.environ.get("REDIS_REVISION_QUEUE") or "product-revision"
+        ),
+        "reason": "redis_not_configured",
+    }
+    if redis_configured:
+        try:
+            heartbeat = redis_revision_queue_from_env().service_liveness(
+                worker_service_id
+            )
+        except Exception as exc:  # noqa: BLE001 - readiness must stay diagnostic
+            worker_liveness["reason"] = "heartbeat_read_failed"
+            worker_liveness["errorType"] = type(exc).__name__
+        else:
+            if heartbeat is None:
+                worker_liveness["reason"] = "heartbeat_missing_or_expired"
+            else:
+                worker_liveness = {
+                    "ready": True,
+                    "serviceId": worker_service_id,
+                    "queueName": str(heartbeat.get("queueName") or ""),
+                    "lastSeenAgeMs": int(heartbeat.get("ageMs") or 0),
+                    "heartbeatTtlSeconds": int(
+                        heartbeat.get("ttlSeconds") or 0
+                    ),
+                }
+    if live_required:
+        if not redis_configured:
+            blocking_issues.append("revision_redis_queue_required")
+        if not worker_declared:
+            blocking_issues.append("revision_worker_service_required")
+        if redis_configured and worker_declared and not worker_liveness["ready"]:
+            blocking_issues.append("revision_worker_not_live")
+    else:
+        if not redis_configured:
+            warnings.append("revision_redis_queue_not_configured")
+        elif not worker_liveness["ready"]:
+            warnings.append("revision_worker_not_live")
     return {
         **provider,
         "ready": not blocking_issues,
         "providerConfigured": provider_ready,
         "liveRequired": live_required,
+        "redisConfigured": redis_configured,
+        "workerDeclared": worker_declared,
+        "workerLiveness": worker_liveness,
         "blockingIssues": blocking_issues,
         "errors": list(blocking_issues),
         "warnings": warnings,
@@ -3138,7 +3279,80 @@ def deployment_config_report() -> dict[str, Any]:
                 "tencent_tokenhub_image_model",
                 ("TENCENT_TOKENHUB_IMAGE_MODEL",),
                 required=False,
-                recommended="hy-image-v3.0",
+                recommended="hy-image-v3",
+            ),
+            deployment_config_item(
+                "tencent_tokenhub_protocol",
+                ("TENCENT_TOKENHUB_PROTOCOL",),
+                required=False,
+                recommended=TOKENHUB_PROTOCOL_WAND,
+                allowed_values=tuple(sorted(TOKENHUB_PROTOCOLS)),
+            ),
+            deployment_config_item(
+                "final_generation_workers",
+                ("FINAL_GENERATION_WORKERS",),
+                required=False,
+                recommended="10",
+            ),
+            deployment_config_item(
+                "tencent_tokenhub_requested_concurrency",
+                ("TENCENT_TOKENHUB_MAX_CONCURRENCY",),
+                required=False,
+                recommended="10",
+            ),
+            deployment_config_item(
+                "tencent_tokenhub_verified_concurrency",
+                ("TENCENT_TOKENHUB_VERIFIED_CONCURRENCY",),
+                required=False,
+                recommended="set only after paid quota verification",
+            ),
+            deployment_config_item(
+                "tencent_tokenhub_measured_p95_seconds",
+                ("TENCENT_TOKENHUB_MEASURED_P95_SECONDS",),
+                required=False,
+                recommended="set only after a real 100-image run",
+            ),
+            deployment_config_item(
+                "generation_target_batch_observed_seconds",
+                ("GENERATION_TARGET_BATCH_OBSERVED_SECONDS",),
+                required=False,
+                recommended="set only from a complete real 100-image run",
+            ),
+            deployment_config_item(
+                "generation_target_batch_evidence_file",
+                ("GENERATION_TARGET_BATCH_EVIDENCE_FILE",),
+                required=False,
+                recommended="SHA-bound real 100-image evidence JSON",
+            ),
+            deployment_config_item(
+                "generation_target_batch_evidence_sha256",
+                ("GENERATION_TARGET_BATCH_EVIDENCE_SHA256",),
+                required=False,
+                recommended="SHA-256 of the evidence JSON",
+            ),
+            deployment_config_item(
+                "exact_background_chroma_fast_path",
+                ("EXACT_BACKGROUND_CHROMA_FAST_PATH",),
+                required=False,
+                recommended="true",
+            ),
+            deployment_config_item(
+                "exact_background_cloud_mask_fallback",
+                ("EXACT_BACKGROUND_CLOUD_MASK_FALLBACK",),
+                required=False,
+                recommended="false until Mask concurrency is verified",
+            ),
+            deployment_config_item(
+                "tencent_mask_verified_concurrency",
+                ("TENCENT_MASK_VERIFIED_CONCURRENCY",),
+                required=False,
+                recommended="0 until separately measured",
+            ),
+            deployment_config_item(
+                "tencent_hunyuan_batch_call_limit",
+                ("TENCENT_HUNYUAN_SYNC_LIMIT",),
+                required=False,
+                recommended="120",
             ),
             deployment_config_item("tencent_hunyuan_enabled", ("TENCENT_HUNYUAN_ENABLED",), required=False, recommended="true"),
         ],
@@ -3323,6 +3537,34 @@ def deployment_config_report() -> dict[str, Any]:
                 required=False,
                 recommended="gemini-3.1-flash-image",
             ),
+            deployment_config_item(
+                "gemini_interactions_url",
+                ("GEMINI_INTERACTIONS_URL",),
+                required=False,
+                recommended=(
+                    "https://generativelanguage.googleapis.com/"
+                    "v1beta/interactions"
+                ),
+            ),
+            deployment_config_item(
+                "gemini_image_edit_timeout_seconds",
+                ("GEMINI_IMAGE_EDIT_TIMEOUT_SECONDS",),
+                required=False,
+                recommended="180",
+            ),
+            deployment_config_item(
+                "redis_revision_queue",
+                ("REDIS_REVISION_QUEUE",),
+                required=False,
+                recommended="product-revision",
+            ),
+            deployment_config_item(
+                "revision_worker_enabled",
+                ("REVISION_WORKER_ENABLED",),
+                required=bool(refinement_provider.get("liveRequired")),
+                recommended="true",
+                allowed_values=("true",),
+            ),
         ],
         refinement_provider.get("blockingIssues", []),
         refinement_provider.get("warnings", []),
@@ -3425,9 +3667,42 @@ def tencent_cloud_api_request(action: str, payload: dict[str, Any], host: str, s
     return response
 
 
-def tokenhub_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def tokenhub_image_payload(
+    payload: dict[str, Any],
+    *,
+    protocol: str | None = None,
+) -> dict[str, Any]:
     cfg = tokenhub_config()
     model = str(cfg["model"] or "hy-image-v3.0")
+    resolved_protocol = protocol or resolved_tokenhub_protocol(cfg)
+    if resolved_protocol == TOKENHUB_PROTOCOL_WAND:
+        if model.strip().lower() != "hy-image-v3":
+            raise RuntimeError(
+                "TokenHub wand-sync-v1 必须配置 TENCENT_TOKENHUB_IMAGE_MODEL=hy-image-v3"
+            )
+        body: dict[str, Any] = {
+            "model": "hy-image-v3",
+            "prompt": str(payload.get("Prompt") or ""),
+        }
+        resolution = str(payload.get("Resolution") or "").strip()
+        if resolution:
+            body["size"] = resolution.replace(":", "x")
+        if payload.get("Seed") not in (None, ""):
+            body["seed"] = int(payload["Seed"])
+        if payload.get("Revise") not in (None, ""):
+            body["revise"] = bool(int(payload["Revise"]))
+        images = payload.get("Images")
+        if isinstance(images, list):
+            normalized_images = [
+                str(image).strip()
+                for image in images
+                if str(image).strip()
+            ]
+            if normalized_images:
+                body["images"] = normalized_images[:3]
+        return body
+    if resolved_protocol != TOKENHUB_PROTOCOL_LEGACY:
+        raise RuntimeError("TokenHub 图片协议配置无效")
     is_lite_model = "lite" in model.lower()
     body: dict[str, Any] = {
         "model": model,
@@ -3506,21 +3781,38 @@ def tokenhub_request_id(response: dict[str, Any]) -> str:
     return str(response.get("id") or response.get("task_id") or response.get("request_id") or response.get("RequestId") or "")
 
 
-def tokenhub_image_action(model: str) -> str:
+def tokenhub_diagnostic_request_id(response: dict[str, Any]) -> str:
+    return str(
+        response.get("request_id")
+        or response.get("RequestId")
+        or response.get("id")
+        or response.get("task_id")
+        or ""
+    )
+
+
+def tokenhub_image_action(model: str, protocol: str) -> str:
+    if protocol == TOKENHUB_PROTOCOL_WAND:
+        return "TokenHubHyImageV3"
     return "TokenHubImageLite" if "lite" in model.lower() else "TokenHubImageV3"
 
 
-def normalize_tokenhub_image_response(response: dict[str, Any], model: str) -> dict[str, Any]:
+def normalize_tokenhub_image_response(
+    response: dict[str, Any],
+    model: str,
+    protocol: str,
+) -> dict[str, Any]:
     result_image = tokenhub_result_image(response)
     if not result_image:
         raise RuntimeError(f"TokenHub {model} 未返回图片 URL")
     return {
         "ResultImage": result_image,
-        "RequestId": tokenhub_request_id(response),
+        "RequestId": tokenhub_diagnostic_request_id(response),
         "Seed": response.get("seed") or response.get("Seed"),
         "_Endpoint": "tokenhub.tencentmaas.com",
-        "_Action": tokenhub_image_action(model),
+        "_Action": tokenhub_image_action(model, protocol),
         "_Model": model,
+        "_Protocol": protocol,
         "_Provider": "tencent-hunyuan",
     }
 
@@ -3528,21 +3820,29 @@ def normalize_tokenhub_image_response(response: dict[str, Any], model: str) -> d
 def tokenhub_image_request(payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     cfg = tokenhub_config()
     model = str(cfg["model"] or "hy-image-v3.0")
-    body = tokenhub_image_payload(payload)
+    protocol = resolved_tokenhub_protocol(cfg)
+    body = tokenhub_image_payload(payload, protocol=protocol)
+    if protocol == TOKENHUB_PROTOCOL_WAND:
+        response = tokenhub_http_post(
+            TENCENT_TOKENHUB_HY_V3_URL,
+            body,
+            timeout=max(timeout, TENCENT_TOKENHUB_POLL_TIMEOUT),
+        )
+        return normalize_tokenhub_image_response(response, model, protocol)
     if "lite" in model.lower():
         response = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_LITE_URL, body, timeout=timeout)
-        return normalize_tokenhub_image_response(response, model)
+        return normalize_tokenhub_image_response(response, model, protocol)
 
     submitted = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_SUBMIT_URL, body, timeout=min(timeout, 30))
     job_id = tokenhub_request_id(submitted)
     if not job_id:
-        return normalize_tokenhub_image_response(submitted, model)
+        return normalize_tokenhub_image_response(submitted, model, protocol)
     deadline = time.time() + max(1, TENCENT_TOKENHUB_POLL_TIMEOUT)
     last_response = submitted
     while time.time() < deadline:
         status = str(last_response.get("status") or last_response.get("task_status") or "").lower()
         if status in {"succeeded", "success", "completed", "finish", "finished"}:
-            return normalize_tokenhub_image_response(last_response, model)
+            return normalize_tokenhub_image_response(last_response, model, protocol)
         if status in {"failed", "fail", "error", "canceled", "cancelled"}:
             error = last_response.get("error")
             raise RuntimeError(f"TokenHub {model} 任务失败：{error or last_response}")
@@ -3560,8 +3860,13 @@ def tokenhub_image_request(payload: dict[str, Any], timeout: int = TENCENT_REQUE
 def tencent_api_request(action: str, payload: dict[str, Any], timeout: int = TENCENT_REQUEST_TIMEOUT) -> dict[str, Any]:
     if action == "TextToImageLite":
         if tokenhub_ready():
-            with TENCENT_TOKENHUB_GENERATION_LOCK:
-                return tokenhub_image_request(payload, timeout=timeout)
+            with TENCENT_TOKENHUB_GENERATION_GATE.slot() as concurrency_timing:
+                response = tokenhub_image_request(payload, timeout=timeout)
+            response["_Concurrency"] = {
+                **concurrency_timing,
+                "limit": TENCENT_TOKENHUB_GENERATION_GATE.max_concurrency,
+            }
+            return response
         errors = []
         endpoints = [
             (TENCENT_AIART_HOST, TENCENT_AIART_SERVICE, TENCENT_AIART_VERSION),
@@ -4003,39 +4308,95 @@ def row_components_text(row: dict[str, Any]) -> str:
     return str(row.get("name") or "套餐组合")
 
 
-def prompt_for_generation(row: dict[str, Any], style_id: str, quality: str | None = "standard", prompt_type: str = "text_to_image") -> str:
-    style = style_prompt_for(style_id)
-    detail = quality_detail(quality)
-    kind = row.get("kind") or "菜品"
-    dish, explicit_choices = resolve_explicit_generation_choices(
-        str(row.get("name") or "外卖菜品")
+def selected_background_scene_contract(
+    style_id: str,
+    selected_background: SelectedBackgroundAsset | None = None,
+) -> prompt_compiler.BackgroundSceneContract:
+    category_id = active_category_id()
+    if selected_background is None:
+        return prompt_compiler.scene_contract_for(
+            style_id,
+            category_id,
+            prompt_version=(
+                prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+            ),
+        )
+    contract = selected_background.scene_contract
+    if contract is None:
+        return prompt_compiler.scene_contract_for(
+            selected_background.style_id,
+            category_id,
+            asset_id=selected_background.asset_id,
+            asset_sha256=selected_background.sha256,
+            prompt_version=selected_background.background_prompt_version,
+        )
+    if (
+        contract.style_id != selected_background.style_id
+        or contract.asset_id != selected_background.asset_id
+        or contract.asset_sha256 != selected_background.sha256
+        or contract.background_prompt_version
+        != selected_background.background_prompt_version
+    ):
+        raise SelectedBackgroundError(
+            "selected_background_scene_contract_mismatch",
+            "所选背景的镜头契约与图片不匹配，请重新选择背景",
+        )
+    return contract
+
+
+def generation_provider_capabilities() -> prompt_compiler.ProviderCapabilities:
+    model = "hy-image-v3.0"
+    if tokenhub_ready():
+        model = str(tokenhub_config().get("model") or model)
+    is_lite = "lite" in model.lower()
+    return prompt_compiler.ProviderCapabilities(
+        model=model,
+        supports_seed=not is_lite,
+        supports_revise=not is_lite,
+        supports_negative_prompt=is_lite,
+        max_prompt_chars=(
+            250 if is_lite else prompt_compiler.MAX_COMPILED_PROMPT_CHARS
+        ),
     )
-    component_values = generation_component_values(row, explicit_choices)
-    fixed_choice = ""
-    if explicit_choices:
-        selected = "、".join(choice[0] for choice in explicit_choices)
-        fixed_choice = f"，备选已固定为{selected}，每个固定项只出现一份"
-    forbidden = (
-        "最高优先级：画面和容器不要出现任何文字、数字、价格、logo、"
-        "水印、品牌名或印刷，不要出现人物、包装袋，不要裁切菜品主体。"
-    )
-    if kind == "套餐/组合" or prompt_type == "combo":
-        return (
-            f"{forbidden}严格生成“{dish}”{fixed_choice}，套餐组合外卖主图，外卖平台主图，"
-            f"包含：{'、'.join(component_values[:6]) or dish}，背景必须跟所选背景一致，"
-            f"{style}，{detail}，多菜品协调摆放，主体完整。"
-        )[:250]
-    if prompt_type == "replace_background":
-        return (
-            f"{forbidden}保留「{dish}」菜品主体完整{fixed_choice}，仅替换为{style}，"
-            f"外卖平台主图，{detail}，"
-            "背景必须跟所选背景一致，不改变菜品本身，不添加无关物体。"
-        )[:250]
-    return (
-        f"{forbidden}严格生成“{dish}”{fixed_choice}，{kind}，纯文生图，"
-        f"外卖平台主图，{style}，{detail}，"
-        "背景必须跟所选背景一致，真实餐饮商业摄影质感。"
-    )[:250]
+
+
+def compile_product_generation(
+    row: dict[str, Any],
+    style_id: str,
+    quality: str | None,
+    mode: str,
+    selected_background: SelectedBackgroundAsset | None = None,
+) -> prompt_compiler.CompiledGeneration:
+    contract = selected_background_scene_contract(style_id, selected_background)
+    try:
+        return prompt_compiler.compile_product_image(
+            row,
+            menu_taxonomy_id=active_category_id(),
+            background=contract,
+            quality=quality_config(quality)["id"],
+            mode=mode,  # type: ignore[arg-type]
+            provider=generation_provider_capabilities(),
+        )
+    except prompt_compiler.PromptCompilationError as exc:
+        raise SelectedBackgroundError(
+            "dish_prompt_compilation_failed",
+            f"菜品提示词校验失败：{exc}",
+        ) from exc
+
+
+def prompt_for_generation(
+    row: dict[str, Any],
+    style_id: str,
+    quality: str | None = "standard",
+    prompt_type: str = "text_to_image",
+) -> str:
+    mode = "replace" if prompt_type == "replace_background" else "reference"
+    return compile_product_generation(
+        row,
+        style_id,
+        quality,
+        mode,
+    ).prompt
 
 
 def tencent_text_to_image(
@@ -4044,17 +4405,25 @@ def tencent_text_to_image(
     quality: str | None,
     target: Path,
     selected_background: SelectedBackgroundAsset | None = None,
+    *,
+    compiled: prompt_compiler.CompiledGeneration | None = None,
 ) -> dict[str, Any]:
     prompt_type = "combo" if row.get("kind") == "套餐/组合" else "text_to_image"
-    requested_seed = deterministic_dish_generation_seed(row, quality)
+    compiled_generation = compiled or compile_product_generation(
+        row,
+        style_id,
+        quality,
+        "reference",
+        selected_background,
+    )
+    requested_seed = compiled_generation.seed
     payload: dict[str, Any] = {
-        "Prompt": prompt_for_generation(row, style_id, quality, prompt_type),
-        "NegativePrompt": NEGATIVE_IMAGE_PROMPT,
+        **compiled_generation.provider_payload,
+        "NegativePrompt": (
+            compiled_generation.negative_prompt or NEGATIVE_IMAGE_PROMPT
+        ),
         "Resolution": output_resolution_for_style(style_id),
         "RspImgType": "url",
-        "LogoAdd": 0,
-        "Revise": 0,
-        "Seed": requested_seed,
     }
     reference_url = ""
     if selected_background is not None and tokenhub_ready():
@@ -4083,13 +4452,21 @@ def tencent_text_to_image(
         "model": response.get("_Model"),
         "referenceConditioned": bool(reference_url),
         "backgroundIdentityVerified": False,
+        "compilerVersion": prompt_compiler.COMPILER_VERSION,
+        "compileDigest": compiled_generation.compile_digest,
+        "promptSha256": compiled_generation.prompt_sha256,
+        "providerPayloadSha256": compiled_generation.provider_payload_sha256,
+        "sceneContractSha256": compiled_generation.scene_contract_sha256,
+        "promptAudit": compiled_generation.audit,
     }
 
 
 def prompt_for_style_background(style_id: str) -> str:
+    category_id = active_category_id()
     return background_profiles.pure_background_prompt(
-        active_category_id(),
+        category_id,
         style_id,
+        prompt_version=active_background_prompt_version(category_id),
     )
 
 
@@ -4099,9 +4476,11 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         category_context.get("taxonomyId")
         or background_profiles.MIXED_CATEGORY_ID
     )
+    prompt_version = active_background_prompt_version(category_id)
     prompt = background_profiles.pure_background_prompt(
         category_id,
         style_id,
+        prompt_version=prompt_version,
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     if ai_first_generation_enabled():
@@ -4127,6 +4506,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
             "endpoint": response.get("_Endpoint"),
             "model": response.get("_Model"),
             "categoryId": category_id,
+            "promptVersion": prompt_version,
             "backgroundProfileVersion": (
                 background_profiles.BACKGROUND_PROFILE_VERSION
             ),
@@ -4159,6 +4539,7 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         "seed": response.get("Seed"),
         "endpoint": response.get("_Endpoint"),
         "categoryId": category_id,
+        "promptVersion": prompt_version,
         "backgroundProfileVersion": (
             background_profiles.BACKGROUND_PROFILE_VERSION
         ),
@@ -4199,68 +4580,50 @@ def chroma_foreground_fast_path_enabled() -> bool:
     )
 
 
+def cloud_mask_capacity_ready() -> bool:
+    distributed_required = runtime_environment_label() in {
+        "staging",
+        "render",
+        "production",
+        "prod",
+    }
+    gate_distributed = bool(
+        TENCENT_MASK_EXTRACTION_GATE.snapshot().get("distributed")
+    )
+    return bool(
+        not distributed_required
+        or (
+            TENCENT_MASK_VERIFIED_CONCURRENCY > 0
+            and gate_distributed
+        )
+    )
+
+
+def cloud_mask_fallback_enabled() -> bool:
+    return bool(
+        TENCENT_MASK_VERIFIED_CONCURRENCY > 0
+        and env_truthy("EXACT_BACKGROUND_CLOUD_MASK_FALLBACK", default=False)
+        and cloud_mask_capacity_ready()
+    )
+
+
 def prompt_for_chroma_foreground(
     row: dict[str, Any],
     quality: str | None,
+    selected_background: SelectedBackgroundAsset | None = None,
 ) -> str:
-    raw_dish = str(row.get("name") or "外卖菜品")
-    dish, explicit_choices = resolve_explicit_generation_choices(raw_dish)
-    kind = str(row.get("kind") or "菜品")
-    category_id = active_category_id()
-    component_values = generation_component_values(row, explicit_choices)
-    semantic_source = f"{dish} {' '.join(component_values)}"
-    semantic_hints: list[str] = []
-    if category_id in {"mixed_rice", "topped_rice"} or any(
-        word in semantic_source for word in ("拌饭", "盖饭", "盖码饭", "烤肉饭")
-    ):
-        semantic_hints.append(
-            "这是中式外卖米饭餐，必须清楚出现白米饭，不是西式牛排拼盘"
-        )
-    if "烤肉" in semantic_source:
-        semantic_hints.append("烤肉是切片中式蜜汁烤肉")
-    if "烤排" in semantic_source:
-        semantic_hints.append("烤排是切片中式黑椒无骨猪排，不是整块西式牛排")
-    if "鸡排" in semantic_source:
-        semantic_hints.append("鸡排是完整鸡排，不得替换成牛排")
-    if "腿排" in semantic_source:
-        semantic_hints.append("腿排是去骨鸡腿排，不是西式牛排")
-    if "猪排" in semantic_source:
-        semantic_hints.append("猪排是中式猪排，不是牛排")
-    portion_match = re.search(r"([双三四])拼", dish)
-    if portion_match:
-        portion_count = {"双": 2, "三": 3, "四": 4}[portion_match.group(1)]
-        semantic_hints.append(
-            f"{portion_match.group(1)}拼必须呈现{portion_count}种不同肉类"
-        )
-    if explicit_choices:
-        fixed_choices = "、".join(choice[0] for choice in explicit_choices)
-        semantic_hints.append(
-            f"备选项已固定，本图只呈现{fixed_choices}，每个固定项只出现一份"
-        )
-    elif re.search(r"(?:[二三四五六七八九十\d]+选一|任选|自选|可选)", semantic_source):
-        semantic_hints.append(
-            "标注选一、任选或自选的配菜只出现其中一种，不得同时摆出全部备选"
-        )
-    if "饮品自选" in semantic_source:
-        semantic_hints.append("饮品只放一杯，杯身纯色无品牌无文字")
-    if kind == "套餐/组合":
-        semantic_hints.append("非备选的套餐核心食材必须分别可辨，不得漏项或替换")
-    semantics = "；".join(semantic_hints)
-    if semantics:
-        semantics = f"。菜品语义：{semantics}"
-    components = ""
-    if kind == "套餐/组合":
-        components = f"，套餐构成：{'、'.join(component_values[:6]) or dish}"
-    return (
-        "最高优先级：画面绝对不能包含汉字、字母、数字或其他可读符号；"
-        "餐盘、餐盒、杯子及所有容器必须纯色无印刷，不能有标签、品牌、logo或水印。"
-        f"真实中式外卖商品摄影，严格生成“{dish}”，{kind}{components}{semantics}。"
-        "菜品自然装在同一个完整餐盘、餐碗、餐盒或托盘中，"
-        f"{quality_detail(quality)}，主体约占画面70%，居中完整且仅留必要抠图边距。"
-        "背景必须是完全均匀的纯青色抠图幕布"
-        "（RGB 0,255,255），无桌面、无墙面、无地平线、无渐变、无阴影、无反射、无道具。"
-        "不要出现人物、手、小图、相框或边框，不要裁切主体。"
-    )[:CHROMA_FOREGROUND_PROMPT_MAX_CHARS]
+    style_id = (
+        selected_background.style_id
+        if selected_background is not None
+        else "style-1"
+    )
+    return compile_product_generation(
+        row,
+        style_id,
+        quality,
+        "chroma_foreground",
+        selected_background,
+    ).prompt
 
 
 def exact_product_identity(row: dict[str, Any]) -> str:
@@ -4281,124 +4644,38 @@ def exact_product_identity(row: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-EXPLICIT_GENERATION_CHOICE_COUNT_RE = re.compile(
-    r"(?P<count>[二三四五六七八九十\d]+)选(?:一|1)"
-)
-EXPLICIT_GENERATION_CHOICE_SEPARATOR_RE = re.compile(
-    r"(?:[/／、,，|丨｜]|或者|或|(?i:(?<![A-Za-z])or(?![A-Za-z])))"
-)
-EXPLICIT_GENERATION_CHOICE_BOUNDARY_RE = re.compile(
-    r"[+＋;；:：【】\[\]()（）]"
-)
-EXPLICIT_GENERATION_CHOICE_COUNTS = {
-    "二": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-    "十": 10,
-}
-
-
 def resolve_explicit_generation_choices(
     dish_name: str,
 ) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
-    normalized = unicodedata.normalize("NFKC", str(dish_name or ""))
-    choices: list[tuple[str, tuple[str, ...]]] = []
-    replacements: list[tuple[int, int, str]] = []
-    for count_match in EXPLICIT_GENERATION_CHOICE_COUNT_RE.finditer(normalized):
-        count_text = count_match.group("count")
-        count = (
-            int(count_text)
-            if count_text.isdigit()
-            else EXPLICIT_GENERATION_CHOICE_COUNTS.get(count_text, 0)
-        )
-        if count < 2:
-            continue
-        preceding = normalized[: count_match.start()]
-        boundary = None
-        for candidate in EXPLICIT_GENERATION_CHOICE_BOUNDARY_RE.finditer(preceding):
-            boundary = candidate
-        segment_start = boundary.end() if boundary is not None else 0
-        segment = normalized[segment_start : count_match.start()]
-        parts: list[tuple[str, int]] = []
-        cursor = 0
-        for separator in EXPLICIT_GENERATION_CHOICE_SEPARATOR_RE.finditer(segment):
-            raw = segment[cursor : separator.start()]
-            stripped = raw.strip()
-            if stripped:
-                parts.append((stripped, cursor + len(raw) - len(raw.lstrip())))
-            cursor = separator.end()
-        raw = segment[cursor:]
-        stripped = raw.strip()
-        if stripped:
-            parts.append((stripped, cursor + len(raw) - len(raw.lstrip())))
-        if len(parts) < count:
-            continue
-        selected_parts = parts[-count:]
-        options = tuple(part[0] for part in selected_parts)
-        selected = options[0]
-        choice_start = segment_start + selected_parts[0][1]
-        choices.append((selected, options))
-        replacements.append((choice_start, count_match.end(), selected))
-
-    resolved = normalized
-    for start, end, selected in reversed(replacements):
-        resolved = resolved[:start] + selected + resolved[end:]
-    return resolved, tuple(choices)
+    return prompt_compiler.resolve_explicit_choices(dish_name)
 
 
 def generation_component_values(
     row: dict[str, Any],
     choices: tuple[tuple[str, tuple[str, ...]], ...],
 ) -> list[str]:
-    excluded = {
-        normalize_dish(option)
-        for _selected, options in choices
-        for option in options[1:]
-        if normalize_dish(option)
-    }
-    values: list[str] = []
-    seen: set[str] = set()
-    for raw_value in row.get("components") or []:
-        value = str(raw_value).strip()
-        if not value:
-            continue
-        value, _component_choices = resolve_explicit_generation_choices(value)
-        choice_suffix_removed = re.sub(
-            r"\s*[二三四五六七八九十\d]+选(?:一|1)\s*$",
-            "",
-            unicodedata.normalize("NFKC", value),
-        )
-        norm = normalize_dish(choice_suffix_removed)
-        if not norm or norm in excluded or norm in seen:
-            continue
-        seen.add(norm)
-        values.append(choice_suffix_removed)
-    return values
+    return prompt_compiler.generation_components(row, choices)
 
 
 def deterministic_dish_generation_seed(
     row: dict[str, Any],
     quality: str | None,
+    selected_background: SelectedBackgroundAsset | None = None,
+    *,
+    mode: str = "chroma_foreground",
 ) -> int:
-    identity = "|".join(
-        (
-            f"dish-generation.v{DISH_GENERATION_PROMPT_VERSION}",
-            f"chroma-foreground.v{CHROMA_FOREGROUND_PROMPT_VERSION}",
-            exact_product_identity(row),
-            active_category_id(),
-            quality_config(quality)["id"],
-        )
+    style_id = (
+        selected_background.style_id
+        if selected_background is not None
+        else "style-1"
     )
-    seed = int.from_bytes(
-        hashlib.sha256(identity.encode("utf-8")).digest()[:4],
-        "big",
-    )
-    return seed or 1
+    return compile_product_generation(
+        row,
+        style_id,
+        quality,
+        mode,
+        selected_background,
+    ).seed
 
 
 def dish_generation_seed_metadata(
@@ -4406,7 +4683,10 @@ def dish_generation_seed_metadata(
     requested_seed: int,
 ) -> dict[str, Any]:
     provider_seed = response.get("Seed")
-    tokenhub_v3 = str(response.get("_Action") or "") == "TokenHubImageV3"
+    tokenhub_v3 = str(response.get("_Action") or "") in {
+        "TokenHubImageV3",
+        "TokenHubHyImageV3",
+    }
     return {
         "seed": provider_seed or (requested_seed if tokenhub_v3 else None),
         "requestedSeed": requested_seed,
@@ -4418,21 +4698,34 @@ def tencent_chroma_foreground(
     row: dict[str, Any],
     quality: str | None,
     target: Path,
+    selected_background: SelectedBackgroundAsset | None = None,
+    *,
+    compiled: prompt_compiler.CompiledGeneration | None = None,
 ) -> dict[str, Any]:
-    requested_seed = deterministic_dish_generation_seed(row, quality)
+    style_id = (
+        selected_background.style_id
+        if selected_background is not None
+        else "style-1"
+    )
+    compiled_generation = compiled or compile_product_generation(
+        row,
+        style_id,
+        quality,
+        "chroma_foreground",
+        selected_background,
+    )
+    requested_seed = compiled_generation.seed
     response = tencent_api_request(
         "TextToImageLite",
         {
-            "Prompt": prompt_for_chroma_foreground(row, quality),
+            **compiled_generation.provider_payload,
             "NegativePrompt": (
-                "文字，水印，logo，品牌名，价格，人物，手，裁切主体，复杂背景，"
+                compiled_generation.negative_prompt
+                or "文字，水印，logo，品牌名，价格，人物，手，裁切主体，复杂背景，"
                 "桌面，墙面，地平线，渐变背景，阴影，反射，额外道具，拼贴，边框"
             ),
             "Resolution": default_delivery_resolution(),
             "RspImgType": "url",
-            "LogoAdd": 0,
-            "Revise": 0,
-            "Seed": requested_seed,
         },
     )
     save_result_image(str(response.get("ResultImage") or ""), target)
@@ -4447,6 +4740,12 @@ def tencent_chroma_foreground(
         "endpoint": response.get("_Endpoint"),
         "model": response.get("_Model"),
         "referenceConditioned": False,
+        "compilerVersion": prompt_compiler.COMPILER_VERSION,
+        "compileDigest": compiled_generation.compile_digest,
+        "promptSha256": compiled_generation.prompt_sha256,
+        "providerPayloadSha256": compiled_generation.provider_payload_sha256,
+        "sceneContractSha256": compiled_generation.scene_contract_sha256,
+        "promptAudit": compiled_generation.audit,
     }
 
 
@@ -4479,6 +4778,11 @@ def tencent_extract_foreground_mask(
     foreground_path: Path,
     mask_target: Path,
 ) -> dict[str, Any]:
+    if not cloud_mask_capacity_ready():
+        raise SelectedBackgroundError(
+            "foreground_mask_concurrency_not_verified",
+            "云 Mask 缺少已验证的 Redis 分布式并发闸门，已停止该图片生成",
+        )
     if not tencent_cloud_ready():
         raise SelectedBackgroundError(
             "foreground_mask_provider_not_configured",
@@ -4496,7 +4800,7 @@ def tencent_extract_foreground_mask(
             "foreground_source_not_public",
             "菜品前景无法提交到 Mask 服务",
         )
-    with TENCENT_MASK_EXTRACTION_LOCK:
+    with TENCENT_MASK_EXTRACTION_GATE.slot():
         response = tencent_api_request(
             "ReplaceBackground",
             {
@@ -4588,6 +4892,14 @@ def tencent_exact_background_image(
                 raise
     validate_selected_background_snapshot(selected_background)
     fast_chroma_enabled = chroma_foreground_fast_path_enabled()
+    compile_mode = "chroma_foreground" if fast_chroma_enabled else "reference"
+    compiled_generation = compile_product_generation(
+        row,
+        selected_background.style_id,
+        quality,
+        compile_mode,
+        selected_background,
+    )
     foreground_mode = (
         f"chroma-key.v{CHROMA_FOREGROUND_PROMPT_VERSION}"
         if fast_chroma_enabled
@@ -4616,6 +4928,16 @@ def tencent_exact_background_image(
         and foreground_metadata.get("pipelineVersion") == EXACT_BACKGROUND_PIPELINE_VERSION
         and foreground_metadata.get("dishPromptVersion") == DISH_GENERATION_PROMPT_VERSION
         and foreground_metadata.get("foregroundMode") == foreground_mode
+        and foreground_metadata.get("compilerVersion")
+        == prompt_compiler.COMPILER_VERSION
+        and hmac.compare_digest(
+            str(foreground_metadata.get("compileDigest") or ""),
+            compiled_generation.compile_digest,
+        )
+        and hmac.compare_digest(
+            str(foreground_metadata.get("sceneContractSha256") or ""),
+            compiled_generation.scene_contract_sha256,
+        )
         and hmac.compare_digest(
             str(foreground_metadata.get("exactProductIdentity") or ""),
             product_identity,
@@ -4634,6 +4956,8 @@ def tencent_exact_background_image(
                 row,
                 quality,
                 foreground_target,
+                selected_background,
+                compiled=compiled_generation,
             )
         else:
             foreground_detail = tencent_text_to_image(
@@ -4642,6 +4966,7 @@ def tencent_exact_background_image(
                 quality,
                 foreground_target,
                 selected_background,
+                compiled=compiled_generation,
             )
         foreground_fingerprint = image_file_fingerprint(foreground_target)
         foreground_metadata = {
@@ -4650,6 +4975,12 @@ def tencent_exact_background_image(
             "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
             "dishPromptVersion": DISH_GENERATION_PROMPT_VERSION,
             "foregroundMode": foreground_mode,
+            "compilerVersion": prompt_compiler.COMPILER_VERSION,
+            "compileDigest": compiled_generation.compile_digest,
+            "compiledPromptSha256": compiled_generation.prompt_sha256,
+            "providerPayloadSha256": compiled_generation.provider_payload_sha256,
+            "sceneContractSha256": compiled_generation.scene_contract_sha256,
+            "promptAudit": compiled_generation.audit,
             "exactProductIdentity": product_identity,
             "action": foreground_detail.get("action"),
             "promptType": foreground_detail.get("promptType"),
@@ -4703,6 +5034,11 @@ def tencent_exact_background_image(
                     "extractionVersion": CHROMA_EXTRACTION_VERSION,
                 }
             except ChromaExtractionError as exc:
+                if not cloud_mask_fallback_enabled():
+                    raise SelectedBackgroundError(
+                        "chroma_mask_validation_failed",
+                        "本地菜品抠图校验失败，云 Mask 并发尚未验证，已停止该图片生成",
+                    ) from exc
                 mask_detail = tencent_extract_foreground_mask(
                     row,
                     foreground_target,
@@ -4739,6 +5075,7 @@ def tencent_exact_background_image(
                 foreground_image,
                 mask_image,
                 target_size=(selected_background.width, selected_background.height),
+                placement=compiled_generation.placement,
             )
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.suffix.lower() != ".png":
@@ -4787,6 +5124,12 @@ def tencent_exact_background_image(
         "persistedOutputBackgroundVerified": True,
         "pipelineVersion": EXACT_BACKGROUND_PIPELINE_VERSION,
         "dishPromptVersion": DISH_GENERATION_PROMPT_VERSION,
+        "compilerVersion": prompt_compiler.COMPILER_VERSION,
+        "compileDigest": compiled_generation.compile_digest,
+        "compiledPromptSha256": compiled_generation.prompt_sha256,
+        "providerPayloadSha256": compiled_generation.provider_payload_sha256,
+        "sceneContractSha256": compiled_generation.scene_contract_sha256,
+        "promptAudit": compiled_generation.audit,
         "outputSha256": output_fingerprint["sha256"],
         "qualityReport": quality_report,
         "composition": {
@@ -4989,6 +5332,18 @@ def active_category_id() -> str:
         active_category_context().get("taxonomyId")
         or background_profiles.MIXED_CATEGORY_ID
     )
+
+
+def active_background_prompt_version(category_id: str | None = None) -> str:
+    resolved_category_id = str(category_id or active_category_id()).strip()
+    legacy = prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    if resolved_category_id != "mixed_rice":
+        return legacy
+    configured = os.environ.get(
+        "MIXED_RICE_BACKGROUND_PROMPT_VERSION",
+        legacy,
+    )
+    return normalized_background_prompt_version(configured)
 
 
 def category_keywords(category_name: str | None = None) -> tuple[str, ...]:
@@ -5565,6 +5920,9 @@ def persist_postgres_library_import(
     idempotency_key: str,
 ) -> dict[str, Any]:
     tenant_id = product_shared_asset_tenant_id()
+    background_version = active_background_prompt_version(
+        spec["category_id"]
+    )
     request_document = {
         "schemaVersion": 1,
         "tenantId": tenant_id,
@@ -5700,8 +6058,7 @@ def persist_postgres_library_import(
                         source_kind="imported",
                         source_provider="admin-upload",
                         prompt_version=(
-                            f"style-background.v"
-                            f"{STYLE_BACKGROUND_PROMPT_VERSION}"
+                            background_version
                             if spec["asset_kind"] == "background"
                             else f"dish-generation.v"
                             f"{DISH_GENERATION_PROMPT_VERSION}"
@@ -5709,8 +6066,7 @@ def persist_postgres_library_import(
                         model_name="manual-upload",
                         model_version="manual.v1",
                         pipeline_version=(
-                            f"style-background.v"
-                            f"{STYLE_BACKGROUND_PROMPT_VERSION}"
+                            background_version
                             if spec["asset_kind"] == "background"
                             else f"exact-background.v"
                             f"{EXACT_BACKGROUND_PIPELINE_VERSION}"
@@ -5777,17 +6133,23 @@ def current_asset_owner_user_id() -> str:
     return owner
 
 
-def product_asset_pipeline_version(kind: str) -> str:
+def product_asset_pipeline_version(
+    kind: str,
+    category_id: str | None = None,
+) -> str:
     if kind == "category_background":
-        return f"style-background.v{STYLE_BACKGROUND_PROMPT_VERSION}"
+        return active_background_prompt_version(category_id)
     if kind == "product_image":
         return f"exact-background.v{EXACT_BACKGROUND_PIPELINE_VERSION}"
     raise ProductAssetRuntimeError("asset_kind_invalid")
 
 
-def product_asset_prompt_version(kind: str) -> str:
+def product_asset_prompt_version(
+    kind: str,
+    category_id: str | None = None,
+) -> str:
     if kind == "category_background":
-        return f"style-background.v{STYLE_BACKGROUND_PROMPT_VERSION}"
+        return active_background_prompt_version(category_id)
     if kind == "product_image":
         return f"dish-generation.v{DISH_GENERATION_PROMPT_VERSION}"
     raise ProductAssetRuntimeError("asset_kind_invalid")
@@ -6070,6 +6432,7 @@ def product_asset_background_binding(
 def product_asset_source_versions(
     kind: str,
     metadata: dict[str, Any],
+    category_id: str | None = None,
 ) -> dict[str, str]:
     provider_detail = (
         metadata.get("tencent")
@@ -6085,7 +6448,7 @@ def product_asset_source_versions(
         "source_provider": str(
             metadata.get("provider") or "tencent-hunyuan"
         )[:128],
-        "prompt_version": product_asset_prompt_version(kind),
+        "prompt_version": product_asset_prompt_version(kind, category_id),
         "model_name": (
             re.sub(r"[^A-Za-z0-9._:+-]+", "-", model).strip(".-")
             or "hy-image"
@@ -6094,7 +6457,7 @@ def product_asset_source_versions(
             model,
             "hy-image-v3.0",
         ),
-        "pipeline_version": product_asset_pipeline_version(kind),
+        "pipeline_version": product_asset_pipeline_version(kind, category_id),
     }
 
 
@@ -6133,7 +6496,11 @@ def persist_postgres_ai_generated_asset(
     background_asset_id, background_sha256 = (
         product_asset_background_binding(kind, metadata)
     )
-    versions = product_asset_source_versions(kind, metadata)
+    versions = product_asset_source_versions(
+        kind,
+        metadata,
+        registration["category_id"],
+    )
     idempotency_basis = {
         "kind": kind,
         "ownerUserId": owner_user_id,
@@ -6294,7 +6661,10 @@ def postgres_reusable_asset_record(
                 if kind == "category_background"
                 else "product"
             ),
-            "pipeline_version": product_asset_pipeline_version(kind),
+            "pipeline_version": product_asset_pipeline_version(
+                kind,
+                registration["category_id"],
+            ),
             "combo_fingerprint_version": (
                 product_asset_library_store.COMBO_FINGERPRINT_VERSION
                 if combo_components is not None
@@ -6448,7 +6818,11 @@ def materialize_reusable_background_asset(
         "action": "ApprovedBackgroundReuse",
         "promptType": "style_background",
         "styleId": style_id,
-        **style_background_prompt_metadata(style_id),
+        **style_background_prompt_metadata(
+            style_id,
+            record.get("prompt_version")
+            or record.get("pipeline_version"),
+        ),
         "assetRecordId": str(record["id"]),
         "outputSha256": str(fingerprint["sha256"]),
     }
@@ -6537,6 +6911,7 @@ def object_storage_background_catalog_manifest(
         prompt = background_profiles.pure_background_prompt(
             category_id,
             style_id,
+            prompt_version=prompt_version,
         )
         prompt_sha256 = hashlib.sha256(
             prompt.encode("utf-8")
@@ -6655,7 +7030,10 @@ def object_storage_background_catalog_manifest(
 def approved_background_catalog_manifest() -> dict[str, Any]:
     context = active_category_context()
     category_id = str(context.get("taxonomyId") or "")
-    prompt_version = product_asset_prompt_version("category_background")
+    prompt_version = product_asset_prompt_version(
+        "category_background",
+        category_id,
+    )
     backend = background_catalog_manifest_backend()
     base = {
         "mode": "approved",
@@ -6725,7 +7103,8 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
                 taxonomy_version=TAXONOMY_VERSION,
                 category_id=category_id,
                 pipeline_version=product_asset_pipeline_version(
-                    "category_background"
+                    "category_background",
+                    category_id,
                 ),
                 style_ids=background_catalog.STYLE_IDS,
                 include_tenant_scope=True,
@@ -6756,6 +7135,7 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
         prompt = background_profiles.pure_background_prompt(
             category_id,
             style_id,
+            prompt_version=prompt_version,
         )
         entries.append(
             {
@@ -7776,6 +8156,30 @@ def write_immutable_image_snapshot(target: Path, raw: bytes, expected_sha256: st
         temporary.unlink(missing_ok=True)
 
 
+def normalized_background_prompt_version(value: Any) -> str:
+    clean = str(value or "").strip()
+    aliases = {
+        "11": prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION,
+        prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION: (
+            prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+        ),
+        "12": prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION,
+        prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION: (
+            prompt_compiler.CURRENT_BACKGROUND_PROMPT_VERSION
+        ),
+    }
+    resolved = aliases.get(
+        clean,
+        prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION,
+    )
+    if clean and clean not in aliases:
+        raise SelectedBackgroundError(
+            "selected_background_prompt_version_invalid",
+            "所选背景缺少可验证的镜头版本，请重新选择背景",
+        )
+    return resolved
+
+
 def build_selected_background_asset(style_id: str, target: Path | None = None) -> SelectedBackgroundAsset:
     safe_style = safe_style_path_segment(style_id)
     source_path = target or style_background_target(safe_style)
@@ -7804,6 +8208,9 @@ def build_selected_background_asset(style_id: str, target: Path | None = None) -
         f"{snapshot_identity}|{digest}".encode("utf-8")
     ).hexdigest()[:24]
     metadata = load_ai_output_metadata(source_path) or {}
+    background_prompt_version = normalized_background_prompt_version(
+        metadata.get("promptVersion")
+    )
     library_asset_id = str(metadata.get("assetRecordId") or "").strip()
     if not product_asset_library_store.TENANT_ASSET_ID_RE.fullmatch(
         library_asset_id
@@ -7817,7 +8224,15 @@ def build_selected_background_asset(style_id: str, target: Path | None = None) -
         path=snapshot_path,
         width=int(fingerprint["width"]),
         height=int(fingerprint["height"]),
+        background_prompt_version=background_prompt_version,
         library_asset_id=library_asset_id,
+        scene_contract=prompt_compiler.scene_contract_for(
+            safe_style,
+            active_category_id(),
+            asset_id=asset_id,
+            asset_sha256=digest,
+            prompt_version=background_prompt_version,
+        ),
     )
 
 
@@ -7836,11 +8251,15 @@ def resolve_selected_background(
 
 
 def selected_background_metadata(asset: SelectedBackgroundAsset) -> dict[str, Any]:
+    scene_contract = selected_background_scene_contract(asset.style_id, asset)
     metadata = {
         "backgroundAssetId": asset.asset_id,
         "backgroundSha256": asset.sha256,
         "backgroundStyleId": asset.style_id,
         "backgroundMenuKey": asset.menu_key,
+        "backgroundSceneContractVersion": scene_contract.version,
+        "backgroundSceneContractSha256": scene_contract.contract_sha256,
+        "backgroundPromptVersion": asset.background_prompt_version,
     }
     if asset.library_asset_id:
         metadata["backgroundLibraryAssetId"] = asset.library_asset_id
@@ -7853,15 +8272,24 @@ def attach_selected_background(candidate: dict[str, Any], asset: SelectedBackgro
     candidate["backgroundMenuKey"] = asset.menu_key
 
 
-def style_background_prompt_metadata(style_id: str) -> dict[str, Any]:
+def style_background_prompt_metadata(
+    style_id: str,
+    prompt_version: Any = None,
+) -> dict[str, Any]:
     context = active_category_context()
     category_id = str(
         context.get("taxonomyId")
         or background_profiles.MIXED_CATEGORY_ID
     )
+    resolved_prompt_version = normalized_background_prompt_version(
+        prompt_version
+        if prompt_version not in (None, "")
+        else active_background_prompt_version(category_id)
+    )
     prompt = background_profiles.pure_background_prompt(
         category_id,
         style_id,
+        prompt_version=resolved_prompt_version,
     )
     slot = background_catalog.style_slot(style_id)
     return {
@@ -7870,7 +8298,7 @@ def style_background_prompt_metadata(style_id: str) -> dict[str, Any]:
         "backgroundProfileVersion": (
             background_profiles.BACKGROUND_PROFILE_VERSION
         ),
-        "promptVersion": STYLE_BACKGROUND_PROMPT_VERSION,
+        "promptVersion": resolved_prompt_version,
         "catalogVersion": background_catalog.CATALOG_VERSION,
         "taxonomyVersion": TAXONOMY_VERSION,
         "styleSlotId": slot.slot_id,
@@ -8124,6 +8552,7 @@ def generated_preview_candidate(
     item: dict[str, Any],
     style_id: str,
     selected_background: SelectedBackgroundAsset | None = None,
+    quality: str | None = "standard",
 ) -> dict[str, Any] | None:
     if not style_id:
         return None
@@ -8141,6 +8570,8 @@ def generated_preview_candidate(
         metadata,
         target,
         selected_background,
+        item,
+        quality,
     ):
         return None
     candidate = candidate_from_path(target, item["name"], style_id, "generated-preview", 99.9)
@@ -8177,6 +8608,8 @@ def verified_exact_output_metadata(
     metadata: dict[str, Any] | None,
     target: Path,
     selected_background: SelectedBackgroundAsset,
+    row: dict[str, Any] | None = None,
+    quality: str | None = "standard",
 ) -> bool:
     if not (
         metadata_matches_selected_background(metadata, selected_background)
@@ -8188,6 +8621,12 @@ def verified_exact_output_metadata(
             metadata.get("provider") == "asset-library"
             or metadata.get("dishPromptVersion")
             == DISH_GENERATION_PROMPT_VERSION
+        )
+        and exact_compiler_metadata_matches(
+            metadata,
+            row,
+            quality,
+            selected_background,
         )
     ):
         return False
@@ -8204,6 +8643,8 @@ def verified_exact_output_metadata(
 def verified_exact_candidate(
     candidate: dict[str, Any] | None,
     selected_background: SelectedBackgroundAsset,
+    row: dict[str, Any] | None = None,
+    quality: str | None = "standard",
 ) -> bool:
     if not (
         candidate
@@ -8218,6 +8659,12 @@ def verified_exact_candidate(
         and hmac.compare_digest(str(candidate.get("backgroundAssetId") or ""), selected_background.asset_id)
         and hmac.compare_digest(str(candidate.get("backgroundSha256") or "").lower(), selected_background.sha256)
         and str(candidate.get("backgroundMenuKey") or "") == selected_background.menu_key
+        and exact_compiler_metadata_matches(
+            candidate,
+            row,
+            quality,
+            selected_background,
+        )
     ):
         return False
     path_text = str(candidate.get("path") or "")
@@ -8230,6 +8677,62 @@ def verified_exact_candidate(
     return hmac.compare_digest(
         str(candidate.get("outputSha256") or ""),
         str(fingerprint["sha256"]),
+    )
+
+
+def exact_compiler_metadata_matches(
+    metadata: dict[str, Any] | None,
+    row: dict[str, Any] | None,
+    quality: str | None,
+    selected_background: SelectedBackgroundAsset,
+) -> bool:
+    if not metadata:
+        return False
+    scene_contract = selected_background_scene_contract(
+        selected_background.style_id,
+        selected_background,
+    )
+    if not hmac.compare_digest(
+        str(metadata.get("backgroundSceneContractSha256") or ""),
+        scene_contract.contract_sha256,
+    ):
+        return False
+    provider = str(
+        metadata.get("provider")
+        or metadata.get("generationProvider")
+        or ""
+    )
+    if provider == "asset-library":
+        return True
+    if provider != "tencent-hunyuan" or not isinstance(row, dict):
+        return False
+    prompt_type = str(metadata.get("promptType") or "")
+    if prompt_type == "chroma_foreground":
+        mode = "chroma_foreground"
+    elif prompt_type in {"text_to_image", "combo"}:
+        mode = "reference"
+    else:
+        return False
+    try:
+        compiled = compile_product_generation(
+            row,
+            selected_background.style_id,
+            quality,
+            mode,
+            selected_background,
+        )
+    except (SelectedBackgroundError, ValueError, TypeError):
+        return False
+    return bool(
+        metadata.get("compilerVersion") == prompt_compiler.COMPILER_VERSION
+        and hmac.compare_digest(
+            str(metadata.get("compileDigest") or ""),
+            compiled.compile_digest,
+        )
+        and hmac.compare_digest(
+            str(metadata.get("sceneContractSha256") or ""),
+            compiled.scene_contract_sha256,
+        )
     )
 
 
@@ -8346,7 +8849,12 @@ def materialize_preview_candidate(
     except ValueError as exc:
         return None, {"status": "failed", "provider": "local-demo", "action": "InvalidStyle", "error": str(exc)}
     target = preview_output_target(item, selected_style, selected_background)
-    cached = generated_preview_candidate(item, selected_style, selected_background)
+    cached = generated_preview_candidate(
+        item,
+        selected_style,
+        selected_background,
+        quality,
+    )
     if cached:
         return cached, {"status": "cached", "provider": cached.get("aiProvider") or "local-demo", "action": cached.get("generationAction") or "Cached"}
     same_style = reusable_selected_style_candidate(item, selected_style) if selected_background is None else None
@@ -8427,6 +8935,11 @@ def materialize_preview_candidate(
                     DISH_GENERATION_PROMPT_VERSION
                     if selected_background is not None
                     else detail.get("dishPromptVersion")
+                ),
+                "compilerVersion": detail.get("compilerVersion"),
+                "compileDigest": detail.get("compileDigest"),
+                "sceneContractSha256": detail.get(
+                    "sceneContractSha256"
                 ),
                 "outputSha256": detail.get("outputSha256"),
                 "qualityReport": detail.get("qualityReport"),
@@ -8582,9 +9095,12 @@ def existing_ai_output_candidate(
         metadata,
         target,
         selected_background,
+        item,
+        quality,
     ):
         return None
     assert metadata is not None
+    candidate_generation_metadata(candidate, metadata)
     candidate["aiProvider"] = str(metadata.get("provider") or "local-category")
     candidate["generationStatus"] = "cached"
     candidate["generationAction"] = str(metadata.get("action") or "")
@@ -8646,6 +9162,7 @@ def materialization_reason(
     row: dict[str, Any],
     selected_style: str,
     selected_background: SelectedBackgroundAsset | None = None,
+    quality: str | None = "standard",
 ) -> str | None:
     if not selected_style:
         return "no_selected_style"
@@ -8653,7 +9170,12 @@ def materialization_reason(
         candidate = row["candidates"][0] if row.get("candidates") else None
         if not candidate:
             return "missing_candidate"
-        if not verified_exact_candidate(candidate, selected_background):
+        if not verified_exact_candidate(
+            candidate,
+            selected_background,
+            row,
+            quality,
+        ):
             return "selected_background_asset_mismatch"
         return None
     if ai_first_generation_enabled():
@@ -8674,9 +9196,18 @@ def should_materialize(
     row: dict[str, Any],
     selected_style: str = "",
     selected_background: SelectedBackgroundAsset | None = None,
+    quality: str | None = "standard",
 ) -> bool:
     if selected_style:
-        return materialization_reason(row, selected_style, selected_background) is not None
+        return (
+            materialization_reason(
+                row,
+                selected_style,
+                selected_background,
+                quality,
+            )
+            is not None
+        )
     candidate = row["candidates"][0] if row.get("candidates") else None
     return bool(not candidate or candidate.get("generated") or row.get("backgroundAction") in {"智能补图", "智能统一风格", "需抠图换背景", "需要定制/生成", "需去水印/重绘", "套餐组合生成"})
 
@@ -8698,12 +9229,19 @@ def usable_generated_metadata(metadata: dict[str, Any] | None) -> bool:
 
 def final_ready_candidate(
     candidate: dict[str, Any],
+    row: dict[str, Any],
     selected_style: str,
     action: str,
     selected_background: SelectedBackgroundAsset | None = None,
+    quality: str | None = "standard",
 ) -> bool:
     if selected_background is not None:
-        return verified_exact_candidate(candidate, selected_background)
+        return verified_exact_candidate(
+            candidate,
+            selected_background,
+            row,
+            quality,
+        )
     if candidate.get("aiProvider") == "tencent-hunyuan" or str(candidate.get("source") or "").startswith("tencent"):
         return True
     return action == "背景一致，直接复用" and candidate.get("styleId") == selected_style and not candidate.get("generated")
@@ -8713,6 +9251,7 @@ def prepare_results_for_export(
     results: list[dict[str, Any]],
     selected_style: str,
     selected_background: SelectedBackgroundAsset | None = None,
+    quality: str | None = "standard",
 ) -> list[dict[str, Any]]:
     prepared = []
     for row in results:
@@ -8720,7 +9259,14 @@ def prepare_results_for_export(
         action = str(copy_row.get("backgroundAction") or "")
         copy_row["candidates"] = [
             candidate for candidate in copy_row.get("candidates") or []
-            if final_ready_candidate(candidate, selected_style, action, selected_background)
+            if final_ready_candidate(
+                candidate,
+                copy_row,
+                selected_style,
+                action,
+                selected_background,
+                quality,
+            )
         ]
         if not copy_row["candidates"] and action not in {"背景一致，直接复用", "正式生成"}:
             copy_row["publicStatus"] = copy_row.get("publicStatus") or "待正式生成"
@@ -9812,6 +10358,10 @@ def selected_background_batch_snapshot(
             "selected_background_snapshot_failed",
             "所选背景快照校验失败，请重新选择背景",
         )
+    scene_contract = selected_background_scene_contract(
+        selected_background.style_id,
+        selected_background,
+    )
     return {
         "assetId": selected_background.asset_id,
         "libraryAssetId": selected_background.library_asset_id,
@@ -9820,6 +10370,8 @@ def selected_background_batch_snapshot(
         "objectKey": stored_key,
         "width": selected_background.width,
         "height": selected_background.height,
+        "backgroundPromptVersion": scene_contract.background_prompt_version,
+        "sceneContract": scene_contract.payload(),
     }
 
 
@@ -9859,6 +10411,26 @@ def selected_background_from_batch_contract(contract: dict[str, Any]) -> Selecte
         / f"{expected_sha256}.image"
     )
     write_immutable_image_snapshot(target, raw, expected_sha256)
+    try:
+        scene_contract = prompt_compiler.scene_contract_from_payload(
+            background["sceneContract"],
+            expected_asset_id=str(background["assetId"]),
+            expected_asset_sha256=expected_sha256,
+        )
+    except prompt_compiler.PromptCompilationError as exc:
+        raise SelectedBackgroundError(
+            "selected_background_scene_contract_mismatch",
+            "所选背景的镜头契约校验失败，请重新提交任务",
+        ) from exc
+    frozen_prompt_version = str(
+        background.get("backgroundPromptVersion")
+        or scene_contract.background_prompt_version
+    )
+    if frozen_prompt_version != scene_contract.background_prompt_version:
+        raise SelectedBackgroundError(
+            "selected_background_scene_contract_mismatch",
+            "所选背景的提示词版本与镜头契约不匹配，请重新提交任务",
+        )
     return SelectedBackgroundAsset(
         asset_id=str(background["assetId"]),
         menu_key=str(contract["menu"]["sha256"])[:12],
@@ -9867,7 +10439,9 @@ def selected_background_from_batch_contract(contract: dict[str, Any]) -> Selecte
         path=target,
         width=int(background["width"]),
         height=int(background["height"]),
+        background_prompt_version=scene_contract.background_prompt_version,
         library_asset_id=str(background.get("libraryAssetId") or ""),
+        scene_contract=scene_contract,
     )
 
 
@@ -9984,6 +10558,12 @@ def candidate_generation_metadata(candidate: dict[str, Any], metadata: dict[str,
         "persistedOutputBackgroundVerified",
         "pipelineVersion",
         "dishPromptVersion",
+        "compilerVersion",
+        "compileDigest",
+        "sceneContractSha256",
+        "backgroundSceneContractSha256",
+        "backgroundPromptVersion",
+        "promptType",
         "outputSha256",
     ):
         if metadata.get(key) not in (None, ""):
@@ -10169,6 +10749,11 @@ def materialize_final_row(
                     if selected_background is not None
                     else detail.get("dishPromptVersion")
                 ),
+                "compilerVersion": detail.get("compilerVersion"),
+                "compileDigest": detail.get("compileDigest"),
+                "sceneContractSha256": detail.get(
+                    "sceneContractSha256"
+                ),
                 "outputSha256": detail.get("outputSha256"),
                 "qualityReport": detail.get("qualityReport"),
             }
@@ -10268,13 +10853,19 @@ def verified_preview_candidate_for_final(
                 row,
                 selected_style,
                 selected_background,
+                quality,
             )
         except PreviewObjectStorageError:
             return None
     finally:
         if principal_token is not None:
             ACTIVE_PREVIEW_PRINCIPAL.reset(principal_token)
-    if not verified_exact_candidate(candidate, selected_background):
+    if not verified_exact_candidate(
+        candidate,
+        selected_background,
+        row,
+        quality,
+    ):
         return None
     return candidate
 
@@ -10300,6 +10891,8 @@ def materialize_verified_preview_as_final(
         preview_metadata,
         preview_path,
         selected_background,
+        row,
+        quality,
     ):
         return None
     assert preview_metadata is not None
@@ -10325,6 +10918,8 @@ def materialize_verified_preview_as_final(
         final_metadata,
         target,
         selected_background,
+        row,
+        quality,
     ):
         target.unlink(missing_ok=True)
         ai_output_metadata_path(target).unlink(missing_ok=True)
@@ -10348,6 +10943,7 @@ def materialize_final_images(
     execution_guard: Callable[[], None] | None = None,
     progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
+    batch_started = time.monotonic()
     if execution_guard is not None:
         execution_guard()
     status = tencent_status_payload()
@@ -10370,9 +10966,17 @@ def materialize_final_images(
         "actions": {},
         "items": [],
         "workers": FINAL_GENERATION_WORKERS,
+        "activeWorkers": 0,
+        "capacityContract": GENERATION_CAPACITY.public_contract(),
     }
     if not selected_style:
         generation["action"] = "missing_selected_style"
+        generation["performance"] = provider_capacity.observed_batch_performance(
+            requested=len(plan.get("results") or []),
+            succeeded=0,
+            elapsed_seconds=time.monotonic() - batch_started,
+            capacity=GENERATION_CAPACITY,
+        )
         return generation
     live_budget = TENCENT_SYNC_LIMIT if TENCENT_SYNC_LIMIT >= 0 else 0
     items_by_index: dict[int, dict[str, Any]] = {}
@@ -10380,7 +10984,12 @@ def materialize_final_images(
     exact_failure_cache: dict[str, tuple[str, str]] = {}
     for index, row in enumerate(plan["results"]):
         strip_nonfinal_generated_candidates(row)
-        reason = materialization_reason(row, selected_style, selected_background)
+        reason = materialization_reason(
+            row,
+            selected_style,
+            selected_background,
+            quality,
+        )
         source_candidate = source_candidate_for_generation(row)
         item_result = generation_row_result(row, status["provider"], "Reuse", reason)
         if reason is None:
@@ -10397,6 +11006,8 @@ def materialize_final_images(
             metadata,
             target,
             selected_background,
+            row,
+            quality,
         )
         if target.exists() and usable_generated_metadata(metadata) and cache_matches_background:
             assert metadata is not None
@@ -10544,6 +11155,18 @@ def materialize_final_images(
     )
     if tasks:
         worker_count = min(FINAL_GENERATION_WORKERS, len(tasks))
+        provider_gate = (
+            status.get("capacity", {}).get("providerGate", {})
+            if isinstance(status.get("capacity"), dict)
+            else {}
+        )
+        try:
+            active_provider_limit = int(provider_gate.get("limit") or 0)
+        except (TypeError, ValueError):
+            active_provider_limit = 0
+        if status.get("configured") and active_provider_limit > 0:
+            worker_count = min(worker_count, active_provider_limit)
+        generation["activeWorkers"] = worker_count
         if worker_count == 1:
             for index, row, reason, source_candidate, item_result in tasks:
                 if execution_guard is not None:
@@ -10606,6 +11229,13 @@ def materialize_final_images(
     if execution_guard is not None:
         execution_guard()
     generation["items"] = [items_by_index[index] for index in sorted(items_by_index)]
+    generation["performance"] = provider_capacity.observed_batch_performance(
+        requested=len(plan["results"]),
+        succeeded=int(generation["succeeded"]),
+        elapsed_seconds=time.monotonic() - batch_started,
+        capacity=GENERATION_CAPACITY,
+    )
+    generation["providerGate"] = TENCENT_TOKENHUB_GENERATION_GATE.snapshot()
     return generation
 
 
@@ -17716,6 +18346,14 @@ def product_redis_queue():
     return redis_product_queue_from_env()
 
 
+def revision_redis_queue():
+    if not str(os.environ.get("REDIS_REVISION_QUEUE") or "").strip():
+        return product_redis_queue()
+    if not str(os.environ.get("REDIS_URL") or "").strip():
+        return None
+    return redis_revision_queue_from_env()
+
+
 def product_redis_required() -> bool:
     if staging_in_process_generation_allowed():
         return False
@@ -19138,6 +19776,9 @@ def api_image_refinements():
                     mode=mode,
                     refine_prompt=refine_prompt,
                     idempotency_key=idempotency_key,
+                    provider_snapshot=existing_contract[
+                        "providerSnapshot"
+                    ],
                     free_rework_quota_verified=bool(
                         existing_contract["billing"][
                             "freeReworkQuotaVerified"
@@ -19197,20 +19838,34 @@ def api_image_refinements():
                 )
             )
 
-        readiness = gemini_image_edit_readiness()
-        if not bool(readiness.get("ready")):
+        provider_readiness = gemini_image_edit_readiness()
+        if not bool(provider_readiness.get("ready")):
             return (
                 jsonify(
                     {
                         "error": "图片精修服务未配置，已停止扣费。",
                         "code": "image_refinement_provider_not_ready",
-                        "readiness": readiness,
+                        "readiness": provider_readiness,
+                    }
+                ),
+                503,
+            )
+        runtime_readiness = image_refinement_readiness()
+        if bool(runtime_readiness.get("liveRequired")) and not bool(
+            runtime_readiness.get("ready")
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": "图片精修队列或 Worker 未就绪，已停止扣费。",
+                        "code": "image_refinement_runtime_not_ready",
+                        "readiness": runtime_readiness,
                     }
                 ),
                 503,
             )
         try:
-            redis_product_queue = product_redis_queue()
+            redis_product_queue = revision_redis_queue()
         except (RedisQueueError, ValueError, TypeError) as exc:
             return generation_queue_error_response(RuntimeError(str(exc)))
         if redis_product_queue is None:
@@ -19272,6 +19927,7 @@ def api_image_refinements():
                 "mode": mode,
                 "refine_prompt": refine_prompt,
                 "idempotency_key": idempotency_key,
+                "provider_snapshot": gemini_image_edit_provider_snapshot(),
             }
             if postgres_runtime and mode == "rework":
                 free_contract = freeze_revision_batch_contract(
@@ -19477,6 +20133,27 @@ def api_image_refinements():
                 task_id=job_id,
             )
         except RedisIdempotencyConflict as exc:
+            if (
+                total_points > 0
+                and transaction is not None
+                and not bool(transaction.get("idempotent"))
+            ):
+                try:
+                    refund_revision_batch(
+                        contract,
+                        reason="idempotency_conflict",
+                    )
+                    update_persisted_generation_job(
+                        job_id,
+                        status="failed",
+                        failed_count=1,
+                        error_message="idempotency_conflict",
+                    )
+                except Exception:
+                    app.logger.exception(
+                        "Revision idempotency compensation failed for %s",
+                        job_id,
+                    )
             return batch_contract_error_response(
                 RefinementContractError(
                     "idempotency_conflict",
@@ -19590,7 +20267,7 @@ def api_image_refinement(job_id: str):
         except RedisQueueError as exc:
             return generation_queue_error_response(RuntimeError(str(exc)))
     try:
-        redis_product_queue = product_redis_queue()
+        redis_product_queue = revision_redis_queue()
     except (RedisQueueError, ValueError, TypeError) as exc:
         return generation_queue_error_response(RuntimeError(str(exc)))
     try:
@@ -19806,7 +20483,7 @@ def api_cancel_image_refinement(job_id: str):
                 )
 
             try:
-                redis_product_queue = product_redis_queue()
+                redis_product_queue = revision_redis_queue()
             except (RedisQueueError, ValueError, TypeError) as exc:
                 return generation_queue_error_response(
                     RuntimeError(str(exc))
@@ -19933,7 +20610,7 @@ def api_cancel_image_refinement(job_id: str):
         except RedisQueueError as exc:
             return generation_queue_error_response(RuntimeError(str(exc)))
     try:
-        redis_product_queue = product_redis_queue()
+        redis_product_queue = revision_redis_queue()
     except (RedisQueueError, ValueError, TypeError) as exc:
         return generation_queue_error_response(RuntimeError(str(exc)))
     if redis_product_queue is None:
@@ -20150,6 +20827,19 @@ def api_generation_jobs():
         return jsonify({"error": str(exc)}), 400
     if not tencent_ready() and not local_final_fallback_enabled():
         return jsonify({"error": "混元未配置，已停止正式出图，避免生成错误图片或误扣积分。"}), 503
+    if tencent_ready() and image_count > TENCENT_SYNC_LIMIT:
+        return (
+            jsonify(
+                {
+                    "error": "当前整店生图容量不足，已停止扣费。",
+                    "code": "generation_batch_capacity_insufficient",
+                    "requestedImages": image_count,
+                    "batchCallLimit": TENCENT_SYNC_LIMIT,
+                    "capacity": GENERATION_CAPACITY.public_contract(),
+                }
+            ),
+            503,
+        )
 
     try:
         redis_product_queue = product_redis_queue()
@@ -21409,6 +22099,7 @@ def api_export():
             plan["results"],
             style,
             selected_background,
+            quality,
         )
         export_payload = export_delivery_zip(
             export_results,

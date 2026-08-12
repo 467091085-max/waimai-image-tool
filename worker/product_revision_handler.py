@@ -11,7 +11,11 @@ from PIL import Image, ImageChops, ImageOps
 
 import object_storage_service
 from background_compositor import outside_mask_pixels_equal
-from image_edit_provider import GeminiImageEditProvider, ImageEditProviderError
+from image_edit_provider import (
+    GeminiImageEditProvider,
+    ImageEditProviderError,
+    gemini_image_edit_provider_snapshot,
+)
 from refinement_pipeline import (
     compose_locked_refinement,
     derive_locked_foreground_mask,
@@ -96,8 +100,22 @@ def handle_product_revision(
         "selectedBackground",
     )
 
+    provider_snapshot = _required_mapping(
+        contract.get("providerSnapshot"),
+        "providerSnapshot",
+    )
     _run_execution_guard(execution_guard)
-    editor = provider or GeminiImageEditProvider.from_env()
+    if provider is None:
+        current_provider_snapshot = gemini_image_edit_provider_snapshot()
+        if canonical_json(current_provider_snapshot) != canonical_json(
+            provider_snapshot
+        ):
+            raise NonRetryableProductRevisionError(
+                "product revision provider configuration changed"
+            )
+        editor = GeminiImageEditProvider.from_env()
+    else:
+        editor = provider
     prompt = _provider_prompt(contract)
     try:
         provider_result = editor.edit(
@@ -169,6 +187,19 @@ def handle_product_revision(
             "name": str(getattr(provider_result, "provider", "") or ""),
             "model": str(getattr(provider_result, "model", "") or ""),
             "requestId": str(getattr(provider_result, "request_id", "") or ""),
+            "snapshot": dict(provider_snapshot),
+            "latencySeconds": float(
+                getattr(provider_result, "latency_seconds", 0.0) or 0.0
+            ),
+            "sourceSize": list(
+                getattr(provider_result, "source_size", None) or []
+            ),
+            "providerSize": list(
+                getattr(provider_result, "provider_size", None) or []
+            ),
+            "normalizedToSource": bool(
+                getattr(provider_result, "normalized_to_source", False)
+            ),
         },
         "composition": dict(composition.metadata),
     }

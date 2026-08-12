@@ -22,11 +22,34 @@ import app as app_module  # noqa: E402
 import background_catalog  # noqa: E402
 import background_profiles  # noqa: E402
 import object_storage_service  # noqa: E402
+import prompt_compiler  # noqa: E402
 
 
-PROMPT_VERSION = (
+DEFAULT_PROMPT_VERSION = (
     f"style-background.v{app_module.STYLE_BACKGROUND_PROMPT_VERSION}"
 )
+PROMPT_VERSION = DEFAULT_PROMPT_VERSION
+
+
+def normalize_prompt_version(value: Any) -> str:
+    version = str(value or DEFAULT_PROMPT_VERSION).strip()
+    allowed = {
+        DEFAULT_PROMPT_VERSION,
+        background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
+    }
+    if version not in allowed:
+        raise ValueError(f"unsupported background prompt version: {version}")
+    return version
+
+
+def background_prompt(category_id: str, style_id: str) -> str:
+    if PROMPT_VERSION == DEFAULT_PROMPT_VERSION:
+        return background_profiles.pure_background_prompt(category_id, style_id)
+    return background_profiles.pure_background_prompt(
+        category_id,
+        style_id,
+        prompt_version=PROMPT_VERSION,
+    )
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -169,10 +192,7 @@ def reusable_remote_category_entries(
     entries: list[dict[str, Any]] = []
     for style_id in background_catalog.STYLE_IDS:
         raw_asset = by_style[style_id]
-        prompt = background_profiles.pure_background_prompt(
-            category,
-            style_id,
-        )
+        prompt = background_prompt(category, style_id)
         current_prompt_sha256 = hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest()
@@ -274,10 +294,7 @@ def generate_entry(
     attempts: int,
     seed_revision: int = 0,
 ) -> dict[str, Any]:
-    prompt = background_profiles.pure_background_prompt(
-        category_id,
-        style_id,
-    )
+    prompt = background_prompt(category_id, style_id)
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     accepted_seed = deterministic_generation_seed(
         category_id,
@@ -326,6 +343,12 @@ def generate_entry(
     quality_report = app_module.require_generated_output_quality(image_path)
     fingerprint = app_module.image_file_fingerprint(image_path)
     slot = background_catalog.style_slot(style_id)
+    scene_contract = prompt_compiler.scene_contract_for(
+        style_id,
+        category_id,
+        asset_sha256=str(fingerprint["sha256"]),
+        prompt_version=PROMPT_VERSION,
+    )
     object_key = background_catalog.catalog_object_key(
         category_id=category_id,
         style_id=style_id,
@@ -353,6 +376,9 @@ def generate_entry(
         "requestId": str(response.get("RequestId") or ""),
         "seed": response.get("Seed") or accepted_seed,
         "promptRevisionEnabled": False,
+        "sceneContractVersion": scene_contract.version,
+        "sceneContractSha256": scene_contract.contract_sha256,
+        "sceneContract": scene_contract.payload(),
         "objectKey": object_key,
         "sha256": str(fingerprint["sha256"]),
         "width": int(fingerprint["width"]),
@@ -648,8 +674,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--category", action="append", default=[])
     parser.add_argument("--style", action="append", default=[])
     parser.add_argument(
+        "--prompt-version",
+        default=DEFAULT_PROMPT_VERSION,
+        help="Explicit versioned prompt namespace; v12 is mixed_rice-only.",
+    )
+    parser.add_argument(
         "--output",
-        default=str(ROOT / "data" / "background_catalog_work" / PROMPT_VERSION),
+        default=None,
     )
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument(
@@ -680,9 +711,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global PROMPT_VERSION
     args = parse_args(argv)
+    try:
+        PROMPT_VERSION = normalize_prompt_version(args.prompt_version)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     categories = selected_categories(args.category)
     styles = selected_styles(args.style)
+    if (
+        PROMPT_VERSION == background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION
+        and categories != ("mixed_rice",)
+    ):
+        raise SystemExit(
+            "style-background.v12 is an isolated mixed_rice pilot; "
+            "pass exactly --category mixed_rice"
+        )
     if args.seed_revision < 0:
         raise SystemExit("--seed-revision must be zero or greater")
     if args.regenerate_selected:
@@ -734,7 +778,10 @@ def main(argv: list[str] | None = None) -> int:
     if not app_module.tencent_ready():
         raise SystemExit("Tencent Hunyuan/TokenHub provider is not ready")
 
-    output = Path(args.output).expanduser().resolve()
+    output = Path(
+        args.output
+        or ROOT / "data" / "background_catalog_work" / PROMPT_VERSION
+    ).expanduser().resolve()
     report_path = output / "run-report.json"
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
@@ -785,10 +832,7 @@ def main(argv: list[str] | None = None) -> int:
             category_id,
             style_id,
         )
-        prompt = background_profiles.pure_background_prompt(
-            category_id,
-            style_id,
-        )
+        prompt = background_prompt(category_id, style_id)
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         try:
             entry = None
