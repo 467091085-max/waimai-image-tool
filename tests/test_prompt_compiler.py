@@ -18,7 +18,10 @@ def mixed_rice_combo() -> dict[str, object]:
     }
 
 
-def compile_for(style_id: str = "style-3") -> prompt_compiler.CompiledGeneration:
+def compile_for(
+    style_id: str = "style-3",
+    mode: str = "chroma_foreground",
+) -> prompt_compiler.CompiledGeneration:
     scene = prompt_compiler.scene_contract_for(
         style_id,
         "mixed_rice",
@@ -30,7 +33,7 @@ def compile_for(style_id: str = "style-3") -> prompt_compiler.CompiledGeneration
         menu_taxonomy_id="mixed_rice",
         background=scene,
         quality="standard",
-        mode="chroma_foreground",
+        mode=mode,
     )
 
 
@@ -49,6 +52,27 @@ def test_compiler_resolves_food_semantics_choices_and_camera() -> None:
     assert "竖立" in compiled.prompt
     assert "完全均匀的纯青色" in compiled.prompt
     assert compiled.audit["passed"] is True
+
+
+def test_chroma_prompt_does_not_request_the_selected_scene() -> None:
+    compiled = compile_for(mode="chroma_foreground")
+
+    assert "当前步骤只生成供程序抠取的菜品前景" in compiled.prompt
+    assert "完全均匀的纯青色抠图幕布（RGB 0,255,255）" in compiled.prompt
+    assert "不得画出所选背景或任何真实场景" in compiled.prompt
+    assert "背景必须跟所选背景一致" not in compiled.prompt
+    assert "背景必须遵循" not in compiled.prompt
+    assert "晨光浅洞石餐桌" not in compiled.prompt
+    assert "一整块纹理连续的浅色洞石桌面" not in compiled.prompt
+
+
+def test_reference_prompt_still_requires_the_selected_scene() -> None:
+    compiled = compile_for(mode="reference")
+
+    assert "背景必须跟所选背景一致" in compiled.prompt
+    assert "背景必须遵循“晨光浅洞石餐桌”" in compiled.prompt
+    assert "一整块纹理连续的浅色洞石桌面" in compiled.prompt
+    assert "纯青色抠图幕布" not in compiled.prompt
 
 
 def test_compiler_is_deterministic_and_scene_bound() -> None:

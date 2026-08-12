@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from matching_engine import normalize_dish
 
 
-COMPILER_VERSION = "product-image-compiler.v1"
+COMPILER_VERSION = "product-image-compiler.v2"
 SCENE_CONTRACT_VERSION = "background-scene-contract.v2"
 LEGACY_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 CURRENT_BACKGROUND_PROMPT_VERSION = "style-background.v12"
@@ -563,18 +563,32 @@ def _compile_prompt(
         if dish.selected_choices
         else ""
     )
+    if mode == "chroma_foreground":
+        scene_requirement = (
+            f"{generation_label}，当前步骤只生成供程序抠取的菜品前景，主体必须完整。"
+            f"严格生成“{dish.visual_name}”，类型为{dish.kind}，使用{dish.container}。"
+            + (f"套餐构成：{components}。" if components and dish.kind == "套餐/组合" else "")
+            + fixed_choice
+            + (
+                "背景必须是完全均匀的纯青色抠图幕布（RGB 0,255,255），"
+                "不得画出所选背景或任何真实场景，没有桌面、墙面、地平线、渐变、"
+                "反射或道具；青幕上不要生成投影。"
+            )
+        )
+    else:
+        scene_requirement = (
+            f"{generation_label}，主体完整，背景必须跟所选背景一致。"
+            f"严格生成“{dish.visual_name}”，类型为{dish.kind}，使用{dish.container}。"
+            + (f"套餐构成：{components}。" if components and dish.kind == "套餐/组合" else "")
+            + fixed_choice
+        )
     mandatory = [
         (
             "最高优先级：画面绝对不能包含汉字、字母、数字或其他可读符号；"
             "容器不要出现任何文字，所有容器必须纯色无印刷，"
             "不能有标签、品牌、logo、水印、价格、人物或手。"
         ),
-        (
-            f"{generation_label}，主体完整，背景必须跟所选背景一致。"
-            f"严格生成“{dish.visual_name}”，类型为{dish.kind}，使用{dish.container}。"
-            + (f"套餐构成：{components}。" if components and dish.kind == "套餐/组合" else "")
-            + fixed_choice
-        ),
+        scene_requirement,
         "菜品语义：" + "；".join(dish.semantic_requirements) + "。"
         if dish.semantic_requirements
         else "菜名和实际食材必须一一对应，不得用相似但错误的菜品替代。",
@@ -592,12 +606,7 @@ def _compile_prompt(
             "可见面积约46%至58%，完整清楚、真实有食欲，不使用小图、相框、边框或画中画。"
         ),
     ]
-    if mode == "chroma_foreground":
-        mandatory.append(
-            "背景必须是完全均匀的纯青色抠图幕布（RGB 0,255,255），"
-            "没有桌面、墙面、地平线、渐变、反射或道具；青幕上不要生成投影。"
-        )
-    else:
+    if mode != "chroma_foreground":
         mandatory.append(
             f"背景必须遵循“{background.style_name}”：{background.scene_description}，"
             f"承托材质为{background.surface_description}，菜品自然落在同一平面。"

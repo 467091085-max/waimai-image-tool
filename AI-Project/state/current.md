@@ -1722,3 +1722,23 @@ visual approval before the new scene contract can replace approved v11 assets.
   retained the selected background SHA and the Meituan ZIP contained 60 images
   plus its manifest. Report: `/tmp/waimai-mixed-rice-e2e-v6.json`. This remains
   local deterministic evidence, not paid-provider visual or throughput proof.
+
+- Step 111 in progress: live Render logs proved that the latest six free
+  samples all reached foreground generation but failed local Chroma mask
+  validation. The compiled Chroma prompt simultaneously required the selected
+  real background and an RGB 0,255,255 screen, so every provider request had a
+  contradictory background contract.
+- `product-image-compiler.v2` now makes Chroma mode foreground-only while still
+  inheriting camera, scale, vessel orientation, and light direction. Chroma
+  prompt version 6 invalidates rejected foreground caches, and mask rejection
+  logs retain the extractor reason code. Focused prompt, Chroma, and exact
+  selected-background tests pass: `50 passed`.
+- Next action: run the full local regression, deploy only the staging branch,
+  enable the already-designed single-slot cloud Mask fallback in that staging
+  service, and repeat a paid six-sample Excel acceptance with image inspection.
+- Full local regression with the declared Redis dependency installed passed
+  `1437` tests and skipped `20`; one pre-existing demo-library self-check
+  failed. The same failure reproduced on untouched commit `15083e7` in a fresh
+  detached worktree because imported seed libraries suppress demo images while
+  the test still requires every demo menu item to match. This baseline failure
+  is outside the Chroma patch and was not modified.

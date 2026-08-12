@@ -275,7 +275,7 @@ MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 11
 DISH_GENERATION_PROMPT_VERSION = 5
 EXACT_BACKGROUND_PIPELINE_VERSION = 6
-CHROMA_FOREGROUND_PROMPT_VERSION = 5
+CHROMA_FOREGROUND_PROMPT_VERSION = 6
 CHROMA_FOREGROUND_PROMPT_MAX_CHARS = prompt_compiler.MAX_COMPILED_PROMPT_CHARS
 EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
 STAGING_E2E_INSTANCE_NONCE_PATH = Path(
@@ -5034,6 +5034,12 @@ def tencent_exact_background_image(
                     "extractionVersion": CHROMA_EXTRACTION_VERSION,
                 }
             except ChromaExtractionError as exc:
+                app.logger.warning(
+                    "Chroma extraction rejected row %s (%s): %s",
+                    row.get("row"),
+                    exc.code,
+                    str(exc),
+                )
                 if not cloud_mask_fallback_enabled():
                     raise SelectedBackgroundError(
                         "chroma_mask_validation_failed",
