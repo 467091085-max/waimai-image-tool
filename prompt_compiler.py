@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from matching_engine import normalize_dish
 
 
-COMPILER_VERSION = "product-image-compiler.v2"
+COMPILER_VERSION = "product-image-compiler.v3"
 SCENE_CONTRACT_VERSION = "background-scene-contract.v2"
 LEGACY_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 CURRENT_BACKGROUND_PROMPT_VERSION = "style-background.v12"
@@ -572,7 +572,9 @@ def _compile_prompt(
             + (
                 "背景必须是完全均匀的纯青色抠图幕布（RGB 0,255,255），"
                 "不得画出所选背景或任何真实场景，没有桌面、墙面、地平线、渐变、"
-                "反射或道具；青幕上不要生成投影。"
+                "反射或道具；青幕上不要生成投影。餐盘、餐盒、杯子、碗、托盘和"
+                "其他器皿只能使用白色、黑色或暖中性色，绝不能使用青色、蓝绿色、"
+                "湖蓝色、薄荷绿色或任何接近幕布的颜色，器皿边缘不得染上幕布颜色。"
             )
         )
     else:

@@ -105,6 +105,69 @@ def _foreground_boundary(foreground: np.ndarray) -> np.ndarray:
     return np.logical_and(foreground, adjacent_outside)
 
 
+def assess_masked_chroma_spill(
+    image: Image.Image,
+    mask: Image.Image,
+    *,
+    max_boundary_connected_ratio: float = 0.018,
+) -> dict[str, Any]:
+    """Reject cyan screen color that a provider mask kept as foreground."""
+    rgb = ImageOps.exif_transpose(image).convert("RGB")
+    alpha = ImageOps.exif_transpose(mask).convert("L")
+    if rgb.size != alpha.size:
+        raise ChromaExtractionError(
+            "chroma_mask_size_mismatch",
+            "foreground image and provider mask sizes do not match",
+        )
+
+    foreground = np.asarray(alpha, dtype=np.uint8) >= 32
+    foreground_count = int(np.count_nonzero(foreground))
+    if foreground_count == 0:
+        raise ChromaExtractionError(
+            "chroma_mask_empty",
+            "provider mask does not contain a foreground",
+        )
+
+    array = np.asarray(rgb, dtype=np.int16)
+    red_channel = array[:, :, 0]
+    green_channel = array[:, :, 1]
+    blue_channel = array[:, :, 2]
+    cyan_axis = np.logical_and.reduce(
+        (
+            np.minimum(green_channel, blue_channel) - red_channel
+            >= np.maximum(25.0, np.maximum(green_channel, blue_channel) * 0.18),
+            np.abs(green_channel - blue_channel)
+            <= np.maximum(24.0, np.maximum(green_channel, blue_channel) * 0.18),
+            np.maximum(green_channel, blue_channel) >= 55.0,
+        )
+    )
+    cyan_foreground = np.logical_and(foreground, cyan_axis)
+    boundary_connected = _connected_to_seed(
+        cyan_foreground,
+        _foreground_boundary(foreground),
+    )
+    cyan_count = int(np.count_nonzero(cyan_foreground))
+    connected_count = int(np.count_nonzero(boundary_connected))
+    cyan_ratio = cyan_count / foreground_count
+    connected_ratio = connected_count / foreground_count
+    metadata = {
+        "assessmentVersion": 1,
+        "cyanForegroundRatio": round(cyan_ratio, 6),
+        "boundaryConnectedCyanRatio": round(connected_ratio, 6),
+        "maxBoundaryConnectedCyanRatio": round(
+            float(max_boundary_connected_ratio),
+            6,
+        ),
+        "passed": connected_ratio <= float(max_boundary_connected_ratio),
+    }
+    if not metadata["passed"]:
+        raise ChromaExtractionError(
+            "chroma_mask_spill_too_large",
+            "provider mask retained too much cyan screen color on the foreground boundary",
+        )
+    return metadata
+
+
 def extract_chroma_mask(
     image: Image.Image,
     *,

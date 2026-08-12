@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from chroma_foreground import ChromaExtractionError, extract_chroma_mask
+from chroma_foreground import (
+    ChromaExtractionError,
+    assess_masked_chroma_spill,
+    extract_chroma_mask,
+)
 
 
 CYAN = (0, 245, 245)
@@ -72,6 +76,35 @@ def test_accepts_small_interior_dark_chroma_detail() -> None:
     result = extract_chroma_mask(image)
 
     assert result.metadata["residualChromaRatio"] == 0
+
+
+def test_provider_mask_rejects_cyan_vessel_edge() -> None:
+    image = Image.new("RGB", (320, 240), CYAN)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((55, 35, 265, 220), fill=(45, 175, 178))
+    draw.ellipse((70, 50, 250, 205), fill=(215, 72, 38))
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).ellipse((55, 35, 265, 220), fill=255)
+
+    with pytest.raises(ChromaExtractionError) as exc_info:
+        assess_masked_chroma_spill(image, mask)
+
+    assert exc_info.value.code == "chroma_mask_spill_too_large"
+
+
+def test_provider_mask_allows_isolated_interior_cyan_detail() -> None:
+    image = Image.new("RGB", (320, 240), CYAN)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((55, 35, 265, 220), fill=(215, 72, 38))
+    draw.ellipse((145, 105, 175, 135), fill=(45, 175, 178))
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).ellipse((55, 35, 265, 220), fill=255)
+
+    assessment = assess_masked_chroma_spill(image, mask)
+
+    assert assessment["passed"] is True
+    assert assessment["cyanForegroundRatio"] > 0
+    assert assessment["boundaryConnectedCyanRatio"] == 0
 
 
 @pytest.mark.parametrize(

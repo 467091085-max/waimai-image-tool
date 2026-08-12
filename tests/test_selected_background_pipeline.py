@@ -796,7 +796,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 target: Path,
             ) -> dict[str, object]:
                 mask = Image.new("L", (640, 480), 0)
-                ImageDraw.Draw(mask).ellipse((120, 70, 520, 440), fill=255)
+                ImageDraw.Draw(mask).ellipse((140, 70, 500, 410), fill=255)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 mask.save(target)
                 return {
@@ -828,6 +828,9 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertEqual(
                 detail["maskExtraction"]["fallbackFrom"],
                 "local-chroma-key",
+            )
+            self.assertTrue(
+                detail["maskExtraction"]["chromaSpillAssessment"]["passed"]
             )
             self.assertTrue(detail["persistedOutputBackgroundVerified"])
 

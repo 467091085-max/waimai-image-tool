@@ -1742,3 +1742,36 @@ visual approval before the new scene contract can replace approved v11 assets.
   detached worktree because imported seed libraries suppress demo images while
   the test still requires every demo menu item to match. This baseline failure
   is outside the Chroma patch and was not modified.
+
+- Step 112 in progress: commit `d972489` is live only on the protected Render
+  staging service. Staging now has the single-slot cloud Mask fallback enabled;
+  authenticated runtime readiness confirms Hunyuan/TokenHub and private COS are
+  configured. No production environment was changed.
+- A fresh paid run used the exact 60-row workbook and selected the approved
+  `mixed_rice` `style-5` background. All six sample jobs genuinely succeeded,
+  returned valid 1024x768 PNGs, used `DeterministicBackgroundComposite`, and
+  preserved the selected background SHA-256 outside the dish/mask area. Their
+  elapsed times were 55.01s, 52.06s, 58.31s, 117.24s, 51.23s, and 179.79s.
+- Functional acceptance is therefore 6/6, but visual acceptance is 0/6. The
+  selected background is an unattractive staged wall/table scene with a central
+  slab, and all six dishes contain cyan/teal contamination around plates,
+  trays, or cups. Four outputs contain 2.3%-6.0% cyan-like pixels, so the current
+  technical quality gate is insufficient. The current 40x6 catalog must not be
+  described as customer-approved merely because its files and hashes passed.
+- Next action: make Chroma foreground prompts explicitly forbid cyan/teal
+  vessels, add a mask-scoped cyan contamination quality gate, invalidate the
+  rejected foreground cache, and repeat one paid sample before another six.
+  Separately, create a source-linked 40-category visual benchmark and regenerate
+  original category-specific backgrounds; competitor images are research only
+  and must not be copied into the commercial COS catalog.
+- Step 112 local patch complete: `product-image-compiler.v3` and Chroma prompt
+  version 7 explicitly require white, black, or warm-neutral vessels and forbid
+  cyan/teal/blue-green plates, trays, boxes, cups, and contaminated edges. A new
+  provider-mask quality gate rejects boundary-connected cyan screen pixels above
+  1.8% of the masked foreground instead of returning a technically successful
+  but visibly contaminated image.
+- Focused verification passed `52 passed`. Full regression passed `1439` tests,
+  skipped `20` live PostgreSQL/Redis gates, and retained the one pre-existing
+  demo-library self-check failure already reproduced on untouched `15083e7`.
+  Python compilation and `git diff --check` passed. Next action is commit/push to
+  the staging branch and one real paid visual canary before a six-sample rerun.

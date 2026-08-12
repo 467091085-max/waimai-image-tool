@@ -43,6 +43,7 @@ import asset_security
 from chroma_foreground import (
     ChromaExtractionError,
     EXTRACTION_VERSION as CHROMA_EXTRACTION_VERSION,
+    assess_masked_chroma_spill,
     extract_chroma_mask,
 )
 import commission_settlement_service
@@ -275,7 +276,7 @@ MENU_UPLOAD_PRIVATE_METADATA_KEY = "_server"
 STYLE_BACKGROUND_PROMPT_VERSION = 11
 DISH_GENERATION_PROMPT_VERSION = 5
 EXACT_BACKGROUND_PIPELINE_VERSION = 6
-CHROMA_FOREGROUND_PROMPT_VERSION = 6
+CHROMA_FOREGROUND_PROMPT_VERSION = 7
 CHROMA_FOREGROUND_PROMPT_MAX_CHARS = prompt_compiler.MAX_COMPILED_PROMPT_CHARS
 EXACT_BACKGROUND_MASK_CACHE_VERSION = 1
 STAGING_E2E_INSTANCE_NONCE_PATH = Path(
@@ -4722,7 +4723,8 @@ def tencent_chroma_foreground(
             "NegativePrompt": (
                 compiled_generation.negative_prompt
                 or "文字，水印，logo，品牌名，价格，人物，手，裁切主体，复杂背景，"
-                "桌面，墙面，地平线，渐变背景，阴影，反射，额外道具，拼贴，边框"
+                "桌面，墙面，地平线，渐变背景，阴影，反射，额外道具，拼贴，边框，"
+                "青色餐具，蓝绿色餐盘，青色餐盒，青色杯子，薄荷绿容器"
             ),
             "Resolution": default_delivery_resolution(),
             "RspImgType": "url",
@@ -5067,6 +5069,31 @@ def tencent_exact_background_image(
             "maskExtraction": mask_detail,
             "maskCacheVersion": mask_cache_version,
             "maskSha256": mask_fingerprint["sha256"],
+        }
+        write_ai_output_metadata(foreground_target, foreground_metadata)
+
+    if fast_chroma_enabled:
+        try:
+            with (
+                Image.open(foreground_target) as foreground_image,
+                Image.open(mask_target) as mask_image,
+            ):
+                spill_assessment = assess_masked_chroma_spill(
+                    foreground_image,
+                    mask_image,
+                )
+        except ChromaExtractionError as exc:
+            raise SelectedBackgroundError(
+                exc.code,
+                "菜品主体或器皿仍带有明显青幕颜色，已拒绝交付该图片",
+            ) from exc
+        mask_detail = {
+            **mask_detail,
+            "chromaSpillAssessment": spill_assessment,
+        }
+        foreground_metadata = {
+            **(foreground_metadata or {}),
+            "maskExtraction": mask_detail,
         }
         write_ai_output_metadata(foreground_target, foreground_metadata)
 

@@ -60,6 +60,9 @@ def test_chroma_prompt_does_not_request_the_selected_scene() -> None:
     assert "当前步骤只生成供程序抠取的菜品前景" in compiled.prompt
     assert "完全均匀的纯青色抠图幕布（RGB 0,255,255）" in compiled.prompt
     assert "不得画出所选背景或任何真实场景" in compiled.prompt
+    assert "餐盘、餐盒、杯子、碗、托盘" in compiled.prompt
+    assert "绝不能使用青色、蓝绿色" in compiled.prompt
+    assert "器皿边缘不得染上幕布颜色" in compiled.prompt
     assert "背景必须跟所选背景一致" not in compiled.prompt
     assert "背景必须遵循" not in compiled.prompt
     assert "晨光浅洞石餐桌" not in compiled.prompt
