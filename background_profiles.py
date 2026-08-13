@@ -402,6 +402,53 @@ def provider_safe_empty_set_material(value: str) -> str:
     return safe
 
 
+CATEGORY_EDGE_ACCENTS = {
+    "topped_rice": "米白亚麻餐巾边角与浅木勺",
+    "mixed_rice": "深灰粗麻餐巾边角与胡桃木筷",
+    "porridge_soup_rice": "燕麦色棉麻餐巾边角与白瓷勺",
+    "rice_noodles": "深灰棉麻餐巾边角与原木筷",
+    "wheat_noodles": "暗红棉麻餐巾边角与深木筷",
+    "dumpling_wonton": "浅竹编纹理边角与原木筷",
+    "buns_dim_sum": "浅竹编纹理边角与米白餐巾",
+    "chinese_wraps": "草绿棉麻餐巾边角与浅木夹",
+    "malatang_maocai": "暗红粗麻餐巾边角与黑木筷",
+    "hotpot_skewers": "灰绿棉麻餐巾边角与黄铜勺",
+    "barbecue": "烟灰粗麻餐巾边角与深木夹",
+    "fried_chicken": "原色牛皮纸边角与暖红格纹布",
+    "burger_hotdog": "原色防油纸边角与暖黄格纹布",
+    "pizza": "橄榄灰棉麻餐巾边角与木质铲柄",
+    "sandwich_bagel": "鼠尾草绿棉麻餐巾边角与原色防油纸",
+    "light_food": "鼠尾草绿细麻餐巾边角与哑光银叉",
+    "pasta_steak": "酒红棉麻餐巾边角与哑光银餐具",
+    "japanese": "墨灰细麻餐巾边角与浅木筷",
+    "korean": "中灰棉麻餐巾边角与哑光金属筷勺",
+    "southeast_asian": "浅藤编纹理边角与青绿色棉麻餐巾",
+    "sichuan_hunan": "暗红粗麻餐巾边角与黑木筷",
+    "cantonese_roast": "墨绿细麻餐巾边角与深木筷",
+    "jiangzhe": "黛青细麻餐巾边角与浅竹筷",
+    "northeast_chinese": "砖红粗麻餐巾边角与厚实木勺",
+    "northwest_xinjiang": "靛青织物边角与粗纹深木夹",
+    "northern_lu": "枣红细麻餐巾边角与深木筷",
+    "fujian_taiwan": "浅青细麻餐巾边角与浅竹筷",
+    "home_stir_fry": "陶土红棉麻餐巾边角与家常木筷",
+    "fish_seafood": "浅蓝灰细麻餐巾边角与哑光银叉",
+    "beef_lamb_pot": "古铜灰粗麻餐巾边角与深木勺",
+    "braised_cooked_food": "暗红棕粗麻餐巾边角与暖金色木筷",
+    "soup_stew": "浅杏色棉麻餐巾边角与白瓷勺",
+    "steamed_claypot": "陶土色粗麻餐巾边角与深木勺",
+    "milk_fruit_tea": "淡桃粉细麻布边角与透明亚克力色片",
+    "coffee_cocoa": "森林绿细麻餐巾边角与短柄哑光银勺",
+    "bottled_drinks": "金属灰织物边角与透明亚克力色片",
+    "fresh_drinks": "淡橙细麻布边角与透明亚克力色片",
+    "dessert_bakery": "浅莓粉细麻餐巾边角与哑光甜品叉",
+    "fried_snacks": "暖红格纹布边角与原色防油纸",
+    "fruit": "浅蓝灰细麻布边角与透明亚克力色片",
+}
+
+if set(CATEGORY_EDGE_ACCENTS) != set(CATEGORY_BACKGROUND_DIRECTIONS):
+    raise RuntimeError("commercial edge accents require the same 40 categories")
+
+
 def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
     normalized_category = normalize_category_id(category_id)
     if normalized_category not in CATEGORY_BACKGROUND_DIRECTIONS:
@@ -427,46 +474,51 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
     category_index = tuple(CATEGORY_BACKGROUND_DIRECTIONS).index(
         normalized_category
     )
-    highlight_x = 28 + (category_index % 8) * 6
-    highlight_y = 24 + (category_index // 8) * 7
+    highlight_x = 24 + (category_index % 8) * 7
+    highlight_y = 20 + (category_index // 8) * 8
+    accents = CATEGORY_EDGE_ACCENTS[normalized_category]
     aesthetic = {
-        "style-1": "高调编辑感，主亮区偏左上，细腻微粒和柔和明暗过渡",
-        "style-2": "克制的对比色调，右上柔光，色彩饱满但不廉价",
-        "style-3": "清透晨间质感，真实天然纹理，明亮而不过曝",
-        "style-4": "温润自然质感，木纹方向统一，暖而不发黄",
-        "style-5": "现代商业编辑感，低饱和矿物质感，干净利落",
-        "style-6": "高级暗调编辑感，暗部有纹理，不做黑洞或重暗角",
+        "style-1": "高调编辑棚拍，斜向窗格柔影与矿物微纹理形成清楚层次",
+        "style-2": "克制对比棚拍，弧形背景过渡与侧顶柔光形成空间纵深",
+        "style-3": "清透晨间桌景，天然细纹与柔和窗影可见但不过曝",
+        "style-4": "温润家常桌景，真实木纹方向统一，暖而不发黄",
+        "style-5": "现代餐饮编辑桌景，低饱和材质与非对称边缘布景干净利落",
+        "style-6": "高级暗调桌景，暗部保留真实纹理和暖色轮廓，不做黑洞",
     }[style_id]
     if style_id in {"style-1", "style-2"}:
         material_contract = (
-            f"画面只允许{surface}这一种色相的连续哑光承托面；"
-            "细腻矿物微纹理铺满四边，只有自然光照造成的同色明暗变化；"
-            "不出现竖直墙面、墙地转角或第二种颜色"
+            f"使用{surface}同色系摄影棚无缝弧面；下方约72%是水平承托面，"
+            "上方是同材质柔和弧形背景，转角自然且不形成地平线；"
+            "表面必须有可见的细腻矿物微纹理，不能只做平滑渐变"
+        )
+        peripheral_contract = (
+            "不放独立道具；只用真实材质细节、弧面空间和有来源的窗格柔影"
         )
     else:
         material_contract = (
-            f"画面只允许一整块{surface}承托面；{geometry}；"
-            "纹理从四边连续穿过中央，不拼色、不拼花、不镶嵌、不混合材质"
+            f"使用一整块{surface}承托面；{geometry}；桌面延伸到四边画外，"
+            "看不到桌沿、厚度或桌下空间，纹理连续穿过中央"
+        )
+        peripheral_contract = (
+            f"只允许{accents}出现在上方或侧边裁切区，单件面积不超过6%，"
+            "合计不超过10%，不得进入中央主承托区"
         )
     return (
-        "EMPTY COMMERCIAL PHOTOGRAPHY BACKPLATE, ZERO OBJECTS. "
-        "只生成一张完全空置的商业摄影底板，4:3横图，1024x768。"
+        "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY SET, BACKPLATE ONLY. "
+        "原创高品质外卖商业摄影布景底板，4:3横图，1024x768；"
+        "用于后期放置一个完整餐盘或外卖容器，但当前画面不生成菜品、容器或包装。"
         f"本槽位为{style_name}：{material_contract}。"
-        f"视觉质感为{aesthetic}；主光方向为{contract.lighting.direction}，"
-        "使用大型柔光源，明暗过渡自然；"
-        f"亮度重心位于画面宽度{highlight_x}%、高度{highlight_y}%附近。"
+        f"视觉质感为{aesthetic}；{peripheral_contract}。"
+        f"主光方向为{contract.lighting.direction}，使用大型柔光源，"
+        f"主亮区中心约在画面宽度{highlight_x}%、高度{highlight_y}%；"
+        "必须看得见真实材质颗粒、轻微表面起伏和自然局部对比。"
         f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，约"
-        f"{contract.camera.lens_mm}mm标准镜头，横平竖直，透视真实。"
-        "中央68%是后期合成安全区，只能保留连续材质和自然光照；"
-        "必须有高级商业摄影的真实微纹理与柔和层次，不能退化成均匀色卡、"
-        "纯色块、廉价渐变、塑料3D面或模糊蒙版。"
-        "严禁任何独立实体、可识别对象、容器、器具、布料、装饰、生命体、"
-        "符号、字符、品牌标记或水印；严禁桌沿、承托材质厚度、支撑结构、"
-        "垂直转角、地平线、中央独立石板、"
-        "悬浮平台、展台、底座、台阶、第二层台面、矩形垫板、边框、画中画、"
-        "洞穴暗角或不存在物体产生的阴影。真实摄影，不模仿任何品牌版式。"
-        "最终自检：画面中可数实体必须为0，除唯一连续承托材质和真实光线外"
-        "不得出现任何东西。"
+        f"{contract.camera.lens_mm}mm标准镜头，承托面透视必须与该俯拍角度一致。"
+        "中央约62%保持完整、清楚、连续，可直接承接菜品主体和接触阴影；"
+        "禁止中央石板、展示台、底座、台阶、第二层台面、矩形垫板、边框、"
+        "画中画、悬浮物、文字、数字、品牌、logo、水印、人物或手。"
+        "禁止均匀色卡、低信息纯色块、廉价渐变、塑料3D面、整体虚焦或重暗角。"
+        "真实商业摄影，不复制或模仿任何品牌的专有版式。"
     )
 
 

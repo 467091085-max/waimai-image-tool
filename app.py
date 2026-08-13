@@ -102,7 +102,12 @@ from background_compositor import (
     outside_mask_pixels_equal,
 )
 from generation_queue import InMemoryGenerationQueue
-from image_pipeline import PLATFORMS, assess_generated_asset_quality, export_delivery_zip
+from image_pipeline import (
+    PLATFORMS,
+    assess_generated_asset_quality,
+    assess_generated_background_quality,
+    export_delivery_zip,
+)
 from image_edit_provider import (
     gemini_image_edit_provider_snapshot,
     gemini_image_edit_readiness,
@@ -4281,6 +4286,27 @@ def require_generated_output_quality(target: Path) -> dict[str, Any]:
         raise SelectedBackgroundError(
             "generated_image_quality_failed",
             f"生成图片质量检查未通过：{reasons}",
+        )
+    return report
+
+
+def require_generated_background_quality(target: Path) -> dict[str, Any]:
+    try:
+        report = assess_generated_background_quality(target)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise SelectedBackgroundError(
+            "generated_image_invalid",
+            "生成背景无法通过完整性检查",
+        ) from exc
+    if not report.get("passed"):
+        reasons = ",".join(
+            str(reason) for reason in report.get("reasons") or []
+        ) or "quality_check_failed"
+        target.unlink(missing_ok=True)
+        raise SelectedBackgroundError(
+            "generated_background_quality_failed",
+            f"生成背景质量检查未通过：{reasons}",
         )
     return report
 
@@ -8925,7 +8951,7 @@ def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, An
     if tencent_ready() and env_truthy("GENERATE_STYLE_BACKGROUNDS_WITH_TENCENT", default=True):
         try:
             detail = tencent_style_background(style_id, target)
-            quality_report = require_generated_output_quality(target)
+            quality_report = require_generated_background_quality(target)
             output_fingerprint = image_file_fingerprint(target)
             metadata = {
                 "status": "succeeded",

@@ -149,21 +149,13 @@ def test_v13_binds_all_40_categories_to_six_distinct_original_directions() -> No
     )
 
 
-def test_v14_produces_240_empty_object_free_commercial_backplates() -> None:
+def test_v14_produces_240_category_specific_commercial_backplates() -> None:
     taxonomy_ids = {taxonomy_id for taxonomy_id, _label, _words in TAXONOMY_RULES}
     prompts = set()
-    forbidden_food_terms = (
-        "菜品",
+    forbidden_category_leaks = (
         "炒饭",
         "拌饭",
-        "食物",
-        "饮料",
         "水果",
-        "餐盘",
-        "餐盒",
-        "筷子",
-        "刀叉",
-        "餐巾",
         "咖啡",
         "可可",
         "奶油",
@@ -195,14 +187,13 @@ def test_v14_produces_240_empty_object_free_commercial_backplates() -> None:
             prompts.add(prompt)
 
             assert prompt.startswith(
-                "EMPTY COMMERCIAL PHOTOGRAPHY BACKPLATE, ZERO OBJECTS"
+                "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY SET, BACKPLATE ONLY"
             )
-            assert "完全空置的商业摄影底板" in prompt
-            assert "严禁任何独立实体、可识别对象" in prompt
-            assert "不能退化成均匀色卡、纯色块" in prompt
-            assert "画面中可数实体必须为0" in prompt
-            assert "适配" not in prompt
-            assert not any(term in prompt for term in forbidden_food_terms)
+            assert "原创高品质外卖商业摄影布景底板" in prompt
+            assert "中央约62%保持完整" in prompt
+            assert "低信息纯色块" in prompt
+            assert "不复制或模仿任何品牌的专有版式" in prompt
+            assert not any(term in prompt for term in forbidden_category_leaks)
             assert len(prompt) <= 900
 
         assert len(category_prompts) == 6
@@ -216,6 +207,7 @@ def test_v14_produces_240_empty_object_free_commercial_backplates() -> None:
     )
     assert "炒饭/拌饭" not in mixed_prompt
     assert "温润胡桃木" in mixed_prompt
+    assert "深灰粗麻餐巾边角与胡桃木筷" in mixed_prompt
     assert (
         background_profiles.background_profile_version(
             background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION

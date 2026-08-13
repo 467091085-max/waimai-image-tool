@@ -382,6 +382,24 @@
   into snapshot construction. Snapshot construction may not read a previous
   generation's sidecar before the new sidecar is atomically written.
 
+## V14 Scenic Correction Before Catalog Activation
+- The first fresh staging visual pilot proved that the active v13 prompt can
+  satisfy file, provider, SHA, and persistence checks while still producing an
+  unusable smooth gradient. Technical success is therefore never visual
+  approval.
+- V14 had not been activated by the live service and no v14 catalog was
+  accepted. Its prompt may be corrected before activation while preserving the
+  existing deterministic Seed/Revise and evidence contract. Prompt SHA-256
+  invalidates any bytes made from an earlier draft.
+- The six slots are now two pure-color studio/cyclorama sets plus four real
+  tabletop sets. Edge props are category-specific, bounded to the crop area,
+  and excluded from the central subject region. Competitor images are research
+  references only and are never copied into COS or embedded in prompts.
+- A background-specific offline gate must reject smooth gradients and
+  low-information color blocks before metadata persistence. Human review still
+  decides aesthetics, geometry, prohibited objects, and category fit before an
+  asset can be approved or multiplied to the 40 x 6 catalog.
+
 ## Product Contract Attestation
 - The public idempotency SHA-256 detects accidental request changes but is not
   an authenticity boundary because an attacker can recompute it. Every new

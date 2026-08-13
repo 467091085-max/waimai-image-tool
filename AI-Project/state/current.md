@@ -4,6 +4,36 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
+Step 100 in progress: a fresh paid staging run on 2026-08-12 disproved the
+older visual-completion claim. The exact workbook
+`运营数据_美滋滋烤肉拌饭（成都店）.xlsx` uploaded successfully as 60 rows and
+the store-level classifier selected `mixed_rice` at confidence 96. The live
+service actually generated `style-background.v13`, not v14. Its first Hunyuan
+3.0 background completed in 26.69 seconds and was persisted to private COS,
+but visual review rejected it as a low-information brown gradient. One real
+combo free sample then completed the full Hunyuan foreground -> Tencent cloud
+Mask -> lossless deterministic composite -> private COS flow, preserving the
+selected background pixels, so the provider and composition path are working;
+the visual result still requires prompt and menu-semantic correction.
+
+The candidate fix rewrites the not-yet-activated v14 prompt as 240 unique,
+category-bound commercial sets: two textured studio/cyclorama slots and four
+real tabletop slots with tightly bounded edge styling. It adds a
+background-only high-frequency/detail-coverage gate. The rejected live v13
+gradient now fails locally as `low_information_gradient`; background,
+generation, catalog-builder, selected-background, and image-pipeline
+verification passes `147 passed`. Deployment and a fresh paid v14 visual pilot
+remain pending. The 240 assets must not be called visually approved until the
+new outputs are manually reviewed.
+
+Step 101 pending: fix menu-item semantics revealed by the same workbook. The
+store-level category is correct, but row-level parsing currently reports 18
+unknown rows, lets optional hot-dog/drink choices influence category scores,
+collapses double/triple/quadruple combos, and can choose a drink container for
+a meal combo. Required components, choice groups, flavor modifiers, and
+duplicate visual fingerprints must be separated before the formal 60-image
+run is accepted.
+
 Step 92 complete: the full 40-category x 6-style catalog is generated,
 manually reviewed, hash-lock approved in private COS, frozen in commit
 `b7b4395`, and pushed to the isolated staging branch. Render auto-deploy

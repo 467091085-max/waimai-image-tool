@@ -15,6 +15,7 @@ from image_pipeline import (
     PLATFORMS,
     REPORT_COLUMNS,
     assess_generated_asset_quality,
+    assess_generated_background_quality,
     apply_watermark,
     export_delivery_zip,
     fit_to_platform,
@@ -104,6 +105,33 @@ class ImagePipelineTest(unittest.TestCase):
         self.assertIn("background_not_filled", transparent_report["reasons"])
         self.assertFalse(frame_report["passed"])
         self.assertIn("small_center_frame", frame_report["reasons"])
+
+    def test_background_quality_rejects_smooth_gradient_and_accepts_texture(self) -> None:
+        gradient = Image.new("RGB", (800, 600))
+        pixels = gradient.load()
+        for y in range(600):
+            for x in range(800):
+                value = 178 + round((x / 799) * 34) + round((y / 599) * 16)
+                pixels[x, y] = (value, value - 20, value - 36)
+
+        textured = Image.new("RGB", (800, 600), (210, 184, 150))
+        draw = ImageDraw.Draw(textured)
+        for y in range(0, 600, 4):
+            shade = 185 + ((y // 4) % 5) * 6
+            draw.line((0, y, 799, y), fill=(shade + 15, shade, shade - 16), width=1)
+        for x in range(0, 800, 17):
+            draw.line((x, 0, x, 599), fill=(198, 176, 145), width=1)
+
+        gradient_report = assess_generated_background_quality(gradient)
+        textured_report = assess_generated_background_quality(textured)
+
+        self.assertFalse(gradient_report["passed"])
+        self.assertIn("low_information_gradient", gradient_report["reasons"])
+        self.assertTrue(textured_report["passed"])
+        self.assertGreaterEqual(
+            textured_report["metrics"]["detail_block_ratio"],
+            0.25,
+        )
 
     def test_export_zip_outputs_rgb_jpgs_under_limits_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

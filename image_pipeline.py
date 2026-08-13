@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
 PLATFORMS = {
     "meituan": {"name": "美团外卖", "width": 800, "height": 600, "maxKB": 5120, "default": True},
@@ -42,6 +42,9 @@ ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
 QUALITY_MIN_SIDE = 320
 QUALITY_SAMPLE_SIZE = (96, 96)
 QUALITY_MIN_PASS_SCORE = 0.65
+BACKGROUND_DETAIL_SAMPLE_SIZE = (128, 96)
+BACKGROUND_MIN_HIGH_FREQUENCY_MEAN = 0.65
+BACKGROUND_MIN_DETAIL_BLOCK_RATIO = 0.25
 
 
 def safe_filename(name: str) -> str:
@@ -290,6 +293,72 @@ def assess_generated_asset_quality(source: Image.Image | str | Path) -> dict[str
             "transparent_ratio": round(transparent_ratio, 4),
             "edge_stddev": round(edge_stddev, 3),
             **bbox_metrics,
+        },
+    }
+
+
+def assess_generated_background_quality(
+    source: Image.Image | str | Path,
+) -> dict[str, Any]:
+    """Reject valid image files that are only flat colors or smooth gradients."""
+    report = assess_generated_asset_quality(source)
+    img = _quality_source_image(source)
+    gray = img.convert("L").resize(
+        BACKGROUND_DETAIL_SAMPLE_SIZE,
+        Image.Resampling.BILINEAR,
+    )
+    high_frequency = ImageChops.difference(
+        gray,
+        gray.filter(ImageFilter.GaussianBlur(radius=2.0)),
+    )
+    high_frequency_mean = float(ImageStat.Stat(high_frequency).mean[0])
+    block_means: list[float] = []
+    block_width = high_frequency.width // 4
+    block_height = high_frequency.height // 3
+    for row in range(3):
+        for column in range(4):
+            x0 = column * block_width
+            y0 = row * block_height
+            x1 = high_frequency.width if column == 3 else x0 + block_width
+            y1 = high_frequency.height if row == 2 else y0 + block_height
+            block = high_frequency.crop((x0, y0, x1, y1))
+            block_means.append(float(ImageStat.Stat(block).mean[0]))
+    detailed_blocks = sum(
+        value >= BACKGROUND_MIN_HIGH_FREQUENCY_MEAN
+        for value in block_means
+    )
+    detail_block_ratio = detailed_blocks / max(1, len(block_means))
+
+    texture_passed = bool(
+        high_frequency_mean >= BACKGROUND_MIN_HIGH_FREQUENCY_MEAN
+        and detail_block_ratio >= BACKGROUND_MIN_DETAIL_BLOCK_RATIO
+    )
+    reasons = list(report.get("reasons") or [])
+    score = float(report.get("score") or 0.0)
+    if texture_passed and "solid_or_placeholder" in reasons:
+        reasons.remove("solid_or_placeholder")
+        score += 0.65
+    if not texture_passed:
+        reasons.append("low_information_gradient")
+        score -= 0.65
+    reasons = _unique_quality_reasons(reasons)
+    score = max(
+        0.0,
+        min(1.0, score),
+    )
+    score = round(score, 3)
+    passed = not reasons and score >= QUALITY_MIN_PASS_SCORE
+    return {
+        **report,
+        "passed": passed,
+        "status": "passed" if passed else "failed",
+        "score": score,
+        "quality_score": score,
+        "reasons": reasons,
+        "metrics": {
+            **dict(report.get("metrics") or {}),
+            "high_frequency_mean": round(high_frequency_mean, 4),
+            "detail_block_ratio": round(detail_block_ratio, 4),
         },
     }
 
