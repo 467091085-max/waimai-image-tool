@@ -29,7 +29,7 @@ from generation_queue import InMemoryGenerationQueue
 
 
 PAYMENT_WEBHOOK_SECRET = "test-payment-webhook-secret"
-OBJECT_SIGNING_SECRET = "test-object-signing-secret"
+OBJECT_SIGNING_SECRET = "test-object-signing-secret-32-bytes-minimum"
 PHONE = "13800138000"
 NORMALIZED_PHONE = "+8613800138000"
 OTHER_PHONE = "13900139000"

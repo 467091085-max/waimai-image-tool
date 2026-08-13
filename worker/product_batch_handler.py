@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 from typing import Any, Mapping
 
 import object_storage_service
-from shared.batch_contract import request_sha256
+from shared.batch_contract import (
+    menu_batch_contract_attestation_valid,
+    request_sha256,
+)
 
 
 PRODUCT_BATCH_TASK_TYPE = "product_batch"
@@ -19,7 +23,11 @@ class ProductBatchCancellationRequested(RuntimeError):
     pass
 
 
-def handle_product_batch(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+def handle_product_batch(
+    payload: Mapping[str, Any],
+    *,
+    attestation_secret: str | bytes | None = None,
+) -> Mapping[str, Any]:
     contract = payload.get("batchContract")
     if not isinstance(contract, dict):
         raise NonRetryableProductBatchError("product batch contract is required")
@@ -33,6 +41,15 @@ def handle_product_batch(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         expected_request_sha256,
     ):
         raise NonRetryableProductBatchError("product batch request digest mismatch")
+    signing_secret = (
+        attestation_secret
+        if attestation_secret is not None
+        else _menu_batch_contract_attestation_secret()
+    )
+    if not menu_batch_contract_attestation_valid(contract, signing_secret):
+        raise NonRetryableProductBatchError(
+            "product batch contract attestation is invalid"
+        )
 
     import app as product_app
 
@@ -56,6 +73,18 @@ def handle_product_batch(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         else {}
     )
     return _manifest_result(product_app, contract, manifest)
+
+
+def _menu_batch_contract_attestation_secret() -> str:
+    for name in (
+        "OBJECT_SIGNING_SECRET",
+        "ASSET_SIGNING_SECRET",
+        "DOWNLOAD_SIGNING_SECRET",
+    ):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _completed_manifest(

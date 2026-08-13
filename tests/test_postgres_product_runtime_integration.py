@@ -21,6 +21,15 @@ USER_ID = "user-postgres-1"
 REQUEST_SHA256 = "a" * 64
 MANIFEST_SHA256 = "b" * 64
 REVISION_JOB_ID = "revision-postgres-1"
+TEST_ATTESTATION_SECRET = "revision-postgres-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _revision_attestation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "OBJECT_SIGNING_SECRET",
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def generation_contract() -> dict[str, Any]:

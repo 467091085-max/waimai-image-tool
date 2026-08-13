@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import json
 import re
 import unicodedata
 from typing import Any, Iterable
@@ -10,8 +12,162 @@ from matching_engine import TAXONOMY_RULES, TAXONOMY_VERSION
 
 CATALOG_SCHEMA_VERSION = 1
 CATALOG_VERSION = "background-catalog.v1"
+EMPTY_SET_PROMPT_VERSION = "style-background.v14"
 REVIEW_STATUSES = {"pending", "approved", "rejected", "disabled"}
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
+
+
+def generation_evidence_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    def first(*names: str) -> Any:
+        for name in names:
+            value = entry.get(name)
+            if value not in (None, ""):
+                return value
+        return None
+
+    payload = {
+        "generationProvider": first(
+            "generationProvider",
+            "generation_provider",
+            "source_provider",
+            "provider",
+        ),
+        "providerAction": first("providerAction", "provider_action", "action"),
+        "model": first("model", "model_name"),
+        "seed": first("seed", "applied_seed"),
+        "requestedSeed": first("requestedSeed", "requested_seed"),
+        "seedApplied": first("seedApplied", "seed_applied"),
+        "promptRevisionEnabled": first(
+            "promptRevisionEnabled",
+            "prompt_revision_enabled",
+        ),
+        "promptRevisionControlApplied": first(
+            "promptRevisionControlApplied",
+            "prompt_revision_control_applied",
+        ),
+    }
+    optional_fields = {
+        "seedEvidenceSource": first(
+            "seedEvidenceSource",
+            "seed_evidence_source",
+        ),
+        "providerSeedEchoed": first(
+            "providerSeedEchoed",
+            "provider_seed_echoed",
+        ),
+        "providerSeedPresent": first(
+            "providerSeedPresent",
+            "provider_seed_present",
+        ),
+        "seedControlSubmitted": first(
+            "seedControlSubmitted",
+            "seed_control_submitted",
+        ),
+        "promptRevisionControlSubmitted": first(
+            "promptRevisionControlSubmitted",
+            "prompt_revision_control_submitted",
+        ),
+    }
+    payload.update(
+        {
+            key: value
+            for key, value in optional_fields.items()
+            if value is not None
+        }
+    )
+    return payload
+
+
+def generation_evidence_valid(
+    entry: dict[str, Any],
+    *,
+    prompt_version: Any = None,
+) -> bool:
+    version = str(
+        prompt_version
+        if prompt_version not in (None, "")
+        else entry.get("promptVersion") or entry.get("prompt_version") or ""
+    ).strip()
+    if version != EMPTY_SET_PROMPT_VERSION:
+        return True
+    evidence = generation_evidence_payload(entry)
+    action = str(evidence.get("providerAction") or "").strip()
+    expected_model = {
+        "TokenHubImageV3": "hy-image-v3.0",
+        "TokenHubHyImageV3": "hy-image-v3",
+    }.get(action)
+    requested_seed = evidence.get("requestedSeed")
+    applied_seed = evidence.get("seed")
+    seed_source = str(evidence.get("seedEvidenceSource") or "").strip()
+    provider_echoed = evidence.get("providerSeedEchoed")
+    provider_seed_present = evidence.get("providerSeedPresent")
+    provider_presence_valid = (
+        provider_seed_present is None
+        or type(provider_seed_present) is bool
+    )
+    submitted_request_evidence = bool(
+        seed_source == "submitted-request"
+        and evidence.get("seedControlSubmitted") is True
+        and evidence.get("promptRevisionControlSubmitted") is True
+        and evidence.get("promptRevisionControlApplied") is False
+        and (
+            (
+                provider_echoed is False
+                and provider_seed_present is False
+                and applied_seed is None
+                and evidence.get("seedApplied") is False
+            )
+            or (
+                provider_echoed is True
+                and provider_seed_present is True
+                and type(applied_seed) is int
+                and applied_seed == requested_seed
+                and evidence.get("seedApplied") is True
+            )
+        )
+    )
+    provider_response_evidence = bool(
+        seed_source in {"", "provider-response"}
+        and provider_echoed in {None, True}
+        and type(applied_seed) is int
+        and applied_seed == requested_seed
+        and evidence.get("seedApplied") is True
+        and evidence.get("promptRevisionControlApplied") is True
+    )
+    return bool(
+        str(evidence.get("generationProvider") or "").strip()
+        == "tencent-hunyuan"
+        and expected_model is not None
+        and str(evidence.get("model") or "").strip().lower()
+        == expected_model
+        and evidence.get("promptRevisionEnabled") is False
+        and type(requested_seed) is int
+        and 1 <= requested_seed <= 4_294_967_295
+        and provider_presence_valid
+        and (submitted_request_evidence or provider_response_evidence)
+    )
+
+
+def frozen_generation_evidence(
+    entry: dict[str, Any],
+    *,
+    prompt_version: Any,
+    asset_sha256: Any,
+) -> dict[str, Any]:
+    payload = generation_evidence_payload(entry)
+    payload["promptVersion"] = str(prompt_version or "").strip()
+    payload["assetSha256"] = str(asset_sha256 or "").strip().lower()
+    return payload
+
+
+def generation_evidence_sha256(evidence: dict[str, Any]) -> str:
+    raw = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 @dataclass(frozen=True)

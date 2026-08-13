@@ -11,6 +11,9 @@ from generation_queue import InMemoryGenerationQueue
 import app as app_module
 
 
+TEST_ATTESTATION_SECRET = "generation-queue-signing-secret-32-bytes-minimum"
+
+
 class GenerationQueueIntegrationTests(unittest.TestCase):
     def make_queue(self, worker_count: int = 1) -> InMemoryGenerationQueue:
         queue = InMemoryGenerationQueue(worker_count=worker_count)
@@ -351,6 +354,11 @@ class GenerationQueueIntegrationTests(unittest.TestCase):
             mock.patch.object(app_module, "tencent_ready", return_value=True),
             mock.patch.object(app_module, "generation_write_authorized", return_value=False),
             mock.patch.object(app_module, "local_demo_generation_allowed", return_value=False),
+            mock.patch.object(
+                app_module,
+                "object_access_signing_secret",
+                return_value=TEST_ATTESTATION_SECRET,
+            ),
             mock.patch.object(
                 app_module,
                 "require_authenticated_session",

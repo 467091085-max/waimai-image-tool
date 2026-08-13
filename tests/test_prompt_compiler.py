@@ -163,6 +163,29 @@ def test_v13_scene_geometry_tracks_product_orientation() -> None:
     assert plate.contract_sha256 != top_down.contract_sha256
 
 
+def test_v14_keeps_v13_geometry_but_has_a_distinct_contract_version() -> None:
+    v13 = prompt_compiler.scene_contract_for(
+        "style-4",
+        "mixed_rice",
+        prompt_version=prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+    )
+    v14 = prompt_compiler.scene_contract_for(
+        "style-4",
+        "mixed_rice",
+        prompt_version=prompt_compiler.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    )
+
+    assert v14.camera == v13.camera
+    assert v14.support == v13.support
+    assert v14.placement == v13.placement
+    assert v14.background_prompt_version == "style-background.v14"
+    assert v14.contract_sha256 != v13.contract_sha256
+    assert (
+        prompt_compiler.scene_contract_from_payload(v14.payload()).contract_sha256
+        == v14.contract_sha256
+    )
+
+
 def test_compiler_never_silently_truncates_mandatory_contract() -> None:
     scene = prompt_compiler.scene_contract_for("style-3", "mixed_rice")
     provider = prompt_compiler.ProviderCapabilities(

@@ -249,6 +249,7 @@ def test_real_acceptance_environment_allows_ten_row_workers(
         mode="real",
     ):
         assert acceptance.os.environ["FINAL_GENERATION_WORKERS"] == "10"
+        assert len(acceptance.os.environ["OBJECT_SIGNING_SECRET"]) == 64
 
     with acceptance.isolated_environment(
         tmp_path,
@@ -256,3 +257,4 @@ def test_real_acceptance_environment_allows_ten_row_workers(
         mode="deterministic",
     ):
         assert acceptance.os.environ["FINAL_GENERATION_WORKERS"] == "2"
+        assert len(acceptance.os.environ["OBJECT_SIGNING_SECRET"]) == 64

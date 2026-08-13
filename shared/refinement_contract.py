@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import unicodedata
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+import prompt_compiler
 from shared.batch_contract import BatchContractError, canonical_json
+from shared.contract_attestation import (
+    contract_attestation_valid,
+    create_contract_attestation,
+)
+import background_catalog
 
 
 SCHEMA_VERSION = 2
 JOB_TYPE = "delivery_asset_revision_batch"
+CONTRACT_ATTESTATION_VERSION = "revision-contract-attestation.v1"
+CONTRACT_ATTESTATION_DOMAIN = JOB_TYPE
 PRICING_VERSION = "revision-v1"
 REWORK_POINTS = {"standard": 10, "premium": 20}
 REFINE_POINTS = 10
@@ -57,6 +66,7 @@ def freeze_revision_batch_contract(
     refund_order_id: str | None = None,
     pricing_version: str = PRICING_VERSION,
     created_at: str | None = None,
+    attestation_secret: str | bytes | None = None,
 ) -> dict[str, Any]:
     clean_job_id = _clean_id(job_id, "jobId")
     clean_parent_job_id = _clean_id(parent_generation_job_id, "parentGenerationJobId")
@@ -135,6 +145,11 @@ def freeze_revision_batch_contract(
         "createdAt": _created_at(created_at),
     }
     contract["idempotency"]["requestSha256"] = revision_request_sha256(contract)
+    if attestation_secret is not None:
+        contract["contractAttestation"] = revision_contract_attestation(
+            contract,
+            attestation_secret,
+        )
     return contract
 
 
@@ -153,6 +168,30 @@ def revision_request_sha256(contract: Mapping[str, Any]) -> str:
         "billing": _billing_request_basis(contract.get("billing")),
     }
     return hashlib.sha256(canonical_json(basis).encode("utf-8")).hexdigest()
+
+
+def revision_contract_attestation(
+    contract: Mapping[str, Any],
+    secret: str | bytes,
+) -> dict[str, str]:
+    return create_contract_attestation(
+        contract,
+        secret,
+        domain=CONTRACT_ATTESTATION_DOMAIN,
+        version=CONTRACT_ATTESTATION_VERSION,
+    )
+
+
+def revision_contract_attestation_valid(
+    contract: Mapping[str, Any],
+    secret: str | bytes,
+) -> bool:
+    return contract_attestation_valid(
+        contract,
+        secret,
+        domain=CONTRACT_ATTESTATION_DOMAIN,
+        version=CONTRACT_ATTESTATION_VERSION,
+    )
 
 
 def public_revision_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
@@ -242,14 +281,60 @@ def _source_delivery_asset_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _background_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
     source = _mapping(value, "selectedBackground")
-    return {
+    prompt_version = str(
+        source.get("backgroundPromptVersion")
+        or prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    ).strip()
+    asset_sha256 = _sha256(
+        source.get("sha256"),
+        "selectedBackground.sha256",
+    )
+    snapshot = {
         "assetId": _clean_id(source.get("assetId"), "selectedBackground.assetId"),
         "objectKey": _object_key(
             source.get("objectKey"),
             "selectedBackground.objectKey",
         ),
-        "sha256": _sha256(source.get("sha256"), "selectedBackground.sha256"),
+        "sha256": asset_sha256,
     }
+    if prompt_version == background_catalog.EMPTY_SET_PROMPT_VERSION:
+        snapshot["backgroundPromptVersion"] = prompt_version
+        raw_evidence = source.get("generationEvidence")
+        if not isinstance(raw_evidence, Mapping):
+            raise RefinementContractError(
+                "invalid_background_generation_evidence",
+                "selectedBackground.generationEvidence is required",
+                field="selectedBackground.generationEvidence",
+            )
+        frozen_evidence = background_catalog.frozen_generation_evidence(
+            dict(raw_evidence),
+            prompt_version=prompt_version,
+            asset_sha256=asset_sha256,
+        )
+        calculated_sha256 = background_catalog.generation_evidence_sha256(
+            frozen_evidence
+        )
+        supplied_sha256 = _sha256(
+            source.get("generationEvidenceSha256"),
+            "selectedBackground.generationEvidenceSha256",
+        )
+        if (
+            canonical_json(dict(raw_evidence))
+            != canonical_json(frozen_evidence)
+            or not background_catalog.generation_evidence_valid(
+                frozen_evidence,
+                prompt_version=prompt_version,
+            )
+            or not hmac.compare_digest(calculated_sha256, supplied_sha256)
+        ):
+            raise RefinementContractError(
+                "invalid_background_generation_evidence",
+                "selectedBackground generation evidence is invalid",
+                field="selectedBackground.generationEvidence",
+            )
+        snapshot["generationEvidence"] = frozen_evidence
+        snapshot["generationEvidenceSha256"] = calculated_sha256
+    return snapshot
 
 
 def _provider_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:

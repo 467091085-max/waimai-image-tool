@@ -10,7 +10,18 @@ from PIL import Image
 
 import app as app_module
 import object_storage_service
-from shared.batch_contract import freeze_menu_batch_contract
+from shared.batch_contract import freeze_menu_batch_contract, request_sha256
+
+
+TEST_ATTESTATION_SECRET = "generation-transaction-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _batch_attestation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "OBJECT_SIGNING_SECRET",
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def _contract(*, image_count: int = 3, quality: str = "standard") -> dict:
@@ -40,6 +51,7 @@ def _contract(*, image_count: int = 3, quality: str = "standard") -> dict:
         watermark={"enabled": False},
         idempotency_key="browser-key",
         created_at="2026-07-29T12:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
 
 
@@ -144,6 +156,32 @@ def test_worker_exception_refunds_full_server_charge_and_marks_failed(
     assert updates[0]["status"] == "running"
     assert updates[-1]["status"] == "failed"
     assert updates[-1]["failed_count"] == 3
+
+
+def test_invalid_attestation_has_no_status_or_refund_side_effect() -> None:
+    contract = _contract(image_count=3)
+    contract["billing"]["debitOrderId"] = "gen:forged:debit"
+    contract["idempotency"]["requestSha256"] = request_sha256(contract)
+    updates = mock.Mock()
+    refunds = mock.Mock()
+    execution = mock.Mock()
+
+    with (
+        mock.patch.object(
+            app_module,
+            "update_persisted_generation_job",
+            updates,
+        ),
+        mock.patch.object(app_module, "refund_generation_batch", refunds),
+        mock.patch.object(app_module, "execute_generation_batch_job", execution),
+        pytest.raises(app_module.BatchContractError) as raised,
+    ):
+        app_module.run_generation_batch_job(contract)
+
+    assert raised.value.code == "generation_contract_attestation_invalid"
+    updates.assert_not_called()
+    refunds.assert_not_called()
+    execution.assert_not_called()
 
 
 def test_worker_rejects_generation_provenance_drift_before_io_or_provider(

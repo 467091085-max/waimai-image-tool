@@ -51,6 +51,39 @@ def selected_background(path: Path) -> app_module.SelectedBackgroundAsset:
     )
 
 
+def v14_background_metadata(
+    path: Path,
+    *,
+    style_id: str = "style-4",
+    category_id: str = "mixed_rice",
+    seed: int = 123456,
+) -> dict[str, object]:
+    prompt_version = "style-background.v14"
+    prompt = app_module.background_profiles.pure_background_prompt(
+        category_id,
+        style_id,
+        prompt_version=prompt_version,
+    )
+    return {
+        "status": "succeeded",
+        "provider": "tencent-hunyuan",
+        "action": "TokenHubImageV3",
+        "generationProvider": "tencent-hunyuan",
+        "providerAction": "TokenHubImageV3",
+        "model": "hy-image-v3.0",
+        "seed": seed,
+        "requestedSeed": seed,
+        "seedApplied": True,
+        "promptRevisionEnabled": False,
+        "promptRevisionControlApplied": True,
+        "promptVersion": prompt_version,
+        "categoryId": category_id,
+        "styleId": style_id,
+        "promptSha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "outputSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def test_algorithm_intermediate_png_preserves_canonical_rgb_pixels() -> None:
     source = Image.new("RGB", (128, 128), (0, 245, 245))
     ImageDraw.Draw(source).ellipse((24, 18, 104, 116), fill=(190, 55, 35))
@@ -148,6 +181,132 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
                 "style-background.v12",
             )
             self.assertEqual(restored.scene_contract.camera.pitch_degrees, 56)
+
+    def test_v14_evidence_survives_batch_snapshot_and_worker_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "background.png"
+            save_image(source, (1024, 768), (235, 228, 214))
+            storage = app_module.object_storage_service.ObjectStorageService(
+                root / "objects"
+            )
+            menu = {"sha256": "1" * 64}
+            metadata = v14_background_metadata(
+                source,
+                style_id="style-3",
+            )
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root / "library"),
+                mock.patch.object(
+                    app_module,
+                    "MODEL_INPUT_DIR",
+                    root / "model",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="1" * 12,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "盖饭/拌饭/便当",
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_id",
+                    return_value="mixed_rice",
+                ),
+                mock.patch.object(
+                    app_module.object_storage_service,
+                    "get_object_storage_service",
+                    return_value=storage,
+                ),
+            ):
+                selected = app_module.build_selected_background_asset(
+                    "style-3",
+                    source,
+                    prompt_version="style-background.v14",
+                    generation_metadata=metadata,
+                )
+                frozen = app_module.selected_background_batch_snapshot(
+                    selected,
+                    menu,
+                )
+                restored = app_module.selected_background_from_batch_contract(
+                    {"menu": menu, "selectedBackground": frozen}
+                )
+                tampered = {
+                    **frozen,
+                    "generationEvidence": {
+                        **frozen["generationEvidence"],
+                        "seed": 999,
+                    },
+                }
+                with self.assertRaises(
+                    app_module.SelectedBackgroundError
+                ) as raised:
+                    app_module.selected_background_from_batch_contract(
+                        {"menu": menu, "selectedBackground": tampered}
+                    )
+
+            self.assertEqual(
+                frozen["generationEvidence"]["assetSha256"],
+                selected.sha256,
+            )
+            self.assertEqual(
+                restored.generation_evidence_sha256,
+                frozen["generationEvidenceSha256"],
+            )
+            self.assertEqual(
+                raised.exception.code,
+                "selected_background_generation_evidence_invalid",
+            )
+
+    def test_invalid_v14_selection_is_rejected_before_storage_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "background.png"
+            save_image(source, (1024, 768), (235, 228, 214))
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            selected = app_module.SelectedBackgroundAsset(
+                asset_id="bg-invalid-v14",
+                menu_key="1" * 12,
+                style_id="style-3",
+                sha256=digest,
+                path=source,
+                width=1024,
+                height=768,
+                background_prompt_version="style-background.v14",
+                scene_contract=prompt_compiler.scene_contract_for(
+                    "style-3",
+                    "mixed_rice",
+                    asset_id="bg-invalid-v14",
+                    asset_sha256=digest,
+                    prompt_version="style-background.v14",
+                ),
+            )
+
+            with mock.patch.object(
+                app_module.object_storage_service,
+                "get_object_storage_service",
+            ) as storage_factory:
+                with self.assertRaises(
+                    app_module.SelectedBackgroundError
+                ) as raised:
+                    app_module.selected_background_batch_snapshot(
+                        selected,
+                        {"sha256": "1" * 64},
+                    )
+
+            self.assertEqual(
+                raised.exception.code,
+                "selected_background_generation_evidence_invalid",
+            )
+            storage_factory.assert_not_called()
 
     def test_mixed_rice_combo_prompt_disambiguates_food_and_choices(self) -> None:
         row = menu_row(
@@ -536,6 +695,149 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertEqual(candidate["generationAction"], "ProviderError")
             self.assertFalse(target.exists())
 
+    def test_v14_runtime_sidecar_requires_generation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            category_context = {
+                "taxonomyId": "mixed_rice",
+                "category": "盖饭/拌饭/便当",
+            }
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value=category_context,
+                ),
+                mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                            "style-background.v14"
+                        )
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "approved_background_catalog_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "postgres_product_runtime_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+                mock.patch.object(
+                    app_module,
+                    "local_background_fallback_enabled",
+                    return_value=False,
+                ),
+            ):
+                target = app_module.style_background_target("style-2")
+                save_image(target, (800, 600), (118, 78, 52))
+                expected = app_module.style_background_prompt_metadata(
+                    "style-2"
+                )
+                app_module.write_ai_output_metadata(
+                    target,
+                    {
+                        "status": "succeeded",
+                        "provider": "tencent-hunyuan",
+                        "action": "TextToImageLite",
+                        "styleId": "style-2",
+                        **expected,
+                    },
+                )
+                with mock.patch.object(
+                    app_module,
+                    "tencent_style_background",
+                    side_effect=RuntimeError("fresh provider invoked"),
+                ) as provider:
+                    candidate = app_module.style_sample_candidate("style-2")
+
+            provider.assert_called_once()
+            self.assertEqual(candidate["generationStatus"], "failed")
+            self.assertEqual(candidate["generationAction"], "ProviderError")
+
+    def test_v14_runtime_sidecar_reuses_matching_verified_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            category_context = {
+                "taxonomyId": "mixed_rice",
+                "category": "盖饭/拌饭/便当",
+            }
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value=category_context,
+                ),
+                mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                            "style-background.v14"
+                        )
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "approved_background_catalog_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(app_module, "tencent_ready", return_value=True),
+            ):
+                target = app_module.style_background_target("style-2")
+                save_image(target, (800, 600), (118, 78, 52))
+                expected = app_module.style_background_prompt_metadata(
+                    "style-2"
+                )
+                seed = 123456
+                app_module.write_ai_output_metadata(
+                    target,
+                    {
+                        "status": "succeeded",
+                        "provider": "tencent-hunyuan",
+                        "action": "TokenHubImageV3",
+                        "generationProvider": "tencent-hunyuan",
+                        "providerAction": "TokenHubImageV3",
+                        "model": "hy-image-v3.0",
+                        "seed": seed,
+                        "requestedSeed": seed,
+                        "seedApplied": True,
+                        "promptRevisionEnabled": False,
+                        "promptRevisionControlApplied": True,
+                        "styleId": "style-2",
+                        "outputSha256": hashlib.sha256(
+                            target.read_bytes()
+                        ).hexdigest(),
+                        **expected,
+                    },
+                )
+                with mock.patch.object(
+                    app_module,
+                    "tencent_style_background",
+                ) as provider:
+                    candidate = app_module.style_sample_candidate("style-2")
+
+            provider.assert_not_called()
+            self.assertEqual(candidate["generationStatus"], "succeeded")
+            self.assertEqual(candidate["generationAction"], "TokenHubImageV3")
+
     def test_background_asset_identity_changes_when_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "background.jpg"
@@ -553,6 +855,186 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             self.assertNotEqual(first.path, target)
             self.assertNotEqual(first.path, second.path)
             self.assertEqual(hashlib.sha256(first.path.read_bytes()).hexdigest(), first.sha256)
+
+    def test_explicit_v14_rejects_stale_v11_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "background.jpg"
+            save_image(target, (800, 600), (118, 78, 52))
+            app_module.write_ai_output_metadata(
+                target,
+                {
+                    "promptVersion": "style-background.v11",
+                    "assetRecordId": "asset-" + ("a" * 40),
+                },
+            )
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "盖饭/拌饭/便当",
+                    },
+                ),
+            ):
+                with self.assertRaises(
+                    app_module.SelectedBackgroundError
+                ) as raised:
+                    app_module.build_selected_background_asset(
+                        "style-4",
+                        target,
+                        prompt_version="style-background.v14",
+                    )
+
+            self.assertEqual(
+                raised.exception.code,
+                "selected_background_generation_evidence_invalid",
+            )
+
+    def test_v14_rejects_evidence_from_previous_image_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "background.jpg"
+            save_image(target, (800, 600), (118, 78, 52))
+            old_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            metadata = v14_background_metadata(target)
+            metadata.update(
+                {
+                    "backgroundSha256": old_digest,
+                    "assetRecordId": "asset-" + ("a" * 40),
+                }
+            )
+            app_module.write_ai_output_metadata(target, metadata)
+            save_image(target, (800, 600), (42, 108, 146))
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "盖饭/拌饭/便当",
+                    },
+                ),
+            ):
+                with self.assertRaises(
+                    app_module.SelectedBackgroundError
+                ) as raised:
+                    app_module.build_selected_background_asset(
+                        "style-4",
+                        target,
+                        prompt_version="style-background.v14",
+                    )
+
+            self.assertEqual(
+                raised.exception.code,
+                "selected_background_generation_evidence_invalid",
+            )
+
+    def test_explicit_version_inherits_asset_id_only_for_matching_image_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "background.jpg"
+            save_image(target, (800, 600), (42, 108, 146))
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            expected_asset_id = "asset-" + ("b" * 40)
+            metadata = v14_background_metadata(target)
+            metadata.update(
+                {
+                    "backgroundSha256": digest,
+                    "assetRecordId": expected_asset_id,
+                }
+            )
+            app_module.write_ai_output_metadata(target, metadata)
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "盖饭/拌饭/便当",
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_id",
+                    return_value="mixed_rice",
+                ),
+            ):
+                asset = app_module.build_selected_background_asset(
+                    "style-4",
+                    target,
+                    prompt_version="style-background.v14",
+                )
+
+            self.assertEqual(asset.library_asset_id, expected_asset_id)
+            self.assertEqual(asset.generation_evidence["assetSha256"], digest)
+
+    def test_fresh_v14_generation_metadata_overrides_stale_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "background.jpg"
+            save_image(target, (800, 600), (42, 108, 146))
+            app_module.write_ai_output_metadata(
+                target,
+                {"promptVersion": "style-background.v11"},
+            )
+            generation_metadata = v14_background_metadata(target)
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu-test",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "盖饭/拌饭/便当",
+                    },
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_category_id",
+                    return_value="mixed_rice",
+                ),
+            ):
+                asset = app_module.build_selected_background_asset(
+                    "style-4",
+                    target,
+                    prompt_version="style-background.v14",
+                    generation_metadata=generation_metadata,
+                )
+
+            self.assertEqual(
+                asset.background_prompt_version,
+                "style-background.v14",
+            )
+            self.assertEqual(asset.generation_evidence["assetSha256"], asset.sha256)
 
     def test_exact_pipeline_caches_foreground_and_mask_and_verifies_background(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

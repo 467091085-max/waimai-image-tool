@@ -3,15 +3,21 @@ from __future__ import annotations
 import copy
 import json
 
+import background_catalog
 import pytest
 
 from shared.refinement_contract import (
+    CONTRACT_ATTESTATION_VERSION,
     MAX_REFINE_PROMPT_LENGTH,
     RefinementContractError,
     freeze_revision_batch_contract,
     public_revision_payload,
+    revision_contract_attestation_valid,
     revision_request_sha256,
 )
+
+
+TEST_ATTESTATION_SECRET = "revision-test-signing-secret-32-bytes-minimum"
 
 
 def valid_input(**overrides):
@@ -41,6 +47,32 @@ def valid_input(**overrides):
     return payload
 
 
+def v14_selected_background(*, seed: int = 123456) -> dict[str, object]:
+    selected = dict(valid_input()["selected_background"])
+    evidence = {
+        "generationProvider": "tencent-hunyuan",
+        "providerAction": "TokenHubImageV3",
+        "model": "hy-image-v3.0",
+        "seed": seed,
+        "requestedSeed": seed,
+        "seedApplied": True,
+        "promptRevisionEnabled": False,
+        "promptRevisionControlApplied": True,
+        "promptVersion": "style-background.v14",
+        "assetSha256": selected["sha256"],
+    }
+    selected.update(
+        {
+            "backgroundPromptVersion": "style-background.v14",
+            "generationEvidence": evidence,
+            "generationEvidenceSha256": (
+                background_catalog.generation_evidence_sha256(evidence)
+            ),
+        }
+    )
+    return selected
+
+
 def test_standard_rework_freezes_asset_bindings_and_server_price() -> None:
     contract = freeze_revision_batch_contract(**valid_input())
 
@@ -50,7 +82,11 @@ def test_standard_rework_freezes_asset_bindings_and_server_price() -> None:
     assert contract["userId"] == "user_test_001"
     assert contract["sourceDeliveryAsset"]["rowNumber"] == 7
     assert contract["sourceDeliveryAsset"]["dishName"] == "招牌牛肉饭"
-    assert contract["selectedBackground"]["assetId"] == "background_asset_001"
+    assert contract["selectedBackground"] == {
+        "assetId": "background_asset_001",
+        "objectKey": "generated/backgrounds/gen_test_001/style-2.jpg",
+        "sha256": "2" * 64,
+    }
     assert contract["providerSnapshot"] == {
         "provider": "google-gemini",
         "model": "gemini-3.1-flash-image",
@@ -75,12 +111,114 @@ def test_standard_rework_freezes_asset_bindings_and_server_price() -> None:
     assert contract["idempotency"]["requestSha256"] == revision_request_sha256(contract)
 
 
+def test_v14_background_generation_evidence_survives_revision_freeze() -> None:
+    selected = v14_selected_background()
+
+    contract = freeze_revision_batch_contract(
+        **valid_input(selected_background=selected)
+    )
+
+    frozen = contract["selectedBackground"]
+    assert frozen["generationEvidence"] == selected["generationEvidence"]
+    assert (
+        frozen["generationEvidenceSha256"]
+        == selected["generationEvidenceSha256"]
+    )
+    assert frozen["generationEvidence"]["assetSha256"] == frozen["sha256"]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered", "wrong_asset"])
+def test_v14_revision_rejects_invalid_background_generation_evidence(
+    mutation: str,
+) -> None:
+    selected = v14_selected_background()
+    if mutation == "missing":
+        selected.pop("generationEvidence")
+    elif mutation == "tampered":
+        selected["generationEvidence"] = {
+            **selected["generationEvidence"],
+            "seed": 999,
+        }
+    else:
+        evidence = {
+            **selected["generationEvidence"],
+            "assetSha256": "9" * 64,
+        }
+        selected["generationEvidence"] = evidence
+        selected["generationEvidenceSha256"] = (
+            background_catalog.generation_evidence_sha256(evidence)
+        )
+
+    with pytest.raises(RefinementContractError) as raised:
+        freeze_revision_batch_contract(
+            **valid_input(selected_background=selected)
+        )
+
+    assert raised.value.code == "invalid_background_generation_evidence"
+
+
+def test_v14_background_generation_evidence_changes_revision_digest() -> None:
+    first = freeze_revision_batch_contract(
+        **valid_input(selected_background=v14_selected_background(seed=111))
+    )
+    second = freeze_revision_batch_contract(
+        **valid_input(selected_background=v14_selected_background(seed=222))
+    )
+
+    assert (
+        first["idempotency"]["requestSha256"]
+        != second["idempotency"]["requestSha256"]
+    )
+
+
 def test_provider_snapshot_is_part_of_revision_request_hash() -> None:
     contract = freeze_revision_batch_contract(**valid_input())
     changed = copy.deepcopy(contract)
     changed["providerSnapshot"]["model"] = "gemini-3-pro-image-preview"
 
     assert revision_request_sha256(changed) != contract["idempotency"]["requestSha256"]
+
+
+def test_signed_revision_contract_blocks_version_downgrade() -> None:
+    contract = freeze_revision_batch_contract(
+        **valid_input(
+            selected_background=v14_selected_background(),
+            attestation_secret=TEST_ATTESTATION_SECRET,
+        )
+    )
+
+    assert contract["contractAttestation"]["version"] == (
+        CONTRACT_ATTESTATION_VERSION
+    )
+    assert revision_contract_attestation_valid(
+        contract,
+        TEST_ATTESTATION_SECRET,
+    )
+    downgraded = copy.deepcopy(contract)
+    downgraded["selectedBackground"].pop("backgroundPromptVersion")
+    downgraded["selectedBackground"].pop("generationEvidence")
+    downgraded["selectedBackground"].pop("generationEvidenceSha256")
+    downgraded["idempotency"]["requestSha256"] = revision_request_sha256(
+        downgraded
+    )
+
+    assert not revision_contract_attestation_valid(
+        downgraded,
+        TEST_ATTESTATION_SECRET,
+    )
+
+
+def test_signed_legacy_background_contract_remains_compatible() -> None:
+    contract = freeze_revision_batch_contract(
+        **valid_input(attestation_secret=TEST_ATTESTATION_SECRET)
+    )
+
+    assert "backgroundPromptVersion" not in contract["selectedBackground"]
+    assert revision_contract_attestation_valid(
+        contract,
+        TEST_ATTESTATION_SECRET,
+    )
+    assert "contractAttestation" not in public_revision_payload(contract)
 
 
 def test_premium_rework_is_server_priced_at_twenty_points() -> None:

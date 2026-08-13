@@ -10,11 +10,18 @@ from typing import Any, Mapping
 import object_storage_service
 from shared.batch_contract import (
     JOB_TYPE as MENU_BATCH_JOB_TYPE,
+    menu_batch_contract_attestation_valid,
     request_sha256,
 )
+from shared.contract_attestation import contract_attestation_secret_from_env
 from shared.product_job_store import (
     ProductJobStore,
     SettlementConflict,
+)
+from shared.refinement_contract import (
+    JOB_TYPE as REVISION_JOB_TYPE,
+    revision_contract_attestation_valid,
+    revision_request_sha256,
 )
 
 
@@ -56,6 +63,7 @@ def completion_from_redis_task(
     task: Mapping[str, Any],
     *,
     object_store: Any | None = None,
+    attestation_secret: str | bytes | None = None,
 ) -> GenerationCompletion | None:
     envelope = _mapping(task, "task")
     status = _text(envelope.get("status"), "task.status")
@@ -73,6 +81,13 @@ def completion_from_redis_task(
     )
     if _text(contract.get("jobType"), "contract.jobType") != MENU_BATCH_JOB_TYPE:
         raise InvalidProductTask("product batch job type mismatch")
+    signing_secret = (
+        contract_attestation_secret_from_env()
+        if attestation_secret is None
+        else attestation_secret
+    )
+    if not menu_batch_contract_attestation_valid(contract, signing_secret):
+        raise InvalidProductTask("product batch contract attestation is invalid")
 
     job_id = _text(contract.get("jobId"), "contract.jobId")
     owner_user_id = _text(contract.get("userId"), "contract.userId")
@@ -201,6 +216,12 @@ def apply_generation_completion(
     )
     if detail is None:
         raise InvalidProductTask("PostgreSQL job is missing or has another owner")
+    _require_persisted_contract(
+        detail.job,
+        expected_job_id=completion.job_id,
+        expected_owner_user_id=completion.owner_user_id,
+        expected_request_sha256=completion.request_sha256,
+    )
     _require_digest(
         detail.job.get("request_sha256"),
         completion.request_sha256,
@@ -240,6 +261,12 @@ def settle_terminal_job(
     )
     if detail is None:
         raise InvalidProductTask("PostgreSQL job is missing or has another owner")
+    _require_persisted_contract(
+        detail.job,
+        expected_job_id=job_id,
+        expected_owner_user_id=owner_user_id,
+        expected_request_sha256=str(detail.job.get("request_sha256") or ""),
+    )
     job_status = str(detail.job.get("status") or "")
     settlement = detail.settlement
     if settlement is None:
@@ -415,6 +442,60 @@ def _mapping(
     if not isinstance(value, Mapping):
         raise error_type(f"{field} must be an object")
     return value
+
+
+def _require_persisted_contract(
+    job: Mapping[str, Any],
+    *,
+    expected_job_id: str,
+    expected_owner_user_id: str,
+    expected_request_sha256: str,
+) -> None:
+    contract = _mapping(
+        job.get("request_payload"),
+        "PostgreSQL request_payload",
+    )
+    job_type = _text(contract.get("jobType"), "contract.jobType")
+    signing_secret = contract_attestation_secret_from_env()
+    if job_type == MENU_BATCH_JOB_TYPE:
+        attestation_valid = menu_batch_contract_attestation_valid(
+            contract,
+            signing_secret,
+        )
+        calculated_digest = request_sha256(contract)
+    elif job_type == REVISION_JOB_TYPE:
+        attestation_valid = revision_contract_attestation_valid(
+            contract,
+            signing_secret,
+        )
+        calculated_digest = revision_request_sha256(contract)
+    else:
+        raise InvalidProductTask("PostgreSQL contract job type is unsupported")
+    if not attestation_valid:
+        raise InvalidProductTask("PostgreSQL contract attestation is invalid")
+    _require_text(contract.get("jobId"), expected_job_id, "contract.jobId")
+    _require_text(
+        contract.get("userId"),
+        expected_owner_user_id,
+        "contract.userId",
+    )
+    request_digest = _sha256(
+        _mapping(
+            contract.get("idempotency"),
+            "contract.idempotency",
+        ).get("requestSha256"),
+        "contract.idempotency.requestSha256",
+    )
+    _require_digest(
+        calculated_digest,
+        request_digest,
+        "contract digest",
+    )
+    _require_digest(
+        request_digest,
+        expected_request_sha256,
+        "PostgreSQL request_sha256",
+    )
 
 
 def _text(

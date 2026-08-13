@@ -37,6 +37,7 @@ def normalize_prompt_version(value: Any) -> str:
         DEFAULT_PROMPT_VERSION,
         background_profiles.MIXED_RICE_PILOT_PROMPT_VERSION,
         background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+        background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
     }
     if version not in allowed:
         raise ValueError(f"unsupported background prompt version: {version}")
@@ -94,6 +95,18 @@ def entry_paths(
     return image, image.with_suffix(".json")
 
 
+def entry_generation_contract_valid(entry: dict[str, Any]) -> bool:
+    return background_catalog.generation_evidence_valid(entry)
+
+
+def require_entry_generation_contract(entry: dict[str, Any]) -> None:
+    if not entry_generation_contract_valid(entry):
+        raise RuntimeError(
+            "style-background.v14 asset lacks verified TokenHub v3 "
+            "Seed/Revise evidence"
+        )
+
+
 def reusable_local_entry(
     image_path: Path,
     sidecar_path: Path,
@@ -119,6 +132,8 @@ def reusable_local_entry(
         "sha256": fingerprint["sha256"],
     }
     if any(entry.get(key) != value for key, value in expected.items()):
+        return None
+    if not entry_generation_contract_valid(entry):
         return None
     return entry
 
@@ -239,6 +254,8 @@ def reusable_remote_category_entries(
             for key, value in expected_asset.items()
         ):
             return None
+        if not entry_generation_contract_valid(raw_asset):
+            return None
         if not 0 < file_size <= app_module.MAX_AI_ASSET_BYTES:
             return None
         stored = object_storage_service.read_object_bytes_limited(
@@ -297,6 +314,18 @@ def generate_entry(
 ) -> dict[str, Any]:
     prompt = background_prompt(category_id, style_id)
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    deterministic_controls = (
+        PROMPT_VERSION
+        == background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    if (
+        deterministic_controls
+        and not app_module.tokenhub_v3_deterministic_ready()
+    ):
+        raise RuntimeError(
+            "style-background.v14 requires TokenHub Hunyuan v3 "
+            "with deterministic Seed/Revise controls"
+        )
     accepted_seed = deterministic_generation_seed(
         category_id,
         style_id,
@@ -312,26 +341,25 @@ def generate_entry(
             style_id,
             seed_revision + attempt,
         )
+        payload: dict[str, Any] = {
+            "Prompt": prompt,
+            "Resolution": app_module.default_delivery_resolution(),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        }
+        if deterministic_controls:
+            payload.update({"Revise": 0, "Seed": requested_seed})
+        else:
+            payload["NegativePrompt"] = (
+                background_profiles.PURE_BACKGROUND_NEGATIVE_PROMPT
+            )
         try:
             response = app_module.tencent_api_request(
                 "TextToImageLite",
-                {
-                    "Prompt": prompt,
-                    "NegativePrompt": (
-                        background_profiles.PURE_BACKGROUND_NEGATIVE_PROMPT
-                    ),
-                    "Resolution": app_module.default_delivery_resolution(),
-                    "RspImgType": "url",
-                    "LogoAdd": 0,
-                    "Revise": 0,
-                    "Seed": requested_seed,
-                },
+                payload,
             )
-            app_module.save_result_image(
-                str(response.get("ResultImage") or ""),
-                image_path,
-            )
-            accepted_seed = requested_seed
+            if deterministic_controls:
+                accepted_seed = requested_seed
             break
         except Exception as exc:
             last_error = exc
@@ -340,6 +368,55 @@ def generate_entry(
             time.sleep(min(15, attempt * 3))
     if not response:
         raise RuntimeError(str(last_error or "background provider returned no result"))
+    provider_action = str(response.get("_Action") or "TextToImageLite")
+    if deterministic_controls and provider_action not in {
+        "TokenHubImageV3",
+        "TokenHubHyImageV3",
+    }:
+        raise RuntimeError(
+            "style-background.v14 provider did not preserve "
+            "deterministic Seed/Revise controls"
+        )
+    provider_name = str(response.get("_Provider") or "").strip()
+    model_name = str(response.get("_Model") or "").strip()
+    if not deterministic_controls:
+        provider_name = provider_name or "tencent-hunyuan"
+        model_name = model_name or provider_model(response)
+    control_evidence = (
+        app_module.tokenhub_v3_control_evidence(
+            response,
+            int(accepted_seed),
+        )
+        if deterministic_controls and accepted_seed is not None
+        else {
+            "seed": response.get("Seed"),
+            "requestedSeed": None,
+            "seedApplied": False,
+            "promptRevisionEnabled": None,
+            "promptRevisionControlApplied": False,
+        }
+    )
+    generation_evidence = {
+        "promptVersion": PROMPT_VERSION,
+        "generationProvider": provider_name,
+        "providerAction": provider_action,
+        "model": model_name,
+        **control_evidence,
+    }
+    if deterministic_controls and not (
+        background_catalog.generation_evidence_valid(
+            generation_evidence,
+            prompt_version=PROMPT_VERSION,
+        )
+    ):
+        raise RuntimeError(
+            "style-background.v14 provider returned invalid "
+            "Seed/Revise evidence"
+        )
+    app_module.save_result_image(
+        str(response.get("ResultImage") or ""),
+        image_path,
+    )
 
     quality_report = app_module.require_generated_output_quality(image_path)
     fingerprint = app_module.image_file_fingerprint(image_path)
@@ -371,12 +448,34 @@ def generate_entry(
         "styleSceneType": slot.scene_type,
         "promptVersion": PROMPT_VERSION,
         "promptSha256": prompt_sha256,
-        "provider": str(response.get("_Provider") or "tencent-hunyuan"),
-        "providerAction": str(response.get("_Action") or "TextToImageLite"),
-        "model": provider_model(response),
+        "provider": generation_evidence["generationProvider"],
+        "providerAction": provider_action,
+        "model": generation_evidence["model"],
         "requestId": str(response.get("RequestId") or ""),
-        "seed": response.get("Seed") or accepted_seed,
-        "promptRevisionEnabled": False,
+        "seed": generation_evidence["seed"],
+        "requestedSeed": generation_evidence["requestedSeed"],
+        "seedApplied": generation_evidence["seedApplied"],
+        "seedEvidenceSource": generation_evidence.get(
+            "seedEvidenceSource"
+        ),
+        "providerSeedEchoed": generation_evidence.get(
+            "providerSeedEchoed"
+        ),
+        "providerSeedPresent": generation_evidence.get(
+            "providerSeedPresent"
+        ),
+        "seedControlSubmitted": generation_evidence.get(
+            "seedControlSubmitted"
+        ),
+        "promptRevisionEnabled": generation_evidence[
+            "promptRevisionEnabled"
+        ],
+        "promptRevisionControlSubmitted": generation_evidence.get(
+            "promptRevisionControlSubmitted"
+        ),
+        "promptRevisionControlApplied": generation_evidence[
+            "promptRevisionControlApplied"
+        ],
         "sceneContractVersion": scene_contract.version,
         "sceneContractSha256": scene_contract.contract_sha256,
         "sceneContract": scene_contract.payload(),
@@ -416,6 +515,7 @@ def register_pending_entry(
         "taxonomyVersion": entry["taxonomyVersion"],
         "categoryId": entry["categoryId"],
         "styleId": entry["styleId"],
+        "promptVersion": entry.get("promptVersion") or PROMPT_VERSION,
         "promptSha256": entry["promptSha256"],
         "sha256": entry["sha256"],
     }
@@ -425,6 +525,9 @@ def register_pending_entry(
     model = app_module.product_asset_version_token(
         entry.get("model"),
         "hy-image-v3.0",
+    )
+    entry_prompt_version = normalize_prompt_version(
+        entry.get("promptVersion") or PROMPT_VERSION
     )
     try:
         with app_module.postgres_connection() as connection:
@@ -450,12 +553,10 @@ def register_pending_entry(
                 reuse_scope="tenant",
                 source_kind="generated",
                 source_provider=str(entry["provider"])[:128],
-                prompt_version=PROMPT_VERSION,
+                prompt_version=entry_prompt_version,
                 model_name=model,
                 model_version=model,
-                pipeline_version=app_module.product_asset_pipeline_version(
-                    "category_background"
-                ),
+                pipeline_version=entry_prompt_version,
                 original_object_ref=object_key,
                 original_sha256=digest,
                 original_size_bytes=len(raw),
@@ -479,6 +580,7 @@ def upload_pending_entry(
     entry: dict[str, Any],
     image_path: Path,
 ) -> tuple[str, str, bool]:
+    require_entry_generation_contract(entry)
     raw = image_path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if digest != entry["sha256"]:
@@ -532,6 +634,8 @@ def upload_category_manifest(
         background_catalog.STYLE_IDS
     ):
         raise RuntimeError("category manifest requires all six style slots")
+    for entry in entries:
+        require_entry_generation_contract(entry)
     public_entries = [
         {
             key: value
@@ -679,7 +783,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_PROMPT_VERSION,
         help=(
             "Explicit versioned prompt namespace; v12 is mixed_rice-only and "
-            "v13 supports the complete 40-category benchmarked catalog."
+            "v13 and v14 support the complete 40-category benchmarked catalog."
         ),
     )
     parser.add_argument(

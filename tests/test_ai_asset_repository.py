@@ -121,8 +121,15 @@ class AIAssetRepositoryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = AIAssetRepository(Path(tmp) / "manifest.jsonl")
             repo.upsert(asset_record(asset_id="salad"))
-            with self.assertRaises(ValueError):
-                repo.mark_status("salad", "pending")
+            pending = repo.mark_status("salad", "pending")
+            pending_matches = repo.find_reusable(
+                category="轻食健康餐",
+                style_id="style-1",
+                product_name="鸡胸沙拉",
+            )
+
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(pending_matches, [])
 
     def test_mark_status_persists_quality_note_and_allows_manual_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

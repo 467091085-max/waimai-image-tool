@@ -23,10 +23,7 @@ def pending_category(
         target = tmp_path / "light_food" / f"{style_id}.jpg"
         save_test_image(target)
         fingerprint = builder.app_module.image_file_fingerprint(target)
-        prompt = builder.background_profiles.pure_background_prompt(
-            "light_food",
-            style_id,
-        )
+        prompt = builder.background_prompt("light_food", style_id)
         prompt_sha = builder.hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest()
@@ -58,6 +55,23 @@ def pending_category(
             "reviewStatus": "pending",
             "createdAt": "2026-08-01T00:00:00Z",
         }
+        if builder.PROMPT_VERSION == (
+            builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+        ):
+            seed = builder.deterministic_generation_seed(
+                "light_food",
+                style_id,
+            )
+            entry.update(
+                {
+                    "providerAction": "TokenHubImageV3",
+                    "seed": seed,
+                    "requestedSeed": seed,
+                    "seedApplied": True,
+                    "promptRevisionEnabled": False,
+                    "promptRevisionControlApplied": True,
+                }
+            )
         storage.put_bytes(
             target.read_bytes(),
             object_key=entry["objectKey"],
@@ -102,6 +116,58 @@ def test_remote_manifest_resume_rejects_changed_object(tmp_path: Path) -> None:
         entries = builder.reusable_remote_category_entries("light_food")
 
     assert entries is None
+
+
+def test_v14_remote_manifest_and_approval_reject_unverified_provider_evidence(
+    tmp_path: Path,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    prompt_version = (
+        builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    with (
+        mock.patch.object(builder, "PROMPT_VERSION", prompt_version),
+        mock.patch.object(
+            builder.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+        mock.patch.object(
+            review.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+    ):
+        hashes = pending_category(tmp_path, storage)
+        manifest_key = builder.background_catalog.catalog_manifest_key(
+            "light_food",
+            prompt_version,
+        )
+        document = json.loads(storage.read_bytes(manifest_key).decode("utf-8"))
+        document["assets"][0].update(
+            {
+                "providerAction": "TextToImageLite",
+                "seedApplied": False,
+                "promptRevisionControlApplied": False,
+            }
+        )
+        storage.put_bytes(
+            json.dumps(document).encode("utf-8"),
+            object_key=manifest_key,
+        )
+
+        assert builder.reusable_remote_category_entries("light_food") is None
+        try:
+            review.approve_category_manifest(
+                "light_food",
+                expected_sha256=hashes,
+                reviewer="catalog-reviewer",
+                note="must reject unverified provider evidence",
+            )
+        except RuntimeError as exc:
+            assert "complete current-version remote manifest" in str(exc)
+        else:
+            raise AssertionError("unverified v14 manifest approval must fail")
 
 
 def test_execute_reuses_complete_remote_manifest_without_provider_cost(
@@ -198,16 +264,30 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
 ) -> None:
     storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
     output = tmp_path / "selective"
-    with mock.patch.object(
-        builder.object_storage_service,
-        "get_object_storage_service",
-        return_value=storage,
+    prompt_version = (
+        builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    with (
+        mock.patch.object(
+            builder.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+        mock.patch.object(builder, "PROMPT_VERSION", prompt_version),
     ):
         original_hashes = pending_category(tmp_path, storage)
         original_prompt = builder.background_profiles.pure_background_prompt
 
-        def changed_selected_prompt(category_id: str, style_id: str) -> str:
-            prompt = original_prompt(category_id, style_id)
+        def changed_selected_prompt(
+            category_id: str,
+            style_id: str,
+            prompt_version: str | None = None,
+        ) -> str:
+            prompt = original_prompt(
+                category_id,
+                style_id,
+                prompt_version=prompt_version,
+            )
             return (
                 prompt + "; stricter solid color"
                 if style_id == "style-2"
@@ -217,21 +297,28 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
         with (
             mock.patch.object(builder.app_module, "tencent_ready", return_value=True),
             mock.patch.object(
+                builder.app_module,
+                "tokenhub_v3_deterministic_ready",
+                return_value=True,
+            ),
+            mock.patch.object(
                 builder.background_profiles,
                 "pure_background_prompt",
                 side_effect=changed_selected_prompt,
             ),
-            mock.patch.object(
-                builder.app_module,
-                "tencent_api_request",
-                return_value={
-                    "ResultImage": "replacement",
-                    "_Provider": "tencent-hunyuan",
-                    "_Action": "TokenHubImageV3",
-                    "_Model": "hy-image-v3.0",
-                    "RequestId": "request-selective",
-                },
-            ) as provider,
+                mock.patch.object(
+                    builder.app_module,
+                    "tencent_api_request",
+                    side_effect=lambda _action, payload: {
+                        "ResultImage": "replacement",
+                        "_Provider": "tencent-hunyuan",
+                        "_Action": "TokenHubImageV3",
+                        "_Model": "hy-image-v3.0",
+                        "_SubmittedSeed": payload["Seed"],
+                        "_SubmittedRevise": payload["Revise"],
+                        "RequestId": "request-selective",
+                    },
+                ) as provider,
             mock.patch.object(
                 builder.app_module,
                 "save_result_image",
@@ -263,14 +350,26 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
                     "--regenerate-selected",
                     "--seed-revision",
                     "1",
+                    "--prompt-version",
+                    prompt_version,
                 ]
             )
+        expected_seed = builder.deterministic_generation_seed(
+            "light_food",
+            "style-2",
+            2,
+        )
+        expected_prompt_sha = builder.hashlib.sha256(
+            changed_selected_prompt(
+                "light_food",
+                "style-2",
+                prompt_version=prompt_version,
+            ).encode("utf-8")
+        ).hexdigest()
 
     assert result == 0
     assert provider.call_count == 1
-    assert provider.call_args.args[1]["Seed"] == (
-        builder.deterministic_generation_seed("light_food", "style-2", 2)
-    )
+    assert provider.call_args.args[1]["Seed"] == expected_seed
     report = json.loads((output / "run-report.json").read_text("utf-8"))
     assert report["completedAssetCount"] == 1
     assert len(report["manifestKeys"]) == 1
@@ -296,9 +395,7 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
         asset["styleId"]: asset["promptSha256"]
         for asset in document["assets"]
     }
-    assert replacement_prompts["style-2"] == builder.hashlib.sha256(
-        changed_selected_prompt("light_food", "style-2").encode("utf-8")
-    ).hexdigest()
+    assert replacement_prompts["style-2"] == expected_prompt_sha
     assert all(
         "remoteManifestReused" not in asset
         for asset in document["assets"]

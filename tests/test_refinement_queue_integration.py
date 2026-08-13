@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 from pathlib import Path
 from unittest import mock
 
 from PIL import Image, ImageDraw
+import pytest
 
 import app as app_module
 import object_storage_service
@@ -14,6 +16,17 @@ from shared.redis_queue import RedisQueueConfig, RedisTaskQueue
 from shared.refinement_contract import freeze_revision_batch_contract
 from tests.redis_test_double import RedisTestDouble
 from worker.product_revision_handler import handle_product_revision
+
+
+TEST_ATTESTATION_SECRET = "revision-queue-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _revision_attestation_secret(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "OBJECT_SIGNING_SECRET",
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def _png(image: Image.Image) -> bytes:
@@ -80,6 +93,7 @@ def _contract(
         refine_prompt="减少辣椒并让鸡丁更明亮" if mode == "refine" else None,
         idempotency_key=f"key-{job_id}",
         created_at="2026-07-30T08:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
     return contract, edited
 
@@ -116,6 +130,44 @@ def _principal(user_id: str = "server-user") -> tuple[dict, None]:
         },
         None,
     )
+
+
+def test_tampered_revision_contract_is_not_republished(
+    tmp_path: Path,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    contract, _edited = _contract(
+        storage,
+        job_id="revision-tampered-recovery",
+    )
+    tampered = copy.deepcopy(contract)
+    tampered["billing"]["debitOrderId"] = "revision:other-job:debit"
+    record = {
+        "id": tampered["jobId"],
+        "status": "queued",
+        "request": tampered,
+    }
+    queue = _queue()
+
+    with (
+        mock.patch.object(
+            app_module,
+            "persisted_revision_record",
+            return_value=(record, tampered),
+        ),
+        pytest.raises(
+            app_module.RefinementContractError,
+            match="attestation",
+        ),
+    ):
+        app_module.recover_missing_revision_redis_task(
+            queue,
+            tampered["jobId"],
+            _principal()[0],
+        )
+
+    with pytest.raises(app_module.RedisTaskNotFound):
+        queue.get(tampered["jobId"])
 
 
 def test_queue_worker_web_status_and_opaque_asset_flow(tmp_path: Path) -> None:

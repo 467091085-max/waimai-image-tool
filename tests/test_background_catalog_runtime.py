@@ -164,6 +164,26 @@ def test_v13_global_catalog_version_is_explicit_and_category_wide() -> None:
         )
 
 
+def test_v14_global_catalog_version_is_explicit_and_category_wide() -> None:
+    with mock.patch.dict(
+        app_module.os.environ,
+        {"BACKGROUND_CATALOG_PROMPT_VERSION": "style-background.v14"},
+        clear=False,
+    ):
+        assert (
+            app_module.active_background_prompt_version("mixed_rice")
+            == "style-background.v14"
+        )
+        assert (
+            app_module.active_background_prompt_version("light_food")
+            == "style-background.v14"
+        )
+        assert (
+            app_module.normalized_background_prompt_version("14")
+            == "style-background.v14"
+        )
+
+
 def test_v12_global_value_remains_scoped_to_mixed_rice() -> None:
     with mock.patch.dict(
         app_module.os.environ,
@@ -414,6 +434,149 @@ def write_cos_manifest(
             "style-background.v11",
         ),
     )
+
+
+def v14_cos_manifest_document(
+    storage: object_storage_service.ObjectStorageService,
+) -> dict[str, object]:
+    prompt_version = background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    assets = []
+    for style_id in background_catalog.STYLE_IDS:
+        raw = f"v14-background-{style_id}".encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        prompt = background_profiles.pure_background_prompt(
+            "light_food",
+            style_id,
+            prompt_version=prompt_version,
+        )
+        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        object_key = background_catalog.catalog_object_key(
+            category_id="light_food",
+            style_id=style_id,
+            prompt_version=prompt_version,
+            prompt_sha256=prompt_sha,
+            asset_sha256=digest,
+        )
+        storage.put_bytes(raw, object_key=object_key)
+        seed = int(style_id.rsplit("-", 1)[1]) * 1000
+        assets.append(
+            {
+                "catalogVersion": background_catalog.CATALOG_VERSION,
+                "taxonomyVersion": app_module.TAXONOMY_VERSION,
+                "categoryId": "light_food",
+                "categoryName": "轻食/沙拉",
+                "styleId": style_id,
+                "promptVersion": prompt_version,
+                "promptSha256": prompt_sha,
+                "provider": "tencent-hunyuan",
+                "providerAction": "TokenHubImageV3",
+                "model": "hy-image-v3.0",
+                "seed": seed,
+                "requestedSeed": seed,
+                "seedApplied": True,
+                "promptRevisionEnabled": False,
+                "promptRevisionControlApplied": True,
+                "objectKey": object_key,
+                "sha256": digest,
+                "fileSize": len(raw),
+                "reviewStatus": "approved",
+                "createdAt": "2026-08-12T00:00:00Z",
+            }
+        )
+    return {
+        "schemaVersion": background_catalog.CATALOG_SCHEMA_VERSION,
+        "catalogVersion": background_catalog.CATALOG_VERSION,
+        "taxonomyVersion": app_module.TAXONOMY_VERSION,
+        "categoryId": "light_food",
+        "categoryName": "轻食/沙拉",
+        "promptVersion": prompt_version,
+        "reviewStatus": "approved",
+        "assets": assets,
+    }
+
+
+def test_v14_cos_manifest_requires_generation_evidence(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    document = v14_cos_manifest_document(storage)
+    prompt_version = background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    manifest_key = background_catalog.catalog_manifest_key(
+        "light_food",
+        prompt_version,
+    )
+    storage.put_bytes(
+        json.dumps(document).encode("utf-8"),
+        object_key=manifest_key,
+    )
+    patches = cos_manifest_patches(storage)
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {"BACKGROUND_CATALOG_PROMPT_VERSION": prompt_version},
+            clear=False,
+        ),
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+    ):
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is True
+    assert len(manifest["assets"]) == 6
+
+    document["assets"][0]["providerAction"] = "TextToImageLite"
+    document["assets"][0]["seedApplied"] = False
+    storage.put_bytes(
+        json.dumps(document).encode("utf-8"),
+        object_key=manifest_key,
+    )
+    patches = cos_manifest_patches(storage)
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {"BACKGROUND_CATALOG_PROMPT_VERSION": prompt_version},
+            clear=False,
+        ),
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+    ):
+        rejected = app_module.approved_background_catalog_manifest()
+
+    assert rejected["ready"] is False
+    assert rejected["invalidStyleIds"] == ["style-1"]
+    assert "style-1" not in rejected["_recordsByStyle"]
+
+
+def test_v14_postgres_catalog_fails_closed_without_evidence_columns() -> None:
+    prompt_version = background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    patches = catalog_patches(
+        [
+            approved_record(style_id, prompt_version=prompt_version)
+            for style_id in background_catalog.STYLE_IDS
+        ]
+    )
+    with (
+        mock.patch.dict(
+            app_module.os.environ,
+            {"BACKGROUND_CATALOG_PROMPT_VERSION": prompt_version},
+            clear=False,
+        ),
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+    ):
+        manifest = app_module.approved_background_catalog_manifest()
+
+    assert manifest["ready"] is False
+    assert manifest["code"] == (
+        "background_catalog_generation_evidence_unavailable"
+    )
+    assert CatalogStore.calls == []
 
 
 def test_complete_approved_cos_manifest_is_ready(tmp_path) -> None:

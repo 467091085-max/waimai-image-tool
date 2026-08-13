@@ -20,11 +20,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from shared.product_job_store import OutboxClaimLost, ProductJobStore
+from shared.batch_contract import menu_batch_contract_attestation_valid
+from shared.contract_attestation import contract_attestation_secret_from_env
 from shared.postgres_runtime import (
     PostgresRuntimeError,
     connect_postgres,
     postgres_config_from_env,
 )
+from shared.refinement_contract import revision_contract_attestation_valid
 from shared.redis_queue import (
     IdempotencyConflict,
     QueueError,
@@ -164,12 +167,19 @@ def prepare_dispatch(claim: Mapping[str, Any]) -> PreparedDispatch:
     if job_type == MENU_BATCH_JOB_TYPE:
         task_type = PRODUCT_BATCH_TASK_TYPE
         contract_key = "batchContract"
+        attestation_valid = menu_batch_contract_attestation_valid
     elif job_type == REVISION_BATCH_JOB_TYPE:
         task_type = PRODUCT_REVISION_TASK_TYPE
         contract_key = "revisionContract"
+        attestation_valid = revision_contract_attestation_valid
     else:
         raise UnsupportedProductJobType(
             f"unsupported product outbox job type: {job_type}"
+        )
+    signing_secret = contract_attestation_secret_from_env()
+    if not signing_secret or not attestation_valid(request, signing_secret):
+        raise InvalidOutboxClaim(
+            "payload.request contract attestation is invalid"
         )
 
     task_payload = {

@@ -333,7 +333,7 @@ def _configure_remote_preview_storage(
     monkeypatch.setenv("OBJECT_STORAGE_PUBLIC_READ", "false")
     monkeypatch.setenv(
         "OBJECT_SIGNING_SECRET",
-        "preview-media-test-secret",
+        "preview-media-test-signing-secret-32-bytes-minimum",
     )
     storage = object_storage_service.ObjectStorageService(
         fixture.library_dir.parent / "remote-preview-objects"

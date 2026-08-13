@@ -22,10 +22,14 @@ from matching_engine import (
 
 BACKGROUND_PROFILE_VERSION = "2026-08-01.v12"
 BENCHMARKED_BACKGROUND_PROFILE_VERSION = "2026-08-12.v13"
+EMPTY_SET_BACKGROUND_PROFILE_VERSION = "2026-08-12.v14"
 DEFAULT_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 MIXED_RICE_PILOT_PROMPT_VERSION = "style-background.v12"
 BENCHMARKED_BACKGROUND_PROMPT_VERSION = (
     prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION
+)
+EMPTY_SET_BACKGROUND_PROMPT_VERSION = (
+    prompt_compiler.EMPTY_SET_BACKGROUND_PROMPT_VERSION
 )
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
@@ -357,7 +361,118 @@ def benchmarked_background_prompt(category_id: str, style_id: str) -> str:
     )
 
 
+def provider_safe_empty_set_material(value: str) -> str:
+    safe = str(value)
+    replacements = (
+        ("燕麦奶油", "柔暖象牙"),
+        ("面皮", "柔和"),
+        ("海盐", "清冷"),
+        ("暖奶油", "柔暖象牙"),
+        ("奶油", "柔暖象牙"),
+        ("深可可", "深暖"),
+        ("可可", "深暖棕"),
+        ("开心果", "柔和"),
+        ("低饱和番茄", "低饱和暖朱"),
+        ("番茄", "暖朱"),
+        ("芥末", "明暖"),
+        ("辣椒", "朱"),
+        ("蕉叶", "青"),
+        ("鼠尾草", "灰绿"),
+        ("青柠", "鲜青"),
+        ("麦芽", "浅金"),
+        ("麦黄", "暖金"),
+        ("燕麦", "浅暖灰"),
+        ("焦糖", "琥珀"),
+        ("蜜桃", "珊瑚"),
+        ("柔和桃橙", "柔和珊瑚橙"),
+        ("淡桃粉", "淡珊瑚粉"),
+        ("莓", "柔玫"),
+        ("杏", "浅暖"),
+        ("橄榄", "绿"),
+        ("薄荷", "浅青"),
+        ("苔绿", "灰绿"),
+        ("草绿", "鲜绿"),
+        ("枣红", "深红"),
+        ("卤酱", "深红"),
+        ("蜜糖", "暖金"),
+        ("蜂蜜", "暖金"),
+    )
+    for source, replacement in replacements:
+        safe = safe.replace(source, replacement)
+    return safe
+
+
+def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
+    normalized_category = normalize_category_id(category_id)
+    if normalized_category not in CATEGORY_BACKGROUND_DIRECTIONS:
+        raise ValueError(
+            f"style-background.v14 requires a classified category: {category_id}"
+        )
+    try:
+        style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
+            style_id
+        ]
+    except KeyError as exc:
+        raise ValueError(f"unknown background style slot: {style_id}") from exc
+
+    direction = CATEGORY_BACKGROUND_DIRECTIONS[normalized_category]
+    surface = provider_safe_empty_set_material(
+        str(getattr(direction, surface_field))
+    )
+    contract = prompt_compiler.scene_contract_for(
+        style_id,
+        normalized_category,
+        prompt_version=EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    )
+    category_index = tuple(CATEGORY_BACKGROUND_DIRECTIONS).index(
+        normalized_category
+    )
+    highlight_x = 28 + (category_index % 8) * 6
+    highlight_y = 24 + (category_index // 8) * 7
+    aesthetic = {
+        "style-1": "高调编辑感，主亮区偏左上，细腻微粒和柔和明暗过渡",
+        "style-2": "克制的对比色调，右上柔光，色彩饱满但不廉价",
+        "style-3": "清透晨间质感，真实天然纹理，明亮而不过曝",
+        "style-4": "温润自然质感，木纹方向统一，暖而不发黄",
+        "style-5": "现代商业编辑感，低饱和矿物质感，干净利落",
+        "style-6": "高级暗调编辑感，暗部有纹理，不做黑洞或重暗角",
+    }[style_id]
+    if style_id in {"style-1", "style-2"}:
+        material_contract = (
+            f"画面只允许{surface}这一种色相的连续哑光承托面；"
+            "细腻矿物微纹理铺满四边，只有自然光照造成的同色明暗变化；"
+            "不出现竖直墙面、墙地转角或第二种颜色"
+        )
+    else:
+        material_contract = (
+            f"画面只允许一整块{surface}承托面；{geometry}；"
+            "纹理从四边连续穿过中央，不拼色、不拼花、不镶嵌、不混合材质"
+        )
+    return (
+        "EMPTY COMMERCIAL PHOTOGRAPHY BACKPLATE, ZERO OBJECTS. "
+        "只生成一张完全空置的商业摄影底板，4:3横图，1024x768。"
+        f"本槽位为{style_name}：{material_contract}。"
+        f"视觉质感为{aesthetic}；主光方向为{contract.lighting.direction}，"
+        "使用大型柔光源，明暗过渡自然；"
+        f"亮度重心位于画面宽度{highlight_x}%、高度{highlight_y}%附近。"
+        f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，约"
+        f"{contract.camera.lens_mm}mm标准镜头，横平竖直，透视真实。"
+        "中央68%是后期合成安全区，只能保留连续材质和自然光照；"
+        "必须有高级商业摄影的真实微纹理与柔和层次，不能退化成均匀色卡、"
+        "纯色块、廉价渐变、塑料3D面或模糊蒙版。"
+        "严禁任何独立实体、可识别对象、容器、器具、布料、装饰、生命体、"
+        "符号、字符、品牌标记或水印；严禁桌沿、承托材质厚度、支撑结构、"
+        "垂直转角、地平线、中央独立石板、"
+        "悬浮平台、展台、底座、台阶、第二层台面、矩形垫板、边框、画中画、"
+        "洞穴暗角或不存在物体产生的阴影。真实摄影，不模仿任何品牌版式。"
+        "最终自检：画面中可数实体必须为0，除唯一连续承托材质和真实光线外"
+        "不得出现任何东西。"
+    )
+
+
 def background_profile_version(prompt_version: str | None) -> str:
+    if str(prompt_version or "").strip() == EMPTY_SET_BACKGROUND_PROMPT_VERSION:
+        return EMPTY_SET_BACKGROUND_PROFILE_VERSION
     if str(prompt_version or "").strip() == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
         return BENCHMARKED_BACKGROUND_PROFILE_VERSION
     return BACKGROUND_PROFILE_VERSION
@@ -380,6 +495,8 @@ def pure_background_prompt(
         return mixed_rice_pilot_background_prompt(style_id)
     if resolved_prompt_version == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
         return benchmarked_background_prompt(normalized_category, style_id)
+    if resolved_prompt_version == EMPTY_SET_BACKGROUND_PROMPT_VERSION:
+        return commercial_empty_set_prompt(normalized_category, style_id)
     if resolved_prompt_version != DEFAULT_BACKGROUND_PROMPT_VERSION:
         raise ValueError(
             f"unsupported background prompt version: {resolved_prompt_version}"

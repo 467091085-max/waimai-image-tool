@@ -191,6 +191,34 @@ claimed until a measured provider P95 and a SHA-256-bound real 100-image batch
 under 3600 seconds are recorded. Six paid v12 mixed-rice backgrounds also need
 visual approval before the new scene contract can replace approved v11 assets.
 
+Step 111 in progress: independent security review reproduced a signed-contract
+trust-boundary bypass in Web recovery/refund and shared PostgreSQL settlement.
+The candidate now MACs an explicit application context, job domain, and
+attestation version before the canonical contract, so a menu signature cannot
+be replayed as a revision signature. Redis, persisted-record, refund, recovery,
+and PostgreSQL settlement boundaries now require a valid attestation before
+object reads, re-enqueue, status mutation, or account credit. The first focused
+contract and settlement verification passed `113 passed`; Web/Redis/PostgreSQL
+integration regression and independent re-review remain active before deploy.
+
+Step 112 in progress: a second independent review found the direct cause of
+v14 paid-result rejection: Tencent's documented TokenHub submit/query success
+responses do not echo `Seed`, while the candidate required a provider-returned
+integer. Normalized provider results now carry the exact Seed/Revise values
+actually submitted by the adapter. Catalog evidence explicitly distinguishes
+`submitted-request` from a provider echo and does not claim Seed or Revise was
+echo-verified when Tencent omits it. Missing controls, wrong models/actions,
+and malformed or mismatched optional echoes still fail before image download.
+The official no-Seed response regression and affected generation/catalog tests
+passed `255 passed`; full regression and real staging provider proof remain.
+
+Step 113 complete: the complete post-correction regression passed `1516
+passed`, skipped `20` live PostgreSQL/Redis infrastructure gates, and retained
+only the established baseline demo-library self-check failure. Python
+compilation, `git diff --check`, and the staged secret scan passed; generated
+test-upload directories were removed. Two independent final reviews are
+checking the exact staged diff before commit and staging deployment.
+
 ## Status
 - 2026-08-11 live Render inventory: one free Python Web Service
   `waimai-image-tool-1`, branch `codex/gemini-dual-provider-staging`, commit
@@ -1791,6 +1819,27 @@ visual approval before the new scene contract can replace approved v11 assets.
   surviving staging worktree is being used as the read-only taxonomy source and
   isolated V2 artifact root. The in-app browser must be opened and, if required,
   the user must complete Xiaohongshu sign-in before source screening.
+- Step 113 sample gate ready: six original `topped_rice` empty backgrounds
+  were generated, visually inspected, center-cropped/resampled to exact
+  1200x900 RGB PNGs, and saved under
+  `background_research_v2/sample_delivery/盖饭盖码饭/`. The six directions
+  are 奶油暖棚, 赤陶红场, 晨光浅石, 夜宴黑石, 烟火暖木, and 冷调水磨石.
+- The contact sheet and UTF-8 ZIP are complete. The ZIP contains six PNGs plus
+  manifest, per-style notes, sample brief, and QA report; archive integrity
+  passed and SHA-256 is
+  `25cb7c601b8c56566e608e06690a3812261eee486ab62fd6c349add6fb0882bb`.
+  No remaining category will be generated until the user accepts or revises
+  this six-image gate.
+- The post-approval batch is now preflighted without generating the remaining
+  assets. `background_research_v2/generation_plan.json` contains all 40
+  categories, 240 unique output paths, exact shared background constraints, six
+  named style prompts per category, and eight post-sample batches (7 x 30
+  assets plus 1 x 24 assets). All 39 non-sample categories remain explicitly
+  blocked on sample acceptance.
+- `background_research_v2/tools/build_contact_sheet_and_qa.py` now provides
+  the repeatable per-category gate for exact size, opacity, unique SHA-256,
+  perceptual-distance evidence, contact-sheet output, and required human visual
+  checks. It passes against the current six-image sample.
 
 - Step 114 in progress: the staging service now has
   `EXACT_BACKGROUND_CHROMA_FAST_PATH=false`, confirmed by the authenticated
@@ -1819,3 +1868,273 @@ visual approval before the new scene contract can replace approved v11 assets.
   240 assets. Next action is staging deploy, six paid `mixed_rice` v13
   background generations, contact-sheet inspection, and no catalog promotion
   unless all six pass visual review.
+
+- Step 115 in progress: the paid v13 `mixed_rice` pilot proved that provider
+  success was still not visual success. Slots 1 and 2 were low-information
+  colored studio sweeps, slot 3 was a plain stone texture, and slot 4 violated
+  the empty-background contract by generating a bowl of fried rice. The real
+  TokenHub `hy-image-v3.0` calls succeeded, but v3 does not receive the Lite-only
+  negative-prompt field and the positive prompt still named the food category.
+- Candidate v14 removes every category label from provider-visible empty-set
+  prompts while retaining category-specific palette, material, camera, and
+  lighting contracts. It states zero objects at both boundaries, rejects flat
+  color-card output in the positive prompt, fixes `Revise=0` plus a deterministic
+  category/style seed, and gives v14 a distinct scene-contract identity.
+- A stale metadata bug was also found: a newly generated image overwrote an old
+  file before its sidecar was updated, so the selected-background snapshot could
+  inherit the previous v11 prompt version. The snapshot builder now accepts the
+  current generation version explicitly. Focused background, compiler, runtime,
+  builder, generation, and selected-background verification passes `123 passed`.
+  Next action is full regression, staging-only deployment, and a fresh paid six
+  image v14 visual pilot. No v13 or v14 asset is approved for customer reuse.
+- Step 115 full local verification after the pending-review correction:
+  `1452 passed, 20 skipped, 1 failed`.
+  The sole failure is the same demo-library self-check already reproduced on
+  untouched commit `15083e7`; no background, prompt, provider, or metadata test
+  failed. Python compilation, `git diff --check`, and the v14 40x6 dry-run also
+  passed. The dry-run planned exactly 240 assets without a provider call.
+- Generated category backgrounds now enter the local compatibility repository
+  as `pending` and are excluded from reusable queries until an explicit visual
+  approval. Product-image status behavior is unchanged.
+- Independent review blocked the first v14 candidate before deployment. It
+  found provider-visible negative food words and culinary color/light terms,
+  a non-AI-first product-replacement escape, builder v14 registration using a
+  runtime v11 pipeline, cloud fallback overstating seed/revision controls, and
+  seed controls changing the v11-v13 runtime contract.
+- The revised candidate has 240/240 unique v14 prompts with zero hits for the
+  review's food lexeme set, keeps category differentiation through sanitized
+  material, camera, highlight position, and palette, fails closed outside
+  AI-first text-to-image, registers the entry's exact prompt/pipeline version,
+  records seed/revision only when the provider action proves support, and leaves
+  v11-v13 provider payloads unchanged. Focused verification passes `136`; full
+  regression passes `1455`, skips `20`, and retains only the known baseline
+  demo-library self-check failure. Independent re-review is pending.
+- Step 115 review correction complete: v14 now preflights the exact TokenHub
+  Hunyuan v3 model/protocol before any paid request, omits the Lite-only
+  `NegativePrompt`, and rejects a returned provider action that cannot prove
+  Seed/Revise support. The offline builder retries provider submission only;
+  result-image download uses its own idempotent retry and can never resubmit a
+  paid generation. Explicit v14 snapshots also discard an asset ID from a stale
+  v11 sidecar. Focused verification passes `142 passed`; full regression and
+  final independent re-review are the next actions.
+- Step 115 post-correction full regression: `1461 passed, 20 skipped, 1
+  failed`. The sole failure remains the demo-library self-check already
+  reproduced on untouched commit `15083e7`; no background, provider, prompt,
+  catalog, selected-background, security, or generation test failed. Python
+  compilation and `git diff --check` passed. Two independent final P1/P2
+  reviews are now running before any staging deploy or paid pilot.
+- The first final review found no P1 and two P2. Both are corrected: offline
+  v11-v13 requests no longer receive v14-only Seed/Revise fields, and explicit
+  prompt-version snapshots inherit an asset ID only when the sidecar also binds
+  the current image SHA-256. Positive and negative inheritance tests are
+  included. Updated focused verification passes `144 passed`; re-review and a
+  final full regression remain pending.
+- The first post-P2 full run exposed one old selective-regeneration test that
+  still expected v11 to carry a Seed. The test now explicitly exercises v14,
+  including its prompt version and preflight, while production behavior remains
+  unchanged. The affected review/builder/runtime subset passes `102 passed`.
+- Final post-P2 full regression passes `1463`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the previously reproduced baseline
+  demo-library self-check failure. Python compilation and diff checking pass;
+  generated demo upload artifacts were removed. Independent final review is
+  the only remaining code gate before staging commit and deployment.
+- A subsequent final review found one P1 in legacy v14 asset reuse: an old
+  sidecar or remote manifest without deterministic provider evidence could
+  bypass the new generation preflight. V14 local reuse, remote reuse, upload,
+  registration, manifest write, and approval now share an evidence gate for
+  exact TokenHub v3 action/model, applied seed identity, and disabled prompt
+  revision. The reproduced bypass is rejected; focused verification passes
+  `105 passed`. Final re-review and full regression remain pending.
+- Post-evidence-gate full regression passes `1466`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the known baseline demo-library
+  self-check failure. Compilation and diff checks pass, and generated test
+  uploads were removed. Final independent re-review remains pending.
+- Evidence-gate re-review found no P1 and one P2: numeric coercion could accept
+  fractional or string seed values. Requested and applied seeds now require
+  strict JSON integer types, excluding booleans, strings, and floats before
+  direct identity/range checks. Focused verification passes `110 passed`.
+- Strict-seed post-fix full regression passes `1471`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the known baseline demo-library
+  self-check failure. Generated test uploads were removed. Final independent
+  re-review is the last code gate before the staging-only deployment.
+- A second reviewer found two remaining runtime P1 paths: approved COS/Postgres
+  v14 assets and local Web sidecars did not share the builder evidence gate.
+  The validator now lives in `background_catalog.py` and is enforced by the
+  builder, COS manifest reader, reusable-background materializer, and Web cache.
+  Existing PostgreSQL rows cannot preserve the required action/seed/revision
+  fields, so v14 PostgreSQL catalog reads explicitly fail closed until a future
+  authorized schema migration; staging object storage carries and validates the
+  complete evidence. Focused runtime/builder/review verification passes `128`.
+- Shared-runtime-gate full regression passes `1475`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the known baseline demo-library
+  self-check failure. Generated test uploads were removed. Both independent
+  reviewers are rechecking the final runtime boundaries before deployment.
+- Runtime re-review found no P1 and one P2 in the first-response path: a v3
+  action with mismatched returned seed could be downloaded and shown before the
+  next cache read rejected it. The complete shared evidence gate now runs before
+  result-image download, sidecar write, persistence, or display. The affected
+  provider/runtime/catalog subset passes `129 passed`.
+- First-response-gate full regression passes `1476`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the known baseline demo-library
+  self-check failure. Generated test uploads were removed. Final reviewer
+  responses remain the only code gate before staging deployment.
+- The final selected-background bypass is now closed locally. A v14 selection
+  requires current prompt/category/style identity, exact output-byte SHA-256,
+  and canonical TokenHub v3 generation evidence. That evidence is bound to the
+  selected asset SHA-256, frozen into menu-batch and revision contracts, and
+  revalidated when the Worker restores the image. Fresh generation uses the
+  current provider response instead of a stale sidecar. Selected-background,
+  menu-contract, and refinement-contract verification passes `130 passed`.
+  Related background runtime, generation API, queue, and refinement integration
+  verification now passes `292 passed`. Full regression and independent
+  re-review are the next gates before any staging deployment.
+- Final selected-evidence full regression passes `1489`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the same demo-library self-check
+  failure previously reproduced on untouched commit `15083e7`. Generated test
+  upload artifacts were removed. Independent re-review is now the last code
+  gate before staging commit/deployment and the paid six-background visual
+  pilot.
+- Compatibility review kept v14 evidence fail-closed while preserving the
+  exact historical v11/v12 revision-contract shape and idempotency input.
+  Revision, settlement, queue, PostgreSQL-gated, selected-background, and menu
+  batch verification passes `206 passed`. A fresh full regression and reviewer
+  snapshot are required because this compatibility correction changed the
+  staged diff. The fresh full regression again passes `1489`, skips `20`, and
+  retains only the known baseline demo-library failure; generated test uploads
+  were removed.
+- Invalid or historical v14 evidence is now rejected before any selected-
+  background COS upload, Worker object download, or refinement object read.
+  The no-storage-side-effect boundary and all selected/batch/refinement cases
+  pass `146 passed`. The final full regression passes `1490`, skips `20`, and
+  retains only the known baseline demo-library failure. Test uploads were
+  removed; an updated reviewer snapshot remains.
+- Independent review then found the offline v14 builder could report PASS and
+  write a sidecar when the provider action was v3 but returned Seed evidence
+  was absent, non-integer, or mismatched. The builder now validates the complete
+  shared v14 evidence before image download. Five malformed-seed cases prove no
+  download or second paid submission occurs. The affected builder, review,
+  runtime, generation, selected-background, batch, and refinement suite passes
+  `242 passed`. The fresh full regression passes `1495`, skips `20`, and retains
+  only the known baseline demo-library failure. Test uploads were removed; final
+  independent re-review remains.
+- Final Web-path review found that `dish_generation_seed_metadata` substituted
+  a requested Seed when the provider returned a falsy value. V14 background
+  generation now records only the raw provider Seed and rejects absent, zero,
+  boolean, string, float, or mismatched values before download. Web and offline
+  builder evidence behavior is now identical; affected verification passes
+  `242 passed`. The fresh full regression passes `1495`, skips `20`, and keeps
+  only the known baseline demo-library failure. Test uploads were removed;
+  final independent re-review remains.
+- A second reviewer found that Revision Worker did not independently validate
+  v14 evidence and that Web/builder provider identity could be default-filled.
+  Revision Worker now validates canonical evidence before any object read or
+  Gemini call. Web and builder require raw `_Provider`, `_Model`, action, and
+  Seed evidence for v14. Valid v14 refinement reaches the provider; missing or
+  string-Seed evidence with a recomputed request digest performs zero object
+  reads and zero provider calls. Affected verification passes `279 passed`.
+  The fresh full regression passes `1501`, skips `20`, and retains only the
+  known baseline demo-library failure. Test uploads were removed; final
+  independent re-review remains.
+- Revision contracts now carry a server HMAC attestation using the existing
+  object-signing secret. Web verifies persisted contracts before replay, and
+  Worker verifies every queued contract before object I/O, so removing v14
+  version/evidence fields and recomputing the public request digest no longer
+  downgrades the contract to a legacy path. New legacy-background revisions
+  remain supported because they are signed at creation. Missing signing config
+  fails before lookup, debit, queue access, or provider work. Focused revision,
+  queue, settlement, and PostgreSQL verification passes `150 passed`; the
+  analogous formal menu-batch boundary is the next audit step.
+- Formal menu-batch contracts now use the same fail-closed pattern with a
+  distinct HMAC domain/version. Web signs every new authenticated batch before
+  debit or enqueue, and Product Worker verifies it before importing the app,
+  reading object storage, or generating images. Replacing a v14 scene with a
+  legacy scene and recomputing the public request SHA is rejected; newly signed
+  legacy-background batches remain compatible. Missing signing config fails
+  before menu lookup or debit. Batch/Worker tests pass `37`; the broader API,
+  queue, transaction, selected-background, security, PostgreSQL, and staging
+  runner subset passes `224`, and the Redis-dependent product API subset passes
+  `69` with `/tmp/waimai-bgfix-deps` on `PYTHONPATH`.
+- The first full run after attestation passed `1509` tests, skipped `20`, kept
+  the known baseline demo-library self-check failure, and exposed one new
+  deterministic-acceptance configuration failure. The isolated acceptance
+  environment now derives a 64-character test-only signing secret from its
+  temporary root, restores the caller environment on exit, and never writes
+  the value to its report. All four acceptance tests pass; the generated upload
+  fixtures were removed. A final full regression is now required.
+- Final post-attestation regression passes `1510`, skips `20` live
+  PostgreSQL/Redis gates, and retains only the demo-library self-check failure
+  already reproduced on untouched commit `15083e7`. Python compilation and
+  `git diff --check` pass. Generated upload fixtures were removed; two
+  independent reviewers must now recheck both HMAC downgrade boundaries before
+  staging commit/deploy and the six-image paid v14 visual pilot.
+- A final reviewer found that the TokenHub response normalizer collapsed an
+  explicit `seed: 0` or `seed: false` into the same value as an omitted Seed.
+  The normalizer now preserves key presence and the raw falsy value, so the v14
+  control-evidence gate rejects it before any result image download. The Web
+  adapter and background-catalog focused regression passes `100 passed` and
+  Python compilation passes. A fresh full regression and exact-SHA independent
+  re-review remain mandatory before staging deployment.
+- The dependency-complete post-fix full regression passes `1517`, skips `20`
+  live PostgreSQL/Redis infrastructure gates, and retains only the demo-library
+  self-check failure already reproduced on untouched commit `15083e7`. The two
+  initial Redis import failures disappeared when the declared `redis==5.0.8`
+  dependency was supplied through the isolated test path. Generated upload
+  fixtures were removed. Independent exact-SHA review remains the final local
+  gate before staging commit, deployment, and paid visual acceptance.
+- Independent review found two remaining pre-side-effect attestation gaps. The
+  PostgreSQL outbox dispatcher now validates the correct domain-separated menu
+  or revision HMAC before Redis enqueue/publish, and the local batch runner now
+  validates before writing `running`, entering its refund handler, or executing
+  generation. New tamper tests recompute the public request digest while
+  retaining a stale HMAC and prove zero queue, publish, status, refund, and
+  execution side effects. Focused outbox/transaction verification passes
+  `33 passed`; broader queue/settlement regression and re-review are next.
+- Broader product queue, API, PostgreSQL-gated, settlement, revision, and
+  selected-background verification passes `331 passed`. The complete post-fix
+  regression passes `1520`, skips `20` live infrastructure tests, and retains
+  only the same demo-library self-check failure reproduced on untouched commit
+  `15083e7`. Generated test uploads were removed. Exact-SHA independent PASS is
+  now the final local gate before staging commit/deployment and visual pilot.
+- A further review showed explicit TokenHub `seed: null` still lost field-
+  presence information and could be treated as the documented omitted-Seed
+  response. The normalizer now preserves `_ProviderSeedPresent`, Web and the
+  offline catalog builder persist that evidence, and the shared validator
+  accepts only a genuinely absent Seed or an exact integer echo. Explicit
+  `null`, zero, boolean, type drift, and mismatch fail before download. Focused
+  Web/builder/catalog verification passes `101 passed`; full regression and a
+  fresh exact-SHA PASS remain before deployment.
+- The complete post-presence fix regression passes `1521`, skips `20` live
+  infrastructure tests, and retains only the demo-library self-check failure
+  previously reproduced on untouched commit `15083e7`. Generated upload
+  fixtures were removed. The staged patch now awaits exact-SHA independent
+  PASS before commit and staging deployment.
+- Independent review then found conflicting lowercase `seed` and uppercase
+  `Seed` aliases could bypass the single-value check. TokenHub normalization now
+  requires both aliases, when simultaneously present, to be strict integers
+  with the exact same value. Null, type drift, or mismatch fails before evidence
+  construction and image download; matching aliases normalize normally. The
+  Web/builder/catalog focused suite passes `103 passed`; another full regression
+  and exact-SHA re-review remain mandatory.
+- Complete regression after dual-alias validation passes `1523`, skips `20`
+  live infrastructure tests, and retains only the established demo-library
+  baseline failure. Generated upload fixtures were removed. Exact-SHA
+  independent PASS remains the sole local gate before staging deployment.
+- Review found the submitted-request validator still treated a missing
+  `providerSeedPresent` field as compatible, allowing pre-fix ambiguous v14
+  sidecars to be reused and then HMAC-attested. Because v14 is not deployed,
+  this compatibility is removed: omission evidence requires explicit `false`,
+  exact echo requires explicit `true`, and approved catalog records preserve the
+  field. A sidecar missing presence evidence is rejected. Background, selection,
+  menu-contract, and revision-contract verification passes `241 passed`; full
+  regression and exact-SHA review remain.
+- Complete regression after strict presence-field enforcement passes `1525`,
+  skips `20` live infrastructure tests, and retains only the established
+  demo-library baseline failure. Generated upload fixtures were removed.
+  Exact-SHA independent PASS remains before staging commit/deployment.
+- Two independent reviewers confirmed staged SHA-256
+  `8248b2c1724ea3c3bc70e5c228b20c7e5dfa0023318d40176637191b4927c2b8`
+  with no P0/P1/P2 findings. Their independent checks reject ambiguous old
+  sidecars, all malformed Seed forms, HMAC promotion, outbox enqueue/publish,
+  and local status/refund side effects; valid omitted/exact-echo evidence and
+  both menu/revision domains pass. The next action is commit/push to the staging
+  branch, deploy v14 on Render, and run the paid six-background visual pilot.

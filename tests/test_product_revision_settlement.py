@@ -20,6 +20,14 @@ from shared.product_revision_settlement import (
 from shared.refinement_contract import freeze_revision_batch_contract
 
 
+TEST_ATTESTATION_SECRET = "revision-settlement-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def contract_attestation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OBJECT_SIGNING_SECRET", TEST_ATTESTATION_SECRET)
+
+
 class MemoryStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
@@ -59,6 +67,7 @@ def revision_contract(*, free: bool = False) -> dict[str, Any]:
         idempotency_key="revision-idem-1",
         free_rework_quota_verified=free,
         created_at="2026-07-29T12:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
 
 
@@ -217,8 +226,9 @@ def test_revision_contract_tampering_fails_before_settlement() -> None:
     storage = MemoryStorage()
     task = completed_revision_task(contract, storage)
     task["payload"]["revisionContract"]["billing"]["totalPoints"] += 10
+    storage.read_bytes_limited = pytest.fail
 
-    with pytest.raises(InvalidProductTask):
+    with pytest.raises(InvalidProductTask, match="attestation"):
         revision_completion_from_redis_task(task, object_store=storage)
 
 

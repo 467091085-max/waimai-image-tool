@@ -8,18 +8,33 @@ from unittest import mock
 import pytest
 from PIL import Image, ImageDraw
 
+import background_catalog
 import object_storage_service
 import worker.product_revision_handler as revision_handler
 from background_compositor import outside_mask_pixels_equal
 from image_edit_provider import ImageEditProviderError, ImageEditResult
 from refinement_pipeline import derive_locked_foreground_mask
-from shared.refinement_contract import freeze_revision_batch_contract
+from shared.refinement_contract import (
+    freeze_revision_batch_contract,
+    revision_request_sha256,
+)
 from worker.product_revision_handler import (
     NonRetryableProductRevisionError,
     PRODUCT_REVISION_TASK_TYPE,
     ProductRevisionCancellationRequested,
     handle_product_revision,
 )
+
+
+TEST_ATTESTATION_SECRET = "revision-worker-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _revision_attestation_secret(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "OBJECT_SIGNING_SECRET",
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def _png_bytes(image: Image.Image) -> bytes:
@@ -51,12 +66,43 @@ def _contract(
     storage: object_storage_service.ObjectStorageService,
     *,
     mode: str = "refine",
+    v14: bool = False,
 ) -> tuple[dict, bytes, bytes, bytes]:
     background, source, edited = _scene()
     source_key = "generated/delivery/parent-job/source.png"
     background_key = "generated/selected-backgrounds/bg-1/image.png"
     storage.put_bytes(source, object_key=source_key)
     storage.put_bytes(background, object_key=background_key)
+    background_sha256 = hashlib.sha256(background).hexdigest()
+    selected_background = {
+        "assetId": "background-asset-1",
+        "objectKey": background_key,
+        "sha256": background_sha256,
+    }
+    if v14:
+        evidence = {
+            "generationProvider": "tencent-hunyuan",
+            "providerAction": "TokenHubImageV3",
+            "model": "hy-image-v3.0",
+            "seed": 123456,
+            "requestedSeed": 123456,
+            "seedApplied": True,
+            "promptRevisionEnabled": False,
+            "promptRevisionControlApplied": True,
+            "promptVersion": "style-background.v14",
+            "assetSha256": background_sha256,
+        }
+        selected_background.update(
+            {
+                "backgroundPromptVersion": "style-background.v14",
+                "generationEvidence": evidence,
+                "generationEvidenceSha256": (
+                    background_catalog.generation_evidence_sha256(
+                        evidence
+                    )
+                ),
+            }
+        )
     contract = freeze_revision_batch_contract(
         job_id="revision-job-1",
         parent_generation_job_id="parent-job-1",
@@ -68,16 +114,13 @@ def _contract(
             "rowNumber": 7,
             "dishName": "番茄炒蛋",
         },
-        selected_background={
-            "assetId": "background-asset-1",
-            "objectKey": background_key,
-            "sha256": hashlib.sha256(background).hexdigest(),
-        },
+        selected_background=selected_background,
         quality="standard",
         mode=mode,
         refine_prompt="减少葱花并换成白色餐盘" if mode == "refine" else None,
         idempotency_key="revision-browser-key",
         created_at="2026-07-30T12:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
     return contract, background, source, edited
 
@@ -258,6 +301,69 @@ def test_rejects_tampered_contract_before_provider_call(tmp_path) -> None:
             storage=storage,
         )
 
+    assert provider.calls == []
+
+
+def test_valid_v14_revision_contract_reaches_provider(tmp_path) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    contract, _background, _source, edited = _contract(storage, v14=True)
+    provider = FakeProvider(edited)
+
+    handle_product_revision(
+        _payload(contract),
+        provider=provider,
+        storage=storage,
+    )
+
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "string_seed", "downgrade"],
+)
+def test_revision_worker_rejects_invalid_v14_evidence_before_object_read(
+    tmp_path,
+    mutation: str,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    contract, _background, _source, edited = _contract(storage, v14=True)
+    background = contract["selectedBackground"]
+    if mutation in {"missing", "downgrade"}:
+        background.pop("generationEvidence")
+        background.pop("generationEvidenceSha256")
+        if mutation == "downgrade":
+            background.pop("backgroundPromptVersion")
+    else:
+        evidence = {
+            **background["generationEvidence"],
+            "requestedSeed": "123456",
+        }
+        background["generationEvidence"] = evidence
+        background["generationEvidenceSha256"] = (
+            background_catalog.generation_evidence_sha256(evidence)
+        )
+    contract["idempotency"]["requestSha256"] = revision_request_sha256(
+        contract
+    )
+    provider = FakeProvider(edited)
+
+    with mock.patch.object(
+        storage,
+        "read_bytes_limited",
+        wraps=storage.read_bytes_limited,
+    ) as read_body:
+        with pytest.raises(
+            NonRetryableProductRevisionError,
+            match="contract attestation is invalid",
+        ):
+            handle_product_revision(
+                _payload(contract),
+                provider=provider,
+                storage=storage,
+            )
+
+    read_body.assert_not_called()
     assert provider.calls == []
 
 

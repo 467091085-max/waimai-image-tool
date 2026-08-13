@@ -127,6 +127,8 @@ from shared.batch_contract import (
     SCHEMA_VERSION as BATCH_CONTRACT_SCHEMA_VERSION,
     canonical_json,
     freeze_menu_batch_contract,
+    menu_batch_contract_attestation_valid,
+    request_sha256 as menu_batch_request_sha256,
 )
 from shared.menu_upload_store import (
     InvalidMenuUploadInput,
@@ -167,6 +169,7 @@ from shared.refinement_contract import (
     RefinementContractError,
     freeze_revision_batch_contract,
     public_revision_payload,
+    revision_contract_attestation_valid,
     revision_request_sha256,
 )
 from shared.redis_queue import (
@@ -423,6 +426,8 @@ class SelectedBackgroundAsset:
     )
     library_asset_id: str = ""
     scene_contract: prompt_compiler.BackgroundSceneContract | None = None
+    generation_evidence: dict[str, Any] | None = None
+    generation_evidence_sha256: str = ""
 
     def public_payload(self) -> dict[str, Any]:
         payload = {
@@ -439,6 +444,10 @@ class SelectedBackgroundAsset:
         if self.scene_contract is not None:
             payload["sceneContractVersion"] = self.scene_contract.version
             payload["sceneContractSha256"] = self.scene_contract.contract_sha256
+        if self.generation_evidence_sha256:
+            payload["generationEvidenceSha256"] = (
+                self.generation_evidence_sha256
+            )
         return payload
 
 
@@ -1542,6 +1551,40 @@ def object_access_signing_secret() -> str:
     return ""
 
 
+def require_menu_batch_contract_attestation(
+    contract: dict[str, Any],
+    *,
+    code: str = "generation_contract_attestation_invalid",
+) -> None:
+    secret = object_access_signing_secret()
+    if not secret or not menu_batch_contract_attestation_valid(
+        contract,
+        secret,
+    ):
+        raise BatchContractError(
+            code,
+            "generation contract attestation is invalid",
+            field="contractAttestation",
+        )
+
+
+def require_revision_contract_attestation(
+    contract: dict[str, Any],
+    *,
+    code: str = "revision_contract_attestation_invalid",
+) -> None:
+    secret = object_access_signing_secret()
+    if not secret or not revision_contract_attestation_valid(
+        contract,
+        secret,
+    ):
+        raise RefinementContractError(
+            code,
+            "revision contract attestation is invalid",
+            field="contractAttestation",
+        )
+
+
 def object_token_configured() -> bool:
     return any(os.environ.get(name, "").strip() for name in ("OBJECT_API_TOKEN", "ADMIN_API_TOKEN"))
 
@@ -2363,6 +2406,24 @@ def resolved_tokenhub_protocol(config: dict[str, Any] | None = None) -> str:
 def tokenhub_ready() -> bool:
     cfg = tokenhub_config()
     return bool(cfg["enabled"] and cfg["api_key"])
+
+
+def tokenhub_v3_deterministic_ready() -> bool:
+    if not tokenhub_ready():
+        return False
+    cfg = tokenhub_config()
+    model = str(cfg.get("model") or "").strip().lower()
+    protocol = resolved_tokenhub_protocol(cfg)
+    return bool(
+        (
+            protocol == TOKENHUB_PROTOCOL_LEGACY
+            and model == "hy-image-v3.0"
+        )
+        or (
+            protocol == TOKENHUB_PROTOCOL_WAND
+            and model == "hy-image-v3"
+        )
+    )
 
 
 def tencent_cloud_ready() -> bool:
@@ -3802,19 +3863,42 @@ def normalize_tokenhub_image_response(
     response: dict[str, Any],
     model: str,
     protocol: str,
+    submitted_body: dict[str, Any],
 ) -> dict[str, Any]:
     result_image = tokenhub_result_image(response)
     if not result_image:
         raise RuntimeError(f"TokenHub {model} 未返回图片 URL")
+    lower_seed_present = "seed" in response
+    upper_seed_present = "Seed" in response
+    provider_seed_present = lower_seed_present or upper_seed_present
+    if lower_seed_present and upper_seed_present:
+        lower_seed = response["seed"]
+        upper_seed = response["Seed"]
+        if (
+            type(lower_seed) is not int
+            or type(upper_seed) is not int
+            or lower_seed != upper_seed
+        ):
+            raise RuntimeError(
+                f"TokenHub {model} returned conflicting Seed aliases"
+            )
+    provider_seed = (
+        response["seed"]
+        if lower_seed_present
+        else response.get("Seed")
+    )
     return {
         "ResultImage": result_image,
         "RequestId": tokenhub_diagnostic_request_id(response),
-        "Seed": response.get("seed") or response.get("Seed"),
+        "Seed": provider_seed,
+        "_ProviderSeedPresent": provider_seed_present,
         "_Endpoint": "tokenhub.tencentmaas.com",
         "_Action": tokenhub_image_action(model, protocol),
         "_Model": model,
         "_Protocol": protocol,
         "_Provider": "tencent-hunyuan",
+        "_SubmittedSeed": submitted_body.get("seed"),
+        "_SubmittedRevise": submitted_body.get("revise"),
     }
 
 
@@ -3829,21 +3913,41 @@ def tokenhub_image_request(payload: dict[str, Any], timeout: int = TENCENT_REQUE
             body,
             timeout=max(timeout, TENCENT_TOKENHUB_POLL_TIMEOUT),
         )
-        return normalize_tokenhub_image_response(response, model, protocol)
+        return normalize_tokenhub_image_response(
+            response,
+            model,
+            protocol,
+            body,
+        )
     if "lite" in model.lower():
         response = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_LITE_URL, body, timeout=timeout)
-        return normalize_tokenhub_image_response(response, model, protocol)
+        return normalize_tokenhub_image_response(
+            response,
+            model,
+            protocol,
+            body,
+        )
 
     submitted = tokenhub_http_post(TENCENT_TOKENHUB_IMAGE_SUBMIT_URL, body, timeout=min(timeout, 30))
     job_id = tokenhub_request_id(submitted)
     if not job_id:
-        return normalize_tokenhub_image_response(submitted, model, protocol)
+        return normalize_tokenhub_image_response(
+            submitted,
+            model,
+            protocol,
+            body,
+        )
     deadline = time.time() + max(1, TENCENT_TOKENHUB_POLL_TIMEOUT)
     last_response = submitted
     while time.time() < deadline:
         status = str(last_response.get("status") or last_response.get("task_status") or "").lower()
         if status in {"succeeded", "success", "completed", "finish", "finished"}:
-            return normalize_tokenhub_image_response(last_response, model, protocol)
+            return normalize_tokenhub_image_response(
+                last_response,
+                model,
+                protocol,
+                body,
+            )
         if status in {"failed", "fail", "error", "canceled", "cancelled"}:
             error = last_response.get("error")
             raise RuntimeError(f"TokenHub {model} 任务失败：{error or last_response}")
@@ -4471,6 +4575,69 @@ def prompt_for_style_background(style_id: str) -> str:
     )
 
 
+def deterministic_style_background_seed(
+    category_id: str,
+    style_id: str,
+    prompt_version: str,
+) -> int:
+    identity = "|".join(
+        (
+            background_catalog.CATALOG_VERSION,
+            TAXONOMY_VERSION,
+            str(prompt_version).strip(),
+            background_profiles.normalize_category_id(category_id),
+            background_catalog.style_slot(style_id).style_id,
+        )
+    )
+    seed = int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:4],
+        "big",
+    )
+    return seed or 1
+
+
+def tokenhub_v3_control_evidence(
+    response: dict[str, Any],
+    requested_seed: int,
+) -> dict[str, Any]:
+    provider_seed = response.get("Seed")
+    raw_seed_present = response.get("_ProviderSeedPresent")
+    provider_seed_present = (
+        raw_seed_present
+        if type(raw_seed_present) is bool
+        else "Seed" in response
+    )
+    provider_seed_echoed = type(provider_seed) is int
+    submitted_seed = response.get("_SubmittedSeed")
+    submitted_revise = response.get("_SubmittedRevise")
+    controls_submitted = bool(
+        type(submitted_seed) is int
+        and submitted_seed == requested_seed
+        and (
+            submitted_revise is False
+            or (
+                type(submitted_revise) is int
+                and submitted_revise == 0
+            )
+        )
+    )
+    return {
+        "seed": provider_seed,
+        "requestedSeed": requested_seed,
+        "seedApplied": bool(
+            provider_seed_echoed
+            and provider_seed == requested_seed
+        ),
+        "seedEvidenceSource": "submitted-request",
+        "providerSeedEchoed": provider_seed_echoed,
+        "providerSeedPresent": provider_seed_present,
+        "seedControlSubmitted": controls_submitted,
+        "promptRevisionEnabled": False,
+        "promptRevisionControlSubmitted": controls_submitted,
+        "promptRevisionControlApplied": False,
+    }
+
+
 def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
     category_context = active_category_context()
     category_id = str(
@@ -4484,26 +4651,78 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
         prompt_version=prompt_version,
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    deterministic_controls = (
+        prompt_version
+        == background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    requested_seed = (
+        deterministic_style_background_seed(
+            category_id,
+            style_id,
+            prompt_version,
+        )
+        if deterministic_controls
+        else None
+    )
     if ai_first_generation_enabled():
+        if deterministic_controls and not tokenhub_v3_deterministic_ready():
+            raise RuntimeError(
+                "style-background.v14 requires TokenHub Hunyuan v3 "
+                "with deterministic Seed/Revise controls"
+            )
+        payload: dict[str, Any] = {
+            "Prompt": prompt,
+            "Resolution": default_delivery_resolution(),
+            "RspImgType": "url",
+            "LogoAdd": 0,
+        }
+        if deterministic_controls:
+            payload.update({"Revise": 0, "Seed": requested_seed})
+        else:
+            payload["NegativePrompt"] = (
+                background_profiles.PURE_BACKGROUND_NEGATIVE_PROMPT
+            )
         response = tencent_api_request(
             "TextToImageLite",
-            {
-                "Prompt": prompt,
-                "NegativePrompt": (
-                    background_profiles.PURE_BACKGROUND_NEGATIVE_PROMPT
-                ),
-                "Resolution": default_delivery_resolution(),
-                "RspImgType": "url",
-                "LogoAdd": 0,
-            },
+            payload,
         )
-        save_result_image(str(response.get("ResultImage") or ""), target)
-        return {
-            "provider": str(response.get("_Provider") or "tencent-hunyuan"),
+        if deterministic_controls and str(response.get("_Action") or "") not in {
+            "TokenHubImageV3",
+            "TokenHubHyImageV3",
+        }:
+            raise RuntimeError(
+                "style-background.v14 provider did not preserve "
+                "deterministic Seed/Revise controls"
+            )
+        seed_metadata = (
+            tokenhub_v3_control_evidence(
+                response,
+                int(requested_seed),
+            )
+            if requested_seed is not None
+            else {
+                "seed": response.get("Seed"),
+                "requestedSeed": None,
+                "seedApplied": False,
+            }
+        )
+        detail = {
+            "provider": str(
+                response.get("_Provider")
+                or ("" if deterministic_controls else "tencent-hunyuan")
+            ),
             "action": str(response.get("_Action") or "TextToImageLite"),
             "promptType": "style_background",
             "requestId": response.get("RequestId"),
-            "seed": response.get("Seed"),
+            **seed_metadata,
+            "promptRevisionEnabled": seed_metadata.get(
+                "promptRevisionEnabled",
+                False if deterministic_controls else None,
+            ),
+            "promptRevisionControlApplied": seed_metadata.get(
+                "promptRevisionControlApplied",
+                False,
+            ),
             "endpoint": response.get("_Endpoint"),
             "model": response.get("_Model"),
             "categoryId": category_id,
@@ -4513,6 +4732,22 @@ def tencent_style_background(style_id: str, target: Path) -> dict[str, Any]:
             ),
             "promptSha256": prompt_sha256,
         }
+        if deterministic_controls and not (
+            background_catalog.generation_evidence_valid(
+                detail,
+                prompt_version=prompt_version,
+            )
+        ):
+            raise RuntimeError(
+                "style-background.v14 provider returned invalid "
+                "Seed/Revise evidence"
+            )
+        save_result_image(str(response.get("ResultImage") or ""), target)
+        return detail
+    if deterministic_controls:
+        raise RuntimeError(
+            "style-background.v14 requires AI-first text-to-image generation"
+        )
     source_candidate = style_background_seed_candidate()
     product_url = model_input_public_url(source_candidate)
     if not product_url:
@@ -6844,6 +7079,18 @@ def materialize_reusable_background_asset(
             )
         if record is None:
             return None
+        record_prompt_version = str(
+            record.get("prompt_version")
+            or record.get("pipeline_version")
+            or ""
+        )
+        if not background_catalog.generation_evidence_valid(
+            record,
+            prompt_version=record_prompt_version,
+        ):
+            raise ProductAssetRuntimeError(
+                "background_generation_evidence_invalid"
+            )
         fingerprint = materialize_postgres_asset_record(record, target)
     except ProductAssetRuntimeError:
         raise
@@ -6857,6 +7104,7 @@ def materialize_reusable_background_asset(
         "action": "ApprovedBackgroundReuse",
         "promptType": "style_background",
         "styleId": style_id,
+        **background_catalog.generation_evidence_payload(record),
         **style_background_prompt_metadata(
             style_id,
             record.get("prompt_version")
@@ -6988,6 +7236,10 @@ def object_storage_background_catalog_manifest(
             == prompt_sha256
             and object_key == expected_key
             and 0 < file_size <= MAX_AI_ASSET_BYTES
+            and background_catalog.generation_evidence_valid(
+                raw_asset,
+                prompt_version=prompt_version,
+            )
         )
         if not valid:
             invalid_style_ids.append(style_id)
@@ -7009,6 +7261,7 @@ def object_storage_background_catalog_manifest(
             "pipelineVersion": prompt_version,
             "provider": str(raw_asset.get("provider") or ""),
             "model": str(raw_asset.get("model") or ""),
+            **background_catalog.generation_evidence_payload(raw_asset),
             "assetRecordId": str(
                 raw_asset.get("assetRecordId")
                 or f"cos-catalog-{asset_sha256[:32]}"
@@ -7032,6 +7285,31 @@ def object_storage_background_catalog_manifest(
                     "pipeline_version": prompt_version,
                     "source_provider": entry["provider"],
                     "model_name": entry["model"],
+                    "provider_action": entry.get("providerAction"),
+                    "seed": entry.get("seed"),
+                    "requested_seed": entry.get("requestedSeed"),
+                    "seed_applied": entry.get("seedApplied"),
+                    "seed_evidence_source": entry.get(
+                        "seedEvidenceSource"
+                    ),
+                    "provider_seed_echoed": entry.get(
+                        "providerSeedEchoed"
+                    ),
+                    "provider_seed_present": entry.get(
+                        "providerSeedPresent"
+                    ),
+                    "seed_control_submitted": entry.get(
+                        "seedControlSubmitted"
+                    ),
+                    "prompt_revision_enabled": entry.get(
+                        "promptRevisionEnabled"
+                    ),
+                    "prompt_revision_control_submitted": entry.get(
+                        "promptRevisionControlSubmitted"
+                    ),
+                    "prompt_revision_control_applied": entry.get(
+                        "promptRevisionControlApplied"
+                    ),
                     "original_object_ref": object_key,
                     "original_sha256": asset_sha256,
                     "original_size_bytes": file_size,
@@ -7106,6 +7384,21 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
             category_id=category_id,
             prompt_version=prompt_version,
         )
+    if (
+        backend == "postgres"
+        and prompt_version == background_catalog.EMPTY_SET_PROMPT_VERSION
+    ):
+        return {
+            **base,
+            "status": "unavailable",
+            "ready": False,
+            "code": "background_catalog_generation_evidence_unavailable",
+            "approvedCount": 0,
+            "missingStyleIds": list(background_catalog.STYLE_IDS),
+            "duplicateStyleIds": [],
+            "assets": [],
+            "_recordsByStyle": {},
+        }
     if backend != "postgres":
         return {
             **base,
@@ -7300,8 +7593,9 @@ def build_ai_asset_record(
         "width": fingerprint["width"],
         "height": fingerprint["height"],
         "fileSize": fingerprint["fileSize"],
-        "reusable": True,
+        "reusable": kind != "category_background",
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "status": "pending" if kind == "category_background" else "approved",
         "generation": metadata,
     }
 
@@ -8210,6 +8504,10 @@ def normalized_background_prompt_version(value: Any) -> str:
         prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION: (
             prompt_compiler.BENCHMARKED_BACKGROUND_PROMPT_VERSION
         ),
+        "14": prompt_compiler.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+        prompt_compiler.EMPTY_SET_BACKGROUND_PROMPT_VERSION: (
+            prompt_compiler.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+        ),
     }
     resolved = aliases.get(
         clean,
@@ -8223,7 +8521,13 @@ def normalized_background_prompt_version(value: Any) -> str:
     return resolved
 
 
-def build_selected_background_asset(style_id: str, target: Path | None = None) -> SelectedBackgroundAsset:
+def build_selected_background_asset(
+    style_id: str,
+    target: Path | None = None,
+    *,
+    prompt_version: Any = None,
+    generation_metadata: dict[str, Any] | None = None,
+) -> SelectedBackgroundAsset:
     safe_style = safe_style_path_segment(style_id)
     source_path = target or style_background_target(safe_style)
     if not source_path.is_file():
@@ -8239,6 +8543,61 @@ def build_selected_background_asset(style_id: str, target: Path | None = None) -
     fingerprint = image_bytes_fingerprint(raw)
     menu_key = current_menu_cache_key()
     digest = str(fingerprint["sha256"])
+    metadata = (
+        dict(generation_metadata)
+        if generation_metadata is not None
+        else (load_ai_output_metadata(source_path) or {})
+    )
+    background_prompt_version = normalized_background_prompt_version(
+        prompt_version
+        if prompt_version not in (None, "")
+        else metadata.get("promptVersion")
+    )
+    generation_evidence: dict[str, Any] | None = None
+    generation_evidence_sha256 = ""
+    if background_prompt_version == background_catalog.EMPTY_SET_PROMPT_VERSION:
+        expected_prompt = style_background_prompt_metadata(
+            safe_style,
+            background_prompt_version,
+        )
+        metadata_hashes = {
+            str(metadata.get("backgroundSha256") or "").strip().lower(),
+            str(metadata.get("outputSha256") or "").strip().lower(),
+            str(metadata.get("sha256") or "").strip().lower(),
+        }
+        private_storage = metadata.get("privatePreviewStorage")
+        if isinstance(private_storage, dict):
+            metadata_hashes.add(
+                str(private_storage.get("sha256") or "").strip().lower()
+            )
+        if (
+            not background_catalog.generation_evidence_valid(
+                metadata,
+                prompt_version=background_prompt_version,
+            )
+            or str(metadata.get("promptVersion") or "").strip()
+            != background_prompt_version
+            or str(metadata.get("categoryId") or "").strip()
+            != str(expected_prompt["categoryId"])
+            or str(metadata.get("styleId") or "").strip() != safe_style
+            or str(metadata.get("promptSha256") or "").strip().lower()
+            != str(expected_prompt["promptSha256"])
+            or digest not in metadata_hashes
+        ):
+            raise SelectedBackgroundError(
+                "selected_background_generation_evidence_invalid",
+                "所选背景缺少可验证的混元 3.0 生成证据，请重新生成背景",
+            )
+        generation_evidence = background_catalog.frozen_generation_evidence(
+            metadata,
+            prompt_version=background_prompt_version,
+            asset_sha256=digest,
+        )
+        generation_evidence_sha256 = (
+            background_catalog.generation_evidence_sha256(
+                generation_evidence
+            )
+        )
     snapshot_path = selected_background_snapshot_path(
         menu_key,
         safe_style,
@@ -8250,11 +8609,34 @@ def build_selected_background_asset(style_id: str, target: Path | None = None) -
     asset_id = "bg_" + hashlib.sha1(
         f"{snapshot_identity}|{digest}".encode("utf-8")
     ).hexdigest()[:24]
-    metadata = load_ai_output_metadata(source_path) or {}
-    background_prompt_version = normalized_background_prompt_version(
-        metadata.get("promptVersion")
-    )
     library_asset_id = str(metadata.get("assetRecordId") or "").strip()
+    if prompt_version not in (None, ""):
+        metadata_prompt_version = str(
+            metadata.get("promptVersion") or ""
+        ).strip()
+        if not metadata_prompt_version:
+            library_asset_id = ""
+        else:
+            try:
+                metadata_prompt_version = normalized_background_prompt_version(
+                    metadata_prompt_version
+                )
+            except SelectedBackgroundError:
+                library_asset_id = ""
+            else:
+                if metadata_prompt_version != background_prompt_version:
+                    library_asset_id = ""
+        private_storage = metadata.get("privatePreviewStorage")
+        metadata_hashes = {
+            str(metadata.get("backgroundSha256") or "").strip().lower(),
+            str(metadata.get("outputSha256") or "").strip().lower(),
+        }
+        if isinstance(private_storage, dict):
+            metadata_hashes.add(
+                str(private_storage.get("sha256") or "").strip().lower()
+            )
+        if digest not in metadata_hashes:
+            library_asset_id = ""
     if not product_asset_library_store.TENANT_ASSET_ID_RE.fullmatch(
         library_asset_id
     ):
@@ -8269,6 +8651,8 @@ def build_selected_background_asset(style_id: str, target: Path | None = None) -
         height=int(fingerprint["height"]),
         background_prompt_version=background_prompt_version,
         library_asset_id=library_asset_id,
+        generation_evidence=generation_evidence,
+        generation_evidence_sha256=generation_evidence_sha256,
         scene_contract=prompt_compiler.scene_contract_for(
             safe_style,
             active_category_id(),
@@ -8306,6 +8690,10 @@ def selected_background_metadata(asset: SelectedBackgroundAsset) -> dict[str, An
     }
     if asset.library_asset_id:
         metadata["backgroundLibraryAssetId"] = asset.library_asset_id
+    if asset.generation_evidence_sha256:
+        metadata["backgroundGenerationEvidenceSha256"] = (
+            asset.generation_evidence_sha256
+        )
     return metadata
 
 
@@ -8472,15 +8860,25 @@ def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, An
         and metadata.get("promptSha256")
         == expected_prompt["promptSha256"]
     )
+    generation_evidence_valid = bool(
+        metadata
+        and background_catalog.generation_evidence_valid(
+            metadata,
+            prompt_version=expected_prompt["promptVersion"],
+        )
+    )
     cached_style_usable = (
         provider == "tencent-hunyuan"
         and prompt_identity_matches
+        and generation_evidence_valid
     ) or (
         provider == "asset-library"
         and prompt_identity_matches
+        and generation_evidence_valid
     ) or (
         provider == "local-category"
         and prompt_identity_matches
+        and generation_evidence_valid
         and local_background_fallback_enabled()
         and not tencent_ready()
     )
@@ -8515,7 +8913,11 @@ def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, An
                 "approved-background-asset",
                 100.0,
             )
-            asset = build_selected_background_asset(style_id, target)
+            asset = build_selected_background_asset(
+                style_id,
+                target,
+                prompt_version=metadata.get("promptVersion"),
+            )
             attach_selected_background(candidate, asset)
             candidate_generation_metadata(candidate, metadata)
             candidate["assetRecordId"] = str(metadata["assetRecordId"])
@@ -8524,17 +8926,25 @@ def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, An
         try:
             detail = tencent_style_background(style_id, target)
             quality_report = require_generated_output_quality(target)
+            output_fingerprint = image_file_fingerprint(target)
             metadata = {
                 "status": "succeeded",
                 "provider": "tencent-hunyuan",
                 "action": detail["action"],
                 "promptType": detail.get("promptType"),
                 "styleId": style_id,
+                **background_catalog.generation_evidence_payload(detail),
                 **style_background_prompt_metadata(style_id),
+                "outputSha256": str(output_fingerprint["sha256"]),
                 "qualityReport": quality_report,
                 "tencent": detail,
             }
-            asset = build_selected_background_asset(style_id, target)
+            asset = build_selected_background_asset(
+                style_id,
+                target,
+                prompt_version=metadata.get("promptVersion"),
+                generation_metadata=metadata,
+            )
             metadata.update(selected_background_metadata(asset))
             write_ai_output_metadata(target, metadata)
             persist_private_preview_asset(target)
@@ -8566,8 +8976,33 @@ def style_sample_candidate(style_id: str, generate: bool = True) -> dict[str, An
             metadata["error"] = provider_error
         candidate_generation_metadata(candidate, metadata)
         return candidate
+    if expected_prompt["promptVersion"] == (
+        background_catalog.EMPTY_SET_PROMPT_VERSION
+    ):
+        candidate = candidate_from_path(
+            target,
+            "背景风格样图",
+            style_id,
+            "generated-style-sample",
+            0.0,
+        )
+        candidate["url"] = ""
+        metadata = {
+            "status": "failed",
+            "provider": "tencent-hunyuan",
+            "action": "ProviderError",
+            "styleId": style_id,
+            **expected_prompt,
+            "error": provider_error or "verified TokenHub v3 evidence required",
+        }
+        candidate_generation_metadata(candidate, metadata)
+        return candidate
     metadata = render_local_style_background(target, style_id)
-    asset = build_selected_background_asset(style_id, target)
+    asset = build_selected_background_asset(
+        style_id,
+        target,
+        prompt_version=metadata.get("promptVersion"),
+    )
     metadata.update(selected_background_metadata(asset))
     write_ai_output_metadata(target, metadata)
     persist_private_preview_asset(target)
@@ -10360,6 +10795,45 @@ def customer_preview_menu_path(
         ACTIVE_PREVIEW_PRINCIPAL.reset(principal_token)
 
 
+def validated_frozen_background_generation_evidence(
+    background: dict[str, Any],
+    prompt_version: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if prompt_version != background_catalog.EMPTY_SET_PROMPT_VERSION:
+        return None, ""
+    raw_evidence = background.get("generationEvidence")
+    supplied_sha256 = str(
+        background.get("generationEvidenceSha256") or ""
+    ).strip().lower()
+    if not isinstance(raw_evidence, dict):
+        raise SelectedBackgroundError(
+            "selected_background_generation_evidence_invalid",
+            "所选背景缺少可验证的混元 3.0 生成证据，请重新提交任务",
+        )
+    canonical_evidence = background_catalog.frozen_generation_evidence(
+        raw_evidence,
+        prompt_version=prompt_version,
+        asset_sha256=background.get("sha256"),
+    )
+    calculated_sha256 = background_catalog.generation_evidence_sha256(
+        canonical_evidence
+    )
+    if (
+        canonical_json(raw_evidence) != canonical_json(canonical_evidence)
+        or not background_catalog.generation_evidence_valid(
+            canonical_evidence,
+            prompt_version=prompt_version,
+        )
+        or not background_catalog.SHA256_RE.fullmatch(supplied_sha256)
+        or not hmac.compare_digest(calculated_sha256, supplied_sha256)
+    ):
+        raise SelectedBackgroundError(
+            "selected_background_generation_evidence_invalid",
+            "所选背景的混元 3.0 生成证据校验失败，请重新提交任务",
+        )
+    return canonical_evidence, calculated_sha256
+
+
 def selected_background_batch_snapshot(
     selected_background: SelectedBackgroundAsset,
     menu_snapshot: dict[str, Any],
@@ -10380,6 +10854,30 @@ def selected_background_batch_snapshot(
         raise SelectedBackgroundError(
             "selected_background_changed",
             "所选背景已变化，请重新选择背景",
+        )
+    scene_contract = selected_background_scene_contract(
+        selected_background.style_id,
+        selected_background,
+    )
+    evidence: dict[str, Any] | None = None
+    evidence_sha256 = ""
+    if (
+        scene_contract.background_prompt_version
+        == background_catalog.EMPTY_SET_PROMPT_VERSION
+    ):
+        evidence, evidence_sha256 = (
+            validated_frozen_background_generation_evidence(
+                {
+                    "generationEvidence": (
+                        selected_background.generation_evidence
+                    ),
+                    "generationEvidenceSha256": (
+                        selected_background.generation_evidence_sha256
+                    ),
+                    "sha256": selected_background.sha256,
+                },
+                scene_contract.background_prompt_version,
+            )
         )
     object_key = object_storage_service.validate_object_key(
         f"{object_storage_service.GENERATED_PREFIX}selected-backgrounds/"
@@ -10403,11 +10901,7 @@ def selected_background_batch_snapshot(
             "selected_background_snapshot_failed",
             "所选背景快照校验失败，请重新选择背景",
         )
-    scene_contract = selected_background_scene_contract(
-        selected_background.style_id,
-        selected_background,
-    )
-    return {
+    snapshot = {
         "assetId": selected_background.asset_id,
         "libraryAssetId": selected_background.library_asset_id,
         "styleId": selected_background.style_id,
@@ -10418,11 +10912,41 @@ def selected_background_batch_snapshot(
         "backgroundPromptVersion": scene_contract.background_prompt_version,
         "sceneContract": scene_contract.payload(),
     }
+    if evidence is not None:
+        snapshot["generationEvidence"] = evidence
+        snapshot["generationEvidenceSha256"] = evidence_sha256
+    return snapshot
 
 
 def selected_background_from_batch_contract(contract: dict[str, Any]) -> SelectedBackgroundAsset:
     background = contract["selectedBackground"]
     expected_sha256 = str(background["sha256"])
+    try:
+        scene_contract = prompt_compiler.scene_contract_from_payload(
+            background["sceneContract"],
+            expected_asset_id=str(background["assetId"]),
+            expected_asset_sha256=expected_sha256,
+        )
+    except prompt_compiler.PromptCompilationError as exc:
+        raise SelectedBackgroundError(
+            "selected_background_scene_contract_mismatch",
+            "所选背景的镜头契约校验失败，请重新提交任务",
+        ) from exc
+    frozen_prompt_version = str(
+        background.get("backgroundPromptVersion")
+        or scene_contract.background_prompt_version
+    )
+    if frozen_prompt_version != scene_contract.background_prompt_version:
+        raise SelectedBackgroundError(
+            "selected_background_scene_contract_mismatch",
+            "所选背景的提示词版本与镜头契约不匹配，请重新提交任务",
+        )
+    generation_evidence, generation_evidence_sha256 = (
+        validated_frozen_background_generation_evidence(
+            background,
+            frozen_prompt_version,
+        )
+    )
     storage = object_storage_service.get_object_storage_service()
     try:
         raw = object_storage_service.read_object_bytes_limited(
@@ -10456,26 +10980,6 @@ def selected_background_from_batch_contract(contract: dict[str, Any]) -> Selecte
         / f"{expected_sha256}.image"
     )
     write_immutable_image_snapshot(target, raw, expected_sha256)
-    try:
-        scene_contract = prompt_compiler.scene_contract_from_payload(
-            background["sceneContract"],
-            expected_asset_id=str(background["assetId"]),
-            expected_asset_sha256=expected_sha256,
-        )
-    except prompt_compiler.PromptCompilationError as exc:
-        raise SelectedBackgroundError(
-            "selected_background_scene_contract_mismatch",
-            "所选背景的镜头契约校验失败，请重新提交任务",
-        ) from exc
-    frozen_prompt_version = str(
-        background.get("backgroundPromptVersion")
-        or scene_contract.background_prompt_version
-    )
-    if frozen_prompt_version != scene_contract.background_prompt_version:
-        raise SelectedBackgroundError(
-            "selected_background_scene_contract_mismatch",
-            "所选背景的提示词版本与镜头契约不匹配，请重新提交任务",
-        )
     return SelectedBackgroundAsset(
         asset_id=str(background["assetId"]),
         menu_key=str(contract["menu"]["sha256"])[:12],
@@ -10487,6 +10991,8 @@ def selected_background_from_batch_contract(contract: dict[str, Any]) -> Selecte
         background_prompt_version=scene_contract.background_prompt_version,
         library_asset_id=str(background.get("libraryAssetId") or ""),
         scene_contract=scene_contract,
+        generation_evidence=generation_evidence,
+        generation_evidence_sha256=generation_evidence_sha256,
     )
 
 
@@ -16080,6 +16586,22 @@ def verified_selected_background_snapshot(
         if isinstance(parent_contract.get("selectedBackground"), dict)
         else {}
     )
+    prompt_version = str(
+        background.get("backgroundPromptVersion")
+        or prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    ).strip()
+    try:
+        generation_evidence, generation_evidence_sha256 = (
+            validated_frozen_background_generation_evidence(
+                background,
+                prompt_version,
+            )
+        )
+    except SelectedBackgroundError as exc:
+        raise MenuUploadError(
+            exc.code,
+            str(exc),
+        ) from exc
     try:
         background_object_key = object_storage_service.validate_object_key(
             str(background.get("objectKey") or "")
@@ -16117,11 +16639,16 @@ def verified_selected_background_snapshot(
             "selected_background_invalid",
             "所选背景格式或尺寸无效",
         ) from exc
-    return {
+    snapshot = {
         "assetId": str(background.get("assetId") or ""),
         "objectKey": background_object_key,
         "sha256": background_sha256,
     }
+    if generation_evidence is not None:
+        snapshot["backgroundPromptVersion"] = prompt_version
+        snapshot["generationEvidence"] = generation_evidence
+        snapshot["generationEvidenceSha256"] = generation_evidence_sha256
+    return snapshot
 
 
 def resolve_revision_delivery_asset_snapshot(
@@ -16225,6 +16752,7 @@ def revision_free_rework_usage(
     finally:
         conn.close()
     used = 0
+    signing_secret = object_access_signing_secret()
     for row in rows:
         try:
             contract = json.loads(row["request_json"])
@@ -16238,6 +16766,10 @@ def revision_free_rework_usage(
         )
         if (
             str(contract.get("jobType") or "") == REVISION_JOB_TYPE
+            and revision_contract_attestation_valid(
+                contract,
+                signing_secret,
+            )
             and hmac.compare_digest(
                 str(contract.get("parentGenerationJobId") or ""),
                 parent_generation_job_id,
@@ -16259,6 +16791,7 @@ def persist_revision_batch_contract(
     menu_upload_id: str | None,
     style_id: str,
 ) -> tuple[dict[str, Any], bool]:
+    require_revision_contract_attestation(contract)
     conn = product_db_conn()
     try:
         try:
@@ -16290,6 +16823,7 @@ def persist_revision_batch_contract(
                 if isinstance(existing.get("request"), dict)
                 else {}
             )
+            require_revision_contract_attestation(existing_contract)
             existing_sha = str(
                 existing_contract.get("idempotency", {}).get(
                     "requestSha256",
@@ -16319,6 +16853,7 @@ def refund_revision_batch(
     *,
     reason: str,
 ) -> dict[str, Any] | None:
+    require_revision_contract_attestation(contract)
     points = int(contract.get("billing", {}).get("totalPoints") or 0)
     if points <= 0:
         return None
@@ -16377,6 +16912,10 @@ def persisted_revision_record(
         )
     ):
         raise RedisTaskNotFound("task not found")
+    require_revision_contract_attestation(
+        contract,
+        code="revision_job_contract_mismatch",
+    )
     expected_sha = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
         if isinstance(contract.get("idempotency"), dict)
@@ -16718,6 +17257,10 @@ def settle_persisted_revision_job(
     manifest: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> None:
+    require_revision_contract_attestation(
+        contract,
+        code="revision_job_contract_mismatch",
+    )
     job_id = str(contract["jobId"])
     conn = product_db_conn()
     try:
@@ -16726,6 +17269,10 @@ def settle_persisted_revision_job(
             record.get("request")
             if isinstance(record.get("request"), dict)
             else {}
+        )
+        require_revision_contract_attestation(
+            persisted_contract,
+            code="revision_job_contract_mismatch",
         )
         persisted_sha256 = str(
             persisted_contract.get("idempotency", {}).get(
@@ -16807,6 +17354,10 @@ def redis_revision_contract(
         if isinstance(payload.get("revisionContract"), dict)
         else {}
     )
+    require_revision_contract_attestation(
+        contract,
+        code="revision_task_contract_mismatch",
+    )
     expected_sha256 = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
         if isinstance(contract.get("idempotency"), dict)
@@ -16842,6 +17393,10 @@ def recover_missing_revision_redis_task(
     principal: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     record, contract = persisted_revision_record(job_id, principal)
+    require_revision_contract_attestation(
+        contract,
+        code="revision_job_contract_mismatch",
+    )
     if str(record.get("status") or "") in storage_db.TERMINAL_JOB_STATUSES:
         return None, record
     task = redis_product_queue.enqueue_idempotent(
@@ -16877,6 +17432,10 @@ def settle_redis_revision_task(
     task: dict[str, Any],
     contract: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, int]:
+    require_revision_contract_attestation(
+        contract,
+        code="revision_task_contract_mismatch",
+    )
     redis_result = (
         task.get("result")
         if isinstance(task.get("result"), dict)
@@ -17319,6 +17878,7 @@ def postgres_generation_submission_payload(
 
 
 def persist_generation_batch_contract(contract: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    require_menu_batch_contract_attestation(contract)
     conn = product_db_conn()
     try:
         try:
@@ -17347,6 +17907,12 @@ def persist_generation_batch_contract(contract: dict[str, Any]) -> tuple[dict[st
                 .get("idempotency", {})
                 .get("requestSha256", "")
             )
+            existing_contract = (
+                existing.get("request")
+                if isinstance(existing.get("request"), dict)
+                else {}
+            )
+            require_menu_batch_contract_attestation(existing_contract)
             expected_sha = str(contract["idempotency"]["requestSha256"])
             if not existing_sha or not hmac.compare_digest(existing_sha, expected_sha):
                 raise BatchContractError(
@@ -17389,6 +17955,7 @@ def refund_generation_batch(
     points: int,
     reason: str,
 ) -> dict[str, Any] | None:
+    require_menu_batch_contract_attestation(contract)
     if points <= 0:
         return None
     return billing.refund_debit_to_total(
@@ -18199,6 +18766,7 @@ def run_generation_batch_job(
     *,
     progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
+    require_menu_batch_contract_attestation(contract)
     job_id = str(contract["jobId"])
     try:
         update_persisted_generation_job(job_id, status="running")
@@ -18877,6 +19445,10 @@ def redis_batch_contract(
         if isinstance(payload.get("batchContract"), dict)
         else {}
     )
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_task_contract_mismatch",
+    )
     expected_sha = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
         if isinstance(contract.get("idempotency"), dict)
@@ -18884,6 +19456,10 @@ def redis_batch_contract(
     )
     if (
         not expected_sha
+        or not hmac.compare_digest(
+            menu_batch_request_sha256(contract),
+            expected_sha,
+        )
         or not hmac.compare_digest(
             expected_sha,
             str(task.get("request_sha256") or ""),
@@ -18988,6 +19564,10 @@ def postgres_owned_generation_detail(
         if isinstance(detail.job.get("request_payload"), dict)
         else {}
     )
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_job_contract_mismatch",
+    )
     expected_sha = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
         if isinstance(contract.get("idempotency"), dict)
@@ -18996,6 +19576,10 @@ def postgres_owned_generation_detail(
     if (
         str(contract.get("jobType") or "") != BATCH_JOB_TYPE
         or not expected_sha
+        or not hmac.compare_digest(
+            menu_batch_request_sha256(contract),
+            expected_sha,
+        )
         or not hmac.compare_digest(
             expected_sha,
             str(detail.job.get("request_sha256") or ""),
@@ -19033,6 +19617,10 @@ def postgres_owned_revision_detail(
         detail.job.get("request_payload")
         if isinstance(detail.job.get("request_payload"), dict)
         else {}
+    )
+    require_revision_contract_attestation(
+        contract,
+        code="revision_job_contract_mismatch",
     )
     expected_sha = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
@@ -19380,12 +19968,25 @@ def settle_persisted_generation_job(
     manifest: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> None:
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_job_contract_mismatch",
+    )
     job_id = str(contract["jobId"])
     conn = product_db_conn()
     try:
         record = storage_db.get_generation_job(conn, job_id)
+        persisted_contract = (
+            record.get("request")
+            if isinstance(record.get("request"), dict)
+            else {}
+        )
+        require_menu_batch_contract_attestation(
+            persisted_contract,
+            code="generation_job_contract_mismatch",
+        )
         persisted_sha = str(
-            record.get("request", {})
+            persisted_contract
             .get("idempotency", {})
             .get("requestSha256", "")
         )
@@ -19453,6 +20054,10 @@ def persisted_generation_contract(
         )
     ):
         raise RedisTaskNotFound("task not found")
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_job_contract_mismatch",
+    )
     expected_sha = str(
         contract.get("idempotency", {}).get("requestSha256") or ""
         if isinstance(contract.get("idempotency"), dict)
@@ -19464,6 +20069,15 @@ def persisted_generation_contract(
             "persisted generation job does not contain a frozen request",
             field="idempotency.requestSha256",
         )
+    if not hmac.compare_digest(
+        menu_batch_request_sha256(contract),
+        expected_sha,
+    ):
+        raise BatchContractError(
+            "generation_job_contract_mismatch",
+            "persisted generation job request digest is invalid",
+            field="idempotency.requestSha256",
+        )
     return record, contract
 
 
@@ -19473,6 +20087,10 @@ def recover_missing_product_redis_task(
     principal: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     record, contract = persisted_generation_contract(job_id, principal)
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_job_contract_mismatch",
+    )
     if str(record.get("status") or "") in storage_db.TERMINAL_JOB_STATUSES:
         return None, record
     task = redis_product_queue.enqueue_idempotent(
@@ -19580,6 +20198,10 @@ def settle_redis_generation_task(
     task: dict[str, Any],
     contract: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, int]:
+    require_menu_batch_contract_attestation(
+        contract,
+        code="generation_task_contract_mismatch",
+    )
     redis_result = task.get("result") if isinstance(task.get("result"), dict) else {}
     status = product_task_status(str(task.get("status") or ""), redis_result)
     image_count = int(contract["billing"]["imageCount"])
@@ -19757,6 +20379,17 @@ def api_image_refinements():
         return jsonify({"error": str(exc), "code": "invalid_revision_request"}), 400
 
     with REVISION_BATCH_SUBMIT_LOCK:
+        revision_attestation_secret = object_access_signing_secret()
+        if len(revision_attestation_secret.encode("utf-8")) < 32:
+            return (
+                jsonify(
+                    {
+                        "error": "图片精修合同签名未配置，已停止扣费。",
+                        "code": "revision_contract_attestation_required",
+                    }
+                ),
+                503,
+            )
         try:
             existing_record, existing_contract = persisted_revision_record(
                 job_id,
@@ -19785,6 +20418,19 @@ def api_image_refinements():
                 503,
             )
         if existing_record is not None and existing_contract is not None:
+            if not revision_contract_attestation_valid(
+                existing_contract,
+                revision_attestation_secret,
+            ):
+                return (
+                    jsonify(
+                        {
+                            "error": "已保存的图片精修合同校验失败，已停止处理。",
+                            "code": "revision_contract_attestation_invalid",
+                        }
+                    ),
+                    409,
+                )
             if not hmac.compare_digest(
                 str(
                     existing_contract.get(
@@ -19839,6 +20485,7 @@ def api_image_refinements():
                         existing_contract["billing"]["pricingVersion"]
                     ),
                     created_at=str(existing_contract["createdAt"]),
+                    attestation_secret=revision_attestation_secret,
                 )
             except (KeyError, RefinementContractError) as exc:
                 if isinstance(exc, RefinementContractError):
@@ -19923,7 +20570,6 @@ def api_image_refinements():
                 ),
                 503,
             )
-
         postgres_runtime = postgres_product_runtime_enabled()
         free_contract: dict[str, Any] | None = None
         paid_contract: dict[str, Any] | None = None
@@ -19973,6 +20619,7 @@ def api_image_refinements():
                 "refine_prompt": refine_prompt,
                 "idempotency_key": idempotency_key,
                 "provider_snapshot": gemini_image_edit_provider_snapshot(),
+                "attestation_secret": revision_attestation_secret,
             }
             if postgres_runtime and mode == "rework":
                 free_contract = freeze_revision_batch_contract(
@@ -20800,6 +21447,17 @@ def api_generation_jobs():
             ),
             400,
         )
+    batch_attestation_secret = object_access_signing_secret()
+    if len(batch_attestation_secret.encode("utf-8")) < 32:
+        return (
+            jsonify(
+                {
+                    "error": "正式生图合同签名未配置，已停止扣费。",
+                    "code": "generation_contract_attestation_required",
+                }
+            ),
+            503,
+        )
     try:
         menu_snapshot = resolve_menu_upload_snapshot(menu_upload_id, principal)
         menu_path = materialize_menu_upload_snapshot(menu_snapshot)
@@ -20861,6 +21519,7 @@ def api_generation_jobs():
             platforms=payload.get("platforms") or ["meituan"],
             watermark=watermark,
             idempotency_key=client_idempotency_key,
+            attestation_secret=batch_attestation_secret,
         )
     except SelectedBackgroundError as exc:
         return selected_background_error_response(exc)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 from pathlib import Path
@@ -25,6 +26,15 @@ from tests.redis_test_double import RedisTestDouble
 USER_ID = "server-user"
 PARENT_JOB_ID = "generation-parent"
 SOURCE_ASSET_ID = "asset_" + ("a" * 32)
+TEST_ATTESTATION_SECRET = "revision-api-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _revision_attestation_secret(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "OBJECT_SIGNING_SECRET",
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -116,6 +126,7 @@ def _existing_contract(*, mode: str = "rework", prompt: str | None = None) -> di
         idempotency_key="browser-revision-key",
         free_rework_quota_verified=mode == "rework",
         created_at="2026-07-30T08:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
 
 
@@ -155,6 +166,38 @@ def test_revision_create_fails_before_debit_when_provider_is_not_ready() -> None
     assert response.get_json()["code"] == "image_refinement_provider_not_ready"
     debit.assert_not_called()
     resolve_source.assert_not_called()
+
+
+def test_revision_create_fails_before_lookup_or_debit_without_attestation_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "OBJECT_SIGNING_SECRET",
+        "ASSET_SIGNING_SECRET",
+        "DOWNLOAD_SIGNING_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    with (
+        mock.patch.object(
+            app_module,
+            "generation_request_principal",
+            return_value=_principal(),
+        ),
+        mock.patch.object(app_module, "persisted_revision_record") as lookup,
+        mock.patch.object(app_module.billing, "debit_account") as debit,
+        mock.patch.object(app_module, "product_redis_queue") as product_queue,
+    ):
+        response = app_module.app.test_client().post(
+            "/api/image-refinements",
+            json=_post_payload(),
+        )
+
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "revision_contract_attestation_required"
+    lookup.assert_not_called()
+    debit.assert_not_called()
+    product_queue.assert_not_called()
 
 
 def test_free_rework_is_server_counted_and_enqueued_without_debit() -> None:
@@ -325,6 +368,40 @@ def test_idempotent_replay_does_not_debit_or_reenqueue() -> None:
 
     assert response.status_code == 200
     assert response.get_json()["idempotent"] is True
+    debit.assert_not_called()
+    product_queue.assert_not_called()
+
+
+def test_idempotent_replay_rejects_tampered_contract_before_debit_or_queue() -> None:
+    contract = _existing_contract()
+    tampered = copy.deepcopy(contract)
+    tampered["selectedBackground"]["objectKey"] = "backgrounds/replaced.png"
+    tampered["idempotency"]["requestSha256"] = (
+        app_module.revision_request_sha256(tampered)
+    )
+    record = {"status": "queued", "request": tampered}
+
+    with (
+        mock.patch.object(
+            app_module,
+            "generation_request_principal",
+            return_value=_principal(),
+        ),
+        mock.patch.object(
+            app_module,
+            "persisted_revision_record",
+            return_value=(record, tampered),
+        ),
+        mock.patch.object(app_module.billing, "debit_account") as debit,
+        mock.patch.object(app_module, "product_redis_queue") as product_queue,
+    ):
+        response = app_module.app.test_client().post(
+            "/api/image-refinements",
+            json=_post_payload(),
+        )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "revision_contract_attestation_invalid"
     debit.assert_not_called()
     product_queue.assert_not_called()
 
@@ -609,6 +686,33 @@ def test_selected_background_snapshot_rejects_oversized_object_before_body_read(
         app_module.MAX_AI_ASSET_BYTES,
     )
     storage.read_bytes.assert_not_called()
+
+
+def test_selected_background_snapshot_rejects_legacy_v14_without_evidence(
+) -> None:
+    storage = mock.Mock()
+    contract = {
+        "selectedBackground": {
+            "assetId": "background_asset",
+            "objectKey": "generated/backgrounds/parent/background.png",
+            "sha256": "a" * 64,
+            "backgroundPromptVersion": "style-background.v14",
+        }
+    }
+
+    with mock.patch.object(
+        app_module.object_storage_service,
+        "get_object_storage_service",
+        return_value=storage,
+    ):
+        with pytest.raises(app_module.MenuUploadError) as raised:
+            app_module.verified_selected_background_snapshot(contract)
+
+    assert (
+        raised.value.code
+        == "selected_background_generation_evidence_invalid"
+    )
+    storage.read_bytes_limited.assert_not_called()
 
 
 @pytest.mark.parametrize("mode", ["", "unknown", "refine"])

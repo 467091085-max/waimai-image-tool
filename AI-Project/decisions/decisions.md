@@ -324,3 +324,78 @@
   requires the current row-specific compiler digest and scene digest; approved
   library reuse requires the exact current background scene digest. Future
   compiler compatibility changes must bump the pipeline version.
+
+## Empty Background Prompt V14
+- TokenHub Hunyuan v3 does not consume the Lite-only `NegativePrompt` field.
+  Its positive prompt therefore uses a generic zero-object contract without
+  naming food, vessels, dishes, or representative products, and provider
+  success can never replace human visual review.
+- Provider-visible empty-set prompts must not name the menu taxonomy or any
+  representative dish. Category suitability is expressed only through the
+  precomputed palette, material, camera, and lighting direction; this prevents
+  a background request from being interpreted as a food-generation request.
+- Background generation uses `Revise=0` and a deterministic seed bound to the
+  catalog, taxonomy, prompt version, category, and style only in v14. Existing
+  v11-v13 runtime payloads remain unchanged. Tencent's documented success
+  response does not echo Seed/Revise, so audit metadata binds the exact values
+  submitted by the TokenHub adapter and labels their source
+  `submitted-request`; it must not claim a provider echo or applied control
+  when none was returned. A prompt change gets a new version and cannot reuse
+  prior bytes or metadata.
+- A selected-background snapshot created immediately after generation must use
+  that generation's explicit prompt version. It may not infer the version from
+  a sidecar that belonged to the overwritten file.
+- Category backgrounds remain `pending` after provider and technical quality
+  success. Only explicit visual approval may make them reusable; product-image
+  persistence keeps its existing status behavior.
+- Offline catalog registration must use the generated entry's exact prompt
+  version for both `prompt_version` and `pipeline_version`; it must not infer a
+  version from the Web runtime environment.
+- V14 generation is valid only with the exact TokenHub v3 model/protocol pair
+  that forwards deterministic Seed/Revise controls. Tencent cloud fallback,
+  TokenHub Lite, or a mismatched action fails closed before an asset can be
+  saved or registered.
+- Paid provider submission and result-image retrieval are separate retry
+  domains. A download failure may retry only the idempotent image GET; it must
+  never submit a second paid generation request.
+- An explicitly versioned selected-background snapshot may inherit a catalog
+  asset ID only when the sidecar carries the same normalized prompt version.
+- V14 generation evidence is mandatory at every persistence and reuse boundary,
+  not only immediately after the provider call. A local sidecar or remote
+  manifest is invalid unless it records the exact TokenHub v3 action/model,
+  exact submitted Seed/Revise controls, evidence source, and optional provider
+  echo. A returned Seed must strictly match the requested integer; an omitted
+  Seed remains valid only when the adapter proves the request carried the
+  frozen Seed and `Revise=0`. Invalid v14 assets cannot be uploaded,
+  registered, reused, manifested, or approved.
+- The v14 evidence validator is shared runtime code in `background_catalog.py`.
+  COS manifests persist all required evidence and are eligible after validation.
+  The current PostgreSQL asset schema has no action/seed/revision columns, so
+  PostgreSQL v14 catalog reads fail closed rather than inferring evidence from
+  provider/model names. Enabling that backend requires an explicitly authorized
+  schema migration that preserves the complete evidence contract.
+- A v14 selected-background snapshot must bind canonical generation evidence to
+  the exact selected image SHA-256. The current image must also match the
+  sidecar's prompt, category, style, prompt hash, and output hash; otherwise it
+  is rejected before preview, batch freeze, Worker restore, or refinement.
+- Newly generated v14 backgrounds pass the current provider metadata directly
+  into snapshot construction. Snapshot construction may not read a previous
+  generation's sidecar before the new sidecar is atomically written.
+
+## Product Contract Attestation
+- The public idempotency SHA-256 detects accidental request changes but is not
+  an authenticity boundary because an attacker can recompute it. Every new
+  authenticated menu-batch and image-revision contract therefore carries a
+  domain-separated HMAC-SHA256 attestation over the application context,
+  contract domain, attestation version, and complete private contract.
+- Web signs contracts with the existing object-signing secret before debit or
+  enqueue. Product Worker and Revision Worker verify the attestation before app
+  import, object storage, or provider work. A missing or shorter-than-32-byte
+  secret fails closed; the attestation is never included in public payloads.
+- V11-v13 and other legacy-background jobs remain functionally compatible only
+  as newly created signed contracts. Unsigned queued contracts are not silently
+  grandfathered because that would preserve the v14 downgrade bypass.
+- Redis status reads, missing-task recovery, persisted SQLite/PostgreSQL reads,
+  terminal mutation, refund, and settlement each verify the attestation before
+  re-enqueue, object access, or account credit. A recomputed public digest can
+  never substitute for this verification.

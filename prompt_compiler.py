@@ -21,6 +21,7 @@ SCENE_CONTRACT_VERSION = "background-scene-contract.v2"
 LEGACY_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 CURRENT_BACKGROUND_PROMPT_VERSION = "style-background.v12"
 BENCHMARKED_BACKGROUND_PROMPT_VERSION = "style-background.v13"
+EMPTY_SET_BACKGROUND_PROMPT_VERSION = "style-background.v14"
 MAX_COMPILED_PROMPT_CHARS = 900
 
 
@@ -371,7 +372,10 @@ def scene_contract_for(
         templates = _SCENE_TEMPLATES
     elif resolved_prompt_version == LEGACY_BACKGROUND_PROMPT_VERSION:
         templates = _LEGACY_SCENE_TEMPLATES
-    elif resolved_prompt_version == BENCHMARKED_BACKGROUND_PROMPT_VERSION:
+    elif resolved_prompt_version in {
+        BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+        EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    }:
         templates = {
             str(style_id).strip(): _benchmarked_scene_template(
                 str(style_id).strip(),
@@ -790,6 +794,7 @@ def _digest(payload: Any) -> str:
 
 __all__ = [
     "BENCHMARKED_BACKGROUND_PROMPT_VERSION",
+    "EMPTY_SET_BACKGROUND_PROMPT_VERSION",
     "BackgroundSceneContract",
     "COMPILER_VERSION",
     "CompiledGeneration",

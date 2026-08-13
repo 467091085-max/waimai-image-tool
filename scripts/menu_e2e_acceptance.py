@@ -489,6 +489,9 @@ def isolated_environment(
                 "BILLING_DB_PATH": str(root / "billing.db"),
                 "OBJECT_STORAGE_PROVIDER": "local",
                 "OBJECT_STORE_DIR": str(root / "objects"),
+                "OBJECT_SIGNING_SECRET": hashlib.sha256(
+                    f"menu-e2e:{root.resolve()}".encode("utf-8")
+                ).hexdigest(),
                 "ENABLE_LOCAL_DEMO_AUTH": "true",
                 "ENABLE_LOCAL_DEMO_BILLING": "true",
                 "ENABLE_LOCAL_DEMO_GENERATION": "true",

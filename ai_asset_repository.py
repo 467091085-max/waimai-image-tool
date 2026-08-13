@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 MANIFEST_NAME = "manifest.jsonl"
-VALID_STATUSES = {"approved", "rejected", "disabled"}
+VALID_STATUSES = {"pending", "approved", "rejected", "disabled"}
 REUSABLE_STATUS = "approved"
 REJECTED_STATUS = "rejected"
 GENERATION_REQUIRED_STATUS = "generation_required"

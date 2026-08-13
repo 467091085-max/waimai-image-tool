@@ -4,12 +4,14 @@ import hashlib
 import hmac
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
 from PIL import Image, ImageChops, ImageOps
 
 import object_storage_service
+import background_catalog
 from background_compositor import outside_mask_pixels_equal
 from image_edit_provider import (
     GeminiImageEditProvider,
@@ -26,7 +28,11 @@ from shared.json_limits import (
     JsonSizeLimitExceeded,
     validate_json_size,
 )
-from shared.refinement_contract import JOB_TYPE, revision_request_sha256
+from shared.refinement_contract import (
+    JOB_TYPE,
+    revision_contract_attestation_valid,
+    revision_request_sha256,
+)
 from worker.product_batch_handler import (
     NonRetryableProductBatchError,
     ProductBatchCancellationRequested,
@@ -54,8 +60,12 @@ def handle_product_revision(
     *,
     provider: Any | None = None,
     storage: Any | None = None,
+    attestation_secret: str | bytes | None = None,
 ) -> Mapping[str, Any]:
-    contract = _validated_contract(payload)
+    contract = _validated_contract(
+        payload,
+        attestation_secret=attestation_secret,
+    )
     execution_guard = payload.get("_executionGuard")
     if execution_guard is not None and not callable(execution_guard):
         raise NonRetryableProductRevisionError(
@@ -256,7 +266,11 @@ def handle_product_revision(
     return completed
 
 
-def _validated_contract(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+def _validated_contract(
+    payload: Mapping[str, Any],
+    *,
+    attestation_secret: str | bytes | None = None,
+) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise NonRetryableProductRevisionError(
             "product revision payload must be an object"
@@ -285,6 +299,15 @@ def _validated_contract(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         raise NonRetryableProductRevisionError(
             "product revision request digest mismatch"
         )
+    signing_secret = (
+        attestation_secret
+        if attestation_secret is not None
+        else _revision_contract_attestation_secret()
+    )
+    if not revision_contract_attestation_valid(contract, signing_secret):
+        raise NonRetryableProductRevisionError(
+            "product revision contract attestation is invalid"
+        )
     if str(payload.get("taskType") or "") != PRODUCT_REVISION_TASK_TYPE:
         raise NonRetryableProductRevisionError(
             "product revision task type mismatch"
@@ -309,7 +332,22 @@ def _validated_contract(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         contract.get("selectedBackground"),
         "selectedBackground",
     )
+    _validated_background_generation_evidence(
+        contract.get("selectedBackground")
+    )
     return contract
+
+
+def _revision_contract_attestation_secret() -> str:
+    for name in (
+        "OBJECT_SIGNING_SECRET",
+        "ASSET_SIGNING_SECRET",
+        "DOWNLOAD_SIGNING_SECRET",
+    ):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _validated_contract_asset(value: Any, label: str) -> None:
@@ -326,6 +364,44 @@ def _validated_contract_asset(value: Any, label: str) -> None:
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise NonRetryableProductRevisionError(
             f"{label} SHA-256 is invalid"
+        )
+
+
+def _validated_background_generation_evidence(value: Any) -> None:
+    snapshot = _required_mapping(value, "selectedBackground")
+    prompt_version = str(
+        snapshot.get("backgroundPromptVersion") or ""
+    ).strip()
+    if prompt_version != background_catalog.EMPTY_SET_PROMPT_VERSION:
+        return
+    raw_evidence = snapshot.get("generationEvidence")
+    supplied_sha256 = str(
+        snapshot.get("generationEvidenceSha256") or ""
+    ).strip().lower()
+    if not isinstance(raw_evidence, Mapping):
+        raise NonRetryableProductRevisionError(
+            "selectedBackground generation evidence is invalid"
+        )
+    canonical_evidence = background_catalog.frozen_generation_evidence(
+        dict(raw_evidence),
+        prompt_version=prompt_version,
+        asset_sha256=snapshot.get("sha256"),
+    )
+    calculated_sha256 = background_catalog.generation_evidence_sha256(
+        canonical_evidence
+    )
+    if (
+        canonical_json(dict(raw_evidence))
+        != canonical_json(canonical_evidence)
+        or not background_catalog.generation_evidence_valid(
+            canonical_evidence,
+            prompt_version=prompt_version,
+        )
+        or not background_catalog.SHA256_RE.fullmatch(supplied_sha256)
+        or not hmac.compare_digest(calculated_sha256, supplied_sha256)
+    ):
+        raise NonRetryableProductRevisionError(
+            "selectedBackground generation evidence is invalid"
         )
 
 

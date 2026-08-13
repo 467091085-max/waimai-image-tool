@@ -521,6 +521,241 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(result["ResultImage"], response["data"][0]["url"])
         self.assertEqual(result["RequestId"], "wand-request-1")
         self.assertEqual(result["_Protocol"], "wand-sync-v1")
+        self.assertEqual(result["_SubmittedSeed"], 73)
+        self.assertIs(result["_SubmittedRevise"], False)
+
+    def test_tokenhub_async_official_response_without_seed_preserves_submitted_controls(
+        self,
+    ) -> None:
+        responses = [
+            {
+                "id": "image-job-1",
+                "request_id": "submit-request-1",
+                "status": "queued",
+            },
+            {
+                "request_id": "query-request-1",
+                "status": "completed",
+                "data": [
+                    {"url": "https://cdn.example.test/background.jpg"}
+                ],
+            },
+        ]
+        with (
+            mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                    "TENCENT_TOKENHUB_IMAGE_MODEL": "hy-image-v3.0",
+                    "TENCENT_TOKENHUB_PROTOCOL": "legacy-submit-query-v1",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                app_module,
+                "tokenhub_http_post",
+                side_effect=responses,
+            ) as post,
+            mock.patch.object(app_module.time, "sleep"),
+        ):
+            result = app_module.tokenhub_image_request(
+                {
+                    "Prompt": "empty commercial photography backplate",
+                    "Resolution": "1024:768",
+                    "Revise": 0,
+                    "Seed": 84445,
+                }
+            )
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(result["ResultImage"], responses[1]["data"][0]["url"])
+        self.assertIsNone(result["Seed"])
+        self.assertEqual(result["_SubmittedSeed"], 84445)
+        self.assertEqual(result["_SubmittedRevise"], 0)
+        self.assertIs(result["_ProviderSeedPresent"], False)
+        evidence = {
+            "generationProvider": result["_Provider"],
+            "providerAction": result["_Action"],
+            "model": result["_Model"],
+            **app_module.tokenhub_v3_control_evidence(result, 84445),
+        }
+        self.assertTrue(
+            app_module.background_catalog.generation_evidence_valid(
+                evidence,
+                prompt_version="style-background.v14",
+            )
+        )
+        self.assertIs(evidence["providerSeedPresent"], False)
+
+    def test_tokenhub_falsy_seed_echo_is_rejected_before_result_download(
+        self,
+    ) -> None:
+        for returned_seed in (0, False, None):
+            with self.subTest(returned_seed=returned_seed):
+                responses = [
+                    {
+                        "id": "image-job-invalid-seed",
+                        "request_id": "submit-request-invalid-seed",
+                        "status": "queued",
+                    },
+                    {
+                        "request_id": "query-request-invalid-seed",
+                        "status": "completed",
+                        "seed": returned_seed,
+                        "data": [
+                            {
+                                "url": (
+                                    "https://cdn.example.test/"
+                                    "invalid-seed-background.jpg"
+                                )
+                            }
+                        ],
+                    },
+                ]
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "style.jpg"
+                    with (
+                        mock.patch.dict(
+                            app_module.os.environ,
+                            {
+                                "TENCENT_TOKENHUB_API_KEY": (
+                                    "tokenhub-test-key"
+                                ),
+                                "TENCENT_TOKENHUB_IMAGE_MODEL": (
+                                    "hy-image-v3.0"
+                                ),
+                                "TENCENT_TOKENHUB_PROTOCOL": (
+                                    "legacy-submit-query-v1"
+                                ),
+                                "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                                    "style-background.v14"
+                                ),
+                            },
+                            clear=True,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "active_category_context",
+                            return_value={"taxonomyId": "mixed_rice"},
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tokenhub_http_post",
+                            side_effect=responses,
+                        ),
+                        mock.patch.object(app_module.time, "sleep"),
+                        mock.patch.object(
+                            app_module,
+                            "save_result_image",
+                        ) as download,
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "invalid Seed/Revise",
+                        ),
+                    ):
+                        app_module.tencent_style_background(
+                            "style-2",
+                            target,
+                        )
+
+                    download.assert_not_called()
+
+    def test_tokenhub_conflicting_seed_aliases_fail_before_download(self) -> None:
+        for conflict in (None, "mismatch"):
+            with self.subTest(conflict=conflict):
+                submitted_seed: list[int] = []
+
+                def fake_post(
+                    _url: str,
+                    body: dict[str, object],
+                    **_kwargs: object,
+                ) -> dict[str, object]:
+                    if not submitted_seed:
+                        submitted_seed.append(int(body["seed"]))
+                        return {
+                            "id": "image-job-seed-alias-conflict",
+                            "status": "queued",
+                        }
+                    seed = submitted_seed[0]
+                    return {
+                        "status": "completed",
+                        "seed": seed,
+                        "Seed": None if conflict is None else seed + 1,
+                        "data": [
+                            {
+                                "url": (
+                                    "https://cdn.example.test/"
+                                    "seed-alias-conflict.jpg"
+                                )
+                            }
+                        ],
+                    }
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "style.jpg"
+                    with (
+                        mock.patch.dict(
+                            app_module.os.environ,
+                            {
+                                "TENCENT_TOKENHUB_API_KEY": (
+                                    "tokenhub-test-key"
+                                ),
+                                "TENCENT_TOKENHUB_IMAGE_MODEL": (
+                                    "hy-image-v3.0"
+                                ),
+                                "TENCENT_TOKENHUB_PROTOCOL": (
+                                    "legacy-submit-query-v1"
+                                ),
+                                "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                                    "style-background.v14"
+                                ),
+                            },
+                            clear=True,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "active_category_context",
+                            return_value={"taxonomyId": "mixed_rice"},
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tokenhub_http_post",
+                            side_effect=fake_post,
+                        ),
+                        mock.patch.object(app_module.time, "sleep"),
+                        mock.patch.object(
+                            app_module,
+                            "save_result_image",
+                        ) as download,
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "conflicting Seed aliases",
+                        ),
+                    ):
+                        app_module.tencent_style_background(
+                            "style-2",
+                            target,
+                        )
+
+                    download.assert_not_called()
+
+    def test_tokenhub_matching_seed_aliases_are_normalized(self) -> None:
+        result = app_module.normalize_tokenhub_image_response(
+            {
+                "request_id": "matching-seed-aliases",
+                "seed": 73,
+                "Seed": 73,
+                "data": [
+                    {"url": "https://cdn.example.test/background.jpg"}
+                ],
+            },
+            "hy-image-v3.0",
+            "legacy-submit-query-v1",
+            {"seed": 73, "revise": 0},
+        )
+
+        self.assertEqual(result["Seed"], 73)
+        self.assertIs(result["_ProviderSeedPresent"], True)
 
     def test_hundred_image_batch_scheduler_runs_ten_rows_concurrently(self) -> None:
         rows = [
@@ -686,6 +921,30 @@ class AppGenerationTests(unittest.TestCase):
         self.assertEqual(payload["revise"], 0)
         self.assertEqual(payload["seed"], 148237123)
         self.assertNotIn("negative_prompt", payload)
+
+    def test_deterministic_background_requires_exact_tokenhub_v3_protocol(self) -> None:
+        cases = (
+            ("hy-image-v3.0", "legacy-submit-query-v1", True),
+            ("hy-image-v3", "wand-sync-v1", True),
+            ("hy-image-lite", "legacy-submit-query-v1", False),
+            ("hy-image-v3.0", "wand-sync-v1", False),
+        )
+        for model, protocol, expected in cases:
+            with self.subTest(model=model, protocol=protocol):
+                with mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "TENCENT_TOKENHUB_API_KEY": "tokenhub-test-key",
+                        "TENCENT_TOKENHUB_ENABLED": "true",
+                        "TENCENT_TOKENHUB_IMAGE_MODEL": model,
+                        "TENCENT_TOKENHUB_PROTOCOL": protocol,
+                    },
+                    clear=True,
+                ):
+                    self.assertEqual(
+                        app_module.tokenhub_v3_deterministic_ready(),
+                        expected,
+                    )
 
     def test_text_to_image_tries_aiart_before_hunyuan_and_aggregates_resource_errors(self) -> None:
         calls: list[str] = []
@@ -1007,6 +1266,55 @@ class AppGenerationTests(unittest.TestCase):
 
             self.assertTrue(any(image.source == "hunyuan-product" and image.dish == "牛油果鸡胸沙拉" for image in images))
 
+    def test_generated_background_stays_pending_until_visual_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset_root = root / "_ai_asset_library"
+            output = root / "outputs" / "background.jpg"
+            save_quality_image(output)
+            menu = {
+                "store": "拌饭测试店",
+                "items": [menu_row(1, "烤肉拌饭", "单品", [])],
+            }
+            metadata = {
+                "status": "succeeded",
+                "provider": "tencent-hunyuan",
+                "action": "TokenHubImageV3",
+                "promptType": "style_background",
+                "category": "炒饭/拌饭",
+            }
+
+            with (
+                mock.patch.object(app_module, "LIBRARY_DIR", root),
+                mock.patch.object(app_module, "AI_ASSET_DIR", asset_root),
+                mock.patch.object(app_module, "parse_menu", return_value=menu),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_cache_key",
+                    return_value="menu123",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "current_menu_path",
+                    return_value=None,
+                ),
+            ):
+                record = app_module.persist_ai_generated_asset(
+                    kind="category_background",
+                    source_path=output,
+                    style_id="style-1",
+                    metadata=metadata,
+                    dish_name="背景风格样图",
+                )
+
+            self.assertIsNotNone(record)
+            assert record is not None
+            self.assertEqual(record["status"], "pending")
+            repository = app_module.ai_asset_repository.AIAssetRepository(
+                asset_root / "manifest.jsonl"
+            )
+            self.assertEqual(repository.list_assets(status="approved"), [])
+
     def test_persist_hunyuan_asset_rejects_low_quality_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1060,23 +1368,306 @@ class AppGenerationTests(unittest.TestCase):
 
             def fake_api(action: str, payload: dict[str, object], timeout: int = app_module.TENCENT_REQUEST_TIMEOUT) -> dict[str, object]:
                 payloads.append((action, payload))
-                return {"ResultImage": "https://cdn.example.test/style.jpg", "RequestId": "style-rb"}
+                return {
+                    "ResultImage": "https://cdn.example.test/style.jpg",
+                    "RequestId": "style-rb",
+                    "_Provider": "tencent-hunyuan",
+                    "_Action": "TokenHubImageV3",
+                    "_Model": "hy-image-v3.0",
+                    "_SubmittedSeed": payload["Seed"],
+                    "_SubmittedRevise": payload["Revise"],
+                }
 
             with (
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "炒饭/拌饭",
+                    },
+                ),
+                mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                            "style-background.v14"
+                        )
+                    },
+                    clear=False,
+                ),
                 mock.patch.object(app_module, "style_background_seed_candidate", return_value=candidate(source, "辣椒炒肉", "style-1")) as seed_candidate,
                 mock.patch.object(app_module, "candidate_public_url", return_value="https://cdn.example.test/seed.jpg") as public_url,
+                mock.patch.object(
+                    app_module,
+                    "tokenhub_v3_deterministic_ready",
+                    return_value=True,
+                ),
                 mock.patch.object(app_module, "tencent_api_request", side_effect=fake_api),
                 mock.patch.object(app_module, "save_result_image"),
             ):
                 detail = app_module.tencent_style_background("style-2", target)
 
-            self.assertEqual(detail["action"], "TextToImageLite")
+            self.assertEqual(detail["action"], "TokenHubImageV3")
             self.assertEqual(payloads[0][0], "TextToImageLite")
             self.assertNotIn("ProductUrl", payloads[0][1])
-            self.assertIn("真实空景摄影", str(payloads[0][1]["Prompt"]))
-            self.assertIn("禁止菜品", str(payloads[0][1]["Prompt"]))
+            self.assertIn(
+                "EMPTY COMMERCIAL PHOTOGRAPHY BACKPLATE, ZERO OBJECTS",
+                str(payloads[0][1]["Prompt"]),
+            )
+            self.assertNotIn("炒饭", str(payloads[0][1]["Prompt"]))
+            self.assertNotIn("NegativePrompt", payloads[0][1])
+            self.assertEqual(payloads[0][1]["Revise"], 0)
+            self.assertIsInstance(payloads[0][1]["Seed"], int)
+            self.assertGreater(int(payloads[0][1]["Seed"]), 0)
+            self.assertEqual(detail["requestedSeed"], payloads[0][1]["Seed"])
+            self.assertIsNone(detail["seed"])
+            self.assertFalse(detail["seedApplied"])
+            self.assertTrue(detail["seedControlSubmitted"])
+            self.assertEqual(
+                detail["seedEvidenceSource"],
+                "submitted-request",
+            )
+            self.assertTrue(detail["promptRevisionControlSubmitted"])
+            self.assertFalse(detail["promptRevisionControlApplied"])
+            self.assertEqual(detail["promptVersion"], "style-background.v14")
             seed_candidate.assert_not_called()
             public_url.assert_not_called()
+
+    def test_v14_background_fails_before_provider_without_tokenhub_v3(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "style.jpg"
+            with (
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={"taxonomyId": "mixed_rice"},
+                ),
+                mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                            "style-background.v14"
+                        )
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tokenhub_v3_deterministic_ready",
+                    return_value=False,
+                ),
+                mock.patch.object(app_module, "tencent_api_request") as provider,
+                self.assertRaisesRegex(RuntimeError, "requires TokenHub Hunyuan v3"),
+            ):
+                app_module.tencent_style_background("style-2", target)
+
+            provider.assert_not_called()
+
+    def test_v14_background_rejects_mismatched_seed_before_download(self) -> None:
+        for returned_seed in (None, 0, False, "123", 123.5, 1):
+            with self.subTest(returned_seed=returned_seed):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "style.jpg"
+                    with (
+                        mock.patch.object(
+                            app_module,
+                            "active_category_context",
+                            return_value={"taxonomyId": "mixed_rice"},
+                        ),
+                        mock.patch.dict(
+                            app_module.os.environ,
+                            {
+                                "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                                    "style-background.v14"
+                                )
+                            },
+                            clear=False,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tokenhub_v3_deterministic_ready",
+                            return_value=True,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tencent_api_request",
+                            side_effect=lambda _action, payload: {
+                                "ResultImage": (
+                                    "https://cdn.example.test/style.jpg"
+                                ),
+                                "_Provider": "tencent-hunyuan",
+                                "_Action": "TokenHubImageV3",
+                                "_Model": "hy-image-v3.0",
+                                "Seed": returned_seed,
+                                "_SubmittedSeed": payload["Seed"],
+                                "_SubmittedRevise": payload["Revise"],
+                            },
+                        ) as provider,
+                        mock.patch.object(
+                            app_module,
+                            "save_result_image",
+                        ) as download,
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "invalid Seed/Revise",
+                        ),
+                    ):
+                        app_module.tencent_style_background(
+                            "style-2",
+                            target,
+                        )
+
+                    provider.assert_called_once()
+                    download.assert_not_called()
+
+    def test_v14_background_rejects_missing_provider_identity_before_download(self) -> None:
+        for missing_field in ("_Provider", "_Model"):
+            with self.subTest(missing_field=missing_field):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "style.jpg"
+
+                    def fake_api(
+                        _action: str,
+                        payload: dict[str, object],
+                    ) -> dict[str, object]:
+                        response: dict[str, object] = {
+                            "ResultImage": (
+                                "https://cdn.example.test/style.jpg"
+                            ),
+                            "_Provider": "tencent-hunyuan",
+                            "_Action": "TokenHubImageV3",
+                            "_Model": "hy-image-v3.0",
+                            "Seed": payload["Seed"],
+                            "_SubmittedSeed": payload["Seed"],
+                            "_SubmittedRevise": payload["Revise"],
+                        }
+                        response.pop(missing_field)
+                        return response
+
+                    with (
+                        mock.patch.object(
+                            app_module,
+                            "active_category_context",
+                            return_value={"taxonomyId": "mixed_rice"},
+                        ),
+                        mock.patch.dict(
+                            app_module.os.environ,
+                            {
+                                "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                                    "style-background.v14"
+                                )
+                            },
+                            clear=False,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tokenhub_v3_deterministic_ready",
+                            return_value=True,
+                        ),
+                        mock.patch.object(
+                            app_module,
+                            "tencent_api_request",
+                            side_effect=fake_api,
+                        ) as provider,
+                        mock.patch.object(
+                            app_module,
+                            "save_result_image",
+                        ) as download,
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "invalid Seed/Revise",
+                        ),
+                    ):
+                        app_module.tencent_style_background(
+                            "style-2",
+                            target,
+                        )
+
+                    provider.assert_called_once()
+                    download.assert_not_called()
+
+    def test_v14_background_generation_rejects_product_replacement_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "style.jpg"
+            with (
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={
+                        "taxonomyId": "mixed_rice",
+                        "category": "炒饭/拌饭",
+                    },
+                ),
+                mock.patch.dict(
+                    app_module.os.environ,
+                    {
+                        "MIXED_RICE_BACKGROUND_PROMPT_VERSION": (
+                            "style-background.v14"
+                        )
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "ai_first_generation_enabled",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    app_module,
+                    "style_background_seed_candidate",
+                ) as seed_candidate,
+                mock.patch.object(app_module, "tencent_api_request") as provider,
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "requires AI-first text-to-image",
+                ),
+            ):
+                app_module.tencent_style_background("style-2", target)
+
+            seed_candidate.assert_not_called()
+            provider.assert_not_called()
+
+    def test_v11_runtime_background_request_keeps_legacy_provider_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "style.jpg"
+            captured: list[dict[str, object]] = []
+
+            def fake_api(
+                _action: str,
+                payload: dict[str, object],
+                timeout: int = app_module.TENCENT_REQUEST_TIMEOUT,
+            ) -> dict[str, object]:
+                captured.append(payload)
+                return {
+                    "ResultImage": "https://cdn.example.test/style.jpg",
+                    "_Action": "TokenHubImageV3",
+                }
+
+            with (
+                mock.patch.object(
+                    app_module,
+                    "active_category_context",
+                    return_value={"taxonomyId": "mixed", "category": "复合餐饮"},
+                ),
+                mock.patch.object(
+                    app_module,
+                    "active_background_prompt_version",
+                    return_value="style-background.v11",
+                ),
+                mock.patch.object(
+                    app_module,
+                    "tencent_api_request",
+                    side_effect=fake_api,
+                ),
+                mock.patch.object(app_module, "save_result_image"),
+            ):
+                detail = app_module.tencent_style_background("style-2", target)
+
+            self.assertNotIn("Seed", captured[0])
+            self.assertNotIn("Revise", captured[0])
+            self.assertIsNone(detail["requestedSeed"])
+            self.assertFalse(detail["seedApplied"])
 
     def test_candidate_public_url_encodes_chinese_paths(self) -> None:
         with app_module.app.test_request_context(base_url="https://waimai.example.test"):

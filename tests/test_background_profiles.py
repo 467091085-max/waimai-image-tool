@@ -149,6 +149,81 @@ def test_v13_binds_all_40_categories_to_six_distinct_original_directions() -> No
     )
 
 
+def test_v14_produces_240_empty_object_free_commercial_backplates() -> None:
+    taxonomy_ids = {taxonomy_id for taxonomy_id, _label, _words in TAXONOMY_RULES}
+    prompts = set()
+    forbidden_food_terms = (
+        "菜品",
+        "炒饭",
+        "拌饭",
+        "食物",
+        "饮料",
+        "水果",
+        "餐盘",
+        "餐盒",
+        "筷子",
+        "刀叉",
+        "餐巾",
+        "咖啡",
+        "可可",
+        "奶油",
+        "蜂蜜",
+        "芥末",
+        "番茄",
+        "辣椒",
+        "面皮",
+        "麦芽",
+        "焦糖",
+        "卤酱",
+        "果肉",
+        "酥皮",
+        "烘焙",
+        "脆壳",
+    )
+
+    for taxonomy_id in sorted(taxonomy_ids):
+        category_prompts = []
+        for style_id in background_profiles.STYLE_IDS:
+            prompt = background_profiles.pure_background_prompt(
+                taxonomy_id,
+                style_id,
+                prompt_version=(
+                    background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+                ),
+            )
+            category_prompts.append(prompt)
+            prompts.add(prompt)
+
+            assert prompt.startswith(
+                "EMPTY COMMERCIAL PHOTOGRAPHY BACKPLATE, ZERO OBJECTS"
+            )
+            assert "完全空置的商业摄影底板" in prompt
+            assert "严禁任何独立实体、可识别对象" in prompt
+            assert "不能退化成均匀色卡、纯色块" in prompt
+            assert "画面中可数实体必须为0" in prompt
+            assert "适配" not in prompt
+            assert not any(term in prompt for term in forbidden_food_terms)
+            assert len(prompt) <= 900
+
+        assert len(category_prompts) == 6
+        assert len(set(category_prompts)) == 6
+
+    assert len(prompts) == 240
+    mixed_prompt = background_profiles.pure_background_prompt(
+        "mixed_rice",
+        "style-4",
+        prompt_version=background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    )
+    assert "炒饭/拌饭" not in mixed_prompt
+    assert "温润胡桃木" in mixed_prompt
+    assert (
+        background_profiles.background_profile_version(
+            background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+        )
+        == background_profiles.EMPTY_SET_BACKGROUND_PROFILE_VERSION
+    )
+
+
 def test_unapproved_v11_profiles_forbid_multicolor_table_surfaces() -> None:
     table = background_profiles.pure_background_prompt(
         "rice_noodles",

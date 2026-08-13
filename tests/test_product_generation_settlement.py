@@ -31,6 +31,12 @@ TEST_GENERATION_PROVENANCE = {
         "hunyuan-2023-09-01"
     ),
 }
+TEST_ATTESTATION_SECRET = "generation-settlement-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def contract_attestation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OBJECT_SIGNING_SECRET", TEST_ATTESTATION_SECRET)
 
 
 class MemoryStorage:
@@ -74,6 +80,7 @@ def frozen_contract() -> dict[str, Any]:
         watermark={"enabled": False},
         idempotency_key="idem-settle-1",
         created_at="2026-07-29T12:00:00Z",
+        attestation_secret=TEST_ATTESTATION_SECRET,
     )
 
 
@@ -186,9 +193,51 @@ def test_contract_digest_tampering_fails_before_settlement() -> None:
     storage = MemoryStorage()
     task = completed_task(contract, storage)
     task["payload"]["batchContract"]["billing"]["totalPoints"] += 1000
+    storage.read_bytes_limited = pytest.fail
 
-    with pytest.raises(InvalidProductTask):
+    with pytest.raises(InvalidProductTask, match="attestation"):
         completion_from_redis_task(task, object_store=storage)
+
+
+def test_persisted_contract_attestation_is_checked_before_refund() -> None:
+    contract = frozen_contract()
+    tampered = json.loads(json.dumps(contract))
+    tampered["billing"]["debitOrderId"] = "gen:another-job:debit"
+    calls: list[str] = []
+
+    class TamperedStore:
+        def get_owned_job_detail(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                job={
+                    "id": contract["jobId"],
+                    "status": "failed",
+                    "request_sha256": contract["idempotency"][
+                        "requestSha256"
+                    ],
+                    "request_payload": tampered,
+                },
+                settlement={
+                    "status": "pending",
+                    "version": 0,
+                    "refund_target_points": 30,
+                },
+            )
+
+        def claim_settlement_once(self, **_kwargs: Any) -> None:
+            calls.append("claim")
+
+        def apply_settlement_refund(self, **_kwargs: Any) -> None:
+            calls.append("refund")
+
+    with pytest.raises(InvalidProductTask, match="attestation"):
+        settle_terminal_job(
+            TamperedStore(),
+            job_id=contract["jobId"],
+            owner_user_id=contract["userId"],
+            reconciler_id="reconciler-1",
+        )
+
+    assert calls == []
 
 
 def test_failed_and_canceled_tasks_use_full_refund() -> None:
@@ -265,6 +314,7 @@ def test_apply_completion_uses_fence_then_claims_and_refunds() -> None:
                     "request_sha256": contract["idempotency"][
                         "requestSha256"
                     ],
+                    "request_payload": contract,
                 },
                 settlement={
                     "status": self.settlement_status,
@@ -321,10 +371,19 @@ def test_apply_completion_uses_fence_then_claims_and_refunds() -> None:
 
 
 def test_applied_settlement_is_idempotent_without_reclaim() -> None:
+    contract = frozen_contract()
+
     class AppliedStore:
         def get_owned_job_detail(self, **_kwargs: Any) -> SimpleNamespace:
             return SimpleNamespace(
-                job={"id": "job-1", "status": "succeeded"},
+                job={
+                    "id": contract["jobId"],
+                    "status": "succeeded",
+                    "request_sha256": contract["idempotency"][
+                        "requestSha256"
+                    ],
+                    "request_payload": contract,
+                },
                 settlement={
                     "status": "applied",
                     "version": 2,
@@ -340,8 +399,8 @@ def test_applied_settlement_is_idempotent_without_reclaim() -> None:
 
     result = settle_terminal_job(
         AppliedStore(),
-        job_id="job-1",
-        owner_user_id="user-1",
+        job_id=contract["jobId"],
+        owner_user_id=contract["userId"],
         reconciler_id="reconciler-1",
     )
 

@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import copy
 
+import background_catalog
 import pytest
 import prompt_compiler
 
 from shared.batch_contract import (
     BatchContractError,
+    CONTRACT_ATTESTATION_VERSION,
     EXTRA_PLATFORM_POINTS,
     WATERMARK_POINTS,
     freeze_menu_batch_contract,
+    menu_batch_contract_attestation_valid,
     request_sha256,
+)
+from shared.refinement_contract import (
+    CONTRACT_ATTESTATION_VERSION as REVISION_ATTESTATION_VERSION,
+    revision_contract_attestation_valid,
 )
 
 
@@ -26,6 +33,7 @@ TEST_GENERATION_PROVENANCE = {
         "hunyuan-2023-09-01"
     ),
 }
+TEST_ATTESTATION_SECRET = "menu-batch-signing-secret-32-bytes-minimum"
 
 
 def valid_input(**overrides):
@@ -64,6 +72,41 @@ def valid_input(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def v14_selected_background(*, seed: int = 123456) -> dict[str, object]:
+    selected = dict(valid_input()["selected_background"])
+    prompt_version = "style-background.v14"
+    scene = prompt_compiler.scene_contract_for(
+        selected["styleId"],
+        "mixed_rice",
+        asset_id=selected["assetId"],
+        asset_sha256=selected["sha256"],
+        prompt_version=prompt_version,
+    )
+    evidence = {
+        "generationProvider": "tencent-hunyuan",
+        "providerAction": "TokenHubImageV3",
+        "model": "hy-image-v3.0",
+        "seed": seed,
+        "requestedSeed": seed,
+        "seedApplied": True,
+        "promptRevisionEnabled": False,
+        "promptRevisionControlApplied": True,
+        "promptVersion": prompt_version,
+        "assetSha256": selected["sha256"],
+    }
+    selected.update(
+        {
+            "backgroundPromptVersion": prompt_version,
+            "sceneContract": scene.payload(),
+            "generationEvidence": evidence,
+            "generationEvidenceSha256": (
+                background_catalog.generation_evidence_sha256(evidence)
+            ),
+        }
+    )
+    return selected
 
 
 def test_freeze_contract_calculates_server_owned_billing_snapshot() -> None:
@@ -126,6 +169,133 @@ def test_v12_background_prompt_version_survives_contract_freeze() -> None:
         == "style-background.v12"
     )
     assert frozen["sceneContract"]["contractSha256"] == scene.contract_sha256
+
+
+def test_v14_background_generation_evidence_survives_contract_freeze() -> None:
+    selected = v14_selected_background()
+
+    contract = freeze_menu_batch_contract(
+        **valid_input(selected_background=selected)
+    )
+
+    frozen = contract["selectedBackground"]
+    assert frozen["generationEvidence"] == selected["generationEvidence"]
+    assert (
+        frozen["generationEvidenceSha256"]
+        == selected["generationEvidenceSha256"]
+    )
+    assert frozen["generationEvidence"]["assetSha256"] == frozen["sha256"]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered", "wrong_asset"])
+def test_v14_background_rejects_invalid_generation_evidence(
+    mutation: str,
+) -> None:
+    selected = v14_selected_background()
+    if mutation == "missing":
+        selected.pop("generationEvidence")
+    elif mutation == "tampered":
+        selected["generationEvidence"] = {
+            **selected["generationEvidence"],
+            "seed": 999,
+        }
+    else:
+        evidence = {
+            **selected["generationEvidence"],
+            "assetSha256": "9" * 64,
+        }
+        selected["generationEvidence"] = evidence
+        selected["generationEvidenceSha256"] = (
+            background_catalog.generation_evidence_sha256(evidence)
+        )
+
+    with pytest.raises(BatchContractError) as raised:
+        freeze_menu_batch_contract(
+            **valid_input(selected_background=selected)
+        )
+
+    assert raised.value.code == "invalid_background_generation_evidence"
+
+
+def test_v14_generation_evidence_is_part_of_request_hash() -> None:
+    first = freeze_menu_batch_contract(
+        **valid_input(selected_background=v14_selected_background(seed=111))
+    )
+    second = freeze_menu_batch_contract(
+        **valid_input(selected_background=v14_selected_background(seed=222))
+    )
+
+    assert (
+        first["idempotency"]["requestSha256"]
+        != second["idempotency"]["requestSha256"]
+    )
+
+
+def test_signed_menu_batch_contract_blocks_v14_scene_downgrade() -> None:
+    contract = freeze_menu_batch_contract(
+        **valid_input(
+            selected_background=v14_selected_background(),
+            attestation_secret=TEST_ATTESTATION_SECRET,
+        )
+    )
+
+    assert contract["contractAttestation"]["version"] == (
+        CONTRACT_ATTESTATION_VERSION
+    )
+    assert menu_batch_contract_attestation_valid(
+        contract,
+        TEST_ATTESTATION_SECRET,
+    )
+    downgraded = copy.deepcopy(contract)
+    background = downgraded["selectedBackground"]
+    legacy_scene = prompt_compiler.scene_contract_for(
+        background["styleId"],
+        "unknown",
+        asset_id=background["assetId"],
+        asset_sha256=background["sha256"],
+        prompt_version=prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION,
+    )
+    background["backgroundPromptVersion"] = (
+        prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    )
+    background["sceneContract"] = legacy_scene.payload()
+    background.pop("generationEvidence")
+    background.pop("generationEvidenceSha256")
+    downgraded["idempotency"]["requestSha256"] = request_sha256(downgraded)
+
+    assert not menu_batch_contract_attestation_valid(
+        downgraded,
+        TEST_ATTESTATION_SECRET,
+    )
+
+
+def test_signed_legacy_menu_batch_contract_remains_compatible() -> None:
+    contract = freeze_menu_batch_contract(
+        **valid_input(attestation_secret=TEST_ATTESTATION_SECRET)
+    )
+
+    assert contract["selectedBackground"]["backgroundPromptVersion"] == (
+        prompt_compiler.LEGACY_BACKGROUND_PROMPT_VERSION
+    )
+    assert menu_batch_contract_attestation_valid(
+        contract,
+        TEST_ATTESTATION_SECRET,
+    )
+
+
+def test_menu_batch_attestation_cannot_be_replayed_as_revision_attestation() -> None:
+    contract = freeze_menu_batch_contract(
+        **valid_input(attestation_secret=TEST_ATTESTATION_SECRET)
+    )
+    replay = copy.deepcopy(contract)
+    replay["contractAttestation"]["version"] = (
+        REVISION_ATTESTATION_VERSION
+    )
+
+    assert not revision_contract_attestation_valid(
+        replay,
+        TEST_ATTESTATION_SECRET,
+    )
 
 
 def test_background_prompt_version_must_match_scene_contract() -> None:

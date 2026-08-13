@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 import object_storage_service
 from shared.batch_contract import canonical_json
+from shared.contract_attestation import contract_attestation_secret_from_env
 from shared.product_generation_settlement import (
     GenerationCompletion,
     InvalidProductTask,
@@ -14,6 +15,7 @@ from shared.product_generation_settlement import (
 )
 from shared.refinement_contract import (
     JOB_TYPE as REVISION_JOB_TYPE,
+    revision_contract_attestation_valid,
     revision_request_sha256,
 )
 
@@ -28,6 +30,7 @@ def revision_completion_from_redis_task(
     task: Mapping[str, Any],
     *,
     object_store: Any | None = None,
+    attestation_secret: str | bytes | None = None,
 ) -> GenerationCompletion | None:
     envelope = _mapping(task, "task")
     status = _text(envelope.get("status"), "task.status")
@@ -53,6 +56,13 @@ def revision_completion_from_redis_task(
         REVISION_JOB_TYPE,
         "contract.jobType",
     )
+    signing_secret = (
+        contract_attestation_secret_from_env()
+        if attestation_secret is None
+        else attestation_secret
+    )
+    if not revision_contract_attestation_valid(contract, signing_secret):
+        raise InvalidProductTask("product revision contract attestation is invalid")
 
     job_id = _text(contract.get("jobId"), "contract.jobId")
     owner_user_id = _text(contract.get("userId"), "contract.userId")

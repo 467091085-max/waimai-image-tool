@@ -9,7 +9,9 @@ from typing import Any
 
 import pytest
 
+from shared.batch_contract import menu_batch_contract_attestation
 from shared.product_job_store import OutboxClaimLost
+from shared.refinement_contract import revision_contract_attestation
 from shared.redis_queue import (
     IdempotencyConflict,
     QueueError,
@@ -29,12 +31,18 @@ from worker.worker import GenerationWorker
 
 
 DIGEST = "a" * 64
+TEST_ATTESTATION_SECRET = "outbox-dispatch-signing-secret-32-bytes-minimum"
+
+
+@pytest.fixture(autouse=True)
+def _contract_attestation_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OBJECT_SIGNING_SECRET", TEST_ATTESTATION_SECRET)
 
 
 def frozen_request(
     job_type: str = "menu_batch_generation",
 ) -> dict[str, Any]:
-    return {
+    request = {
         "schemaVersion": 1,
         "jobType": job_type,
         "jobId": "job-1",
@@ -45,6 +53,16 @@ def frozen_request(
         },
         "frozen": {"dish": "牛肉饭"},
     }
+    attestation = (
+        menu_batch_contract_attestation
+        if job_type == "menu_batch_generation"
+        else revision_contract_attestation
+    )
+    request["contractAttestation"] = attestation(
+        request,
+        TEST_ATTESTATION_SECRET,
+    )
+    return request
 
 
 def outbox_claim(
@@ -375,6 +393,31 @@ def test_revision_outbox_is_published_only_to_dedicated_revision_queue() -> None
 
 def test_unknown_job_type_fails_closed_without_enqueue_or_publish() -> None:
     store = FakeStore([outbox_claim("unknown_batch")])
+    queue = FakeQueue()
+
+    with pytest.raises(DispatchBatchError) as raised:
+        dispatch_once(store, queue, dispatcher_id="dispatcher-1")
+
+    assert raised.value.report["published"] == 0
+    assert queue.enqueue_calls == []
+    assert store.published == []
+
+
+@pytest.mark.parametrize(
+    "job_type",
+    ["menu_batch_generation", "delivery_asset_revision_batch"],
+)
+def test_tampered_attestation_never_reaches_redis_or_publish(
+    job_type: str,
+) -> None:
+    claim = outbox_claim(job_type)
+    request = claim["payload"]["request"]
+    request["frozen"]["dish"] = "伪造菜品"
+    forged_digest = "b" * 64
+    request["idempotency"]["requestSha256"] = forged_digest
+    claim["payload"]["requestSha256"] = forged_digest
+    claim["request_sha256"] = forged_digest
+    store = FakeStore([claim])
     queue = FakeQueue()
 
     with pytest.raises(DispatchBatchError) as raised:

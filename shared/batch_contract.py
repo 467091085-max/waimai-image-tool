@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 import prompt_compiler
+import background_catalog
+from shared.contract_attestation import (
+    contract_attestation_valid,
+    create_contract_attestation,
+)
 
 
 SCHEMA_VERSION = 3
 JOB_TYPE = "menu_batch_generation"
+CONTRACT_ATTESTATION_VERSION = "menu-batch-contract-attestation.v1"
+CONTRACT_ATTESTATION_DOMAIN = JOB_TYPE
 PRICING_VERSION = "v1"
 QUALITY_POINTS = {"standard": 10, "premium": 20}
 WATERMARK_POINTS = 50
@@ -47,6 +55,7 @@ def freeze_menu_batch_contract(
     idempotency_key: str,
     pricing_version: str = PRICING_VERSION,
     created_at: str | None = None,
+    attestation_secret: str | bytes | None = None,
 ) -> dict[str, Any]:
     clean_job_id = _clean_id(job_id, "jobId")
     clean_user_id = _clean_id(user_id, "userId")
@@ -100,6 +109,11 @@ def freeze_menu_batch_contract(
         "createdAt": _clean_created_at(created_at),
     }
     contract["idempotency"]["requestSha256"] = request_sha256(contract)
+    if attestation_secret is not None:
+        contract["contractAttestation"] = menu_batch_contract_attestation(
+            contract,
+            attestation_secret,
+        )
     return contract
 
 
@@ -122,6 +136,30 @@ def request_sha256(contract: Mapping[str, Any]) -> str:
 
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def menu_batch_contract_attestation(
+    contract: Mapping[str, Any],
+    secret: str | bytes,
+) -> dict[str, str]:
+    return create_contract_attestation(
+        contract,
+        secret,
+        domain=CONTRACT_ATTESTATION_DOMAIN,
+        version=CONTRACT_ATTESTATION_VERSION,
+    )
+
+
+def menu_batch_contract_attestation_valid(
+    contract: Mapping[str, Any],
+    secret: str | bytes,
+) -> bool:
+    return contract_attestation_valid(
+        contract,
+        secret,
+        domain=CONTRACT_ATTESTATION_DOMAIN,
+        version=CONTRACT_ATTESTATION_VERSION,
+    )
 
 
 def _menu_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -176,6 +214,42 @@ def _background_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
             "selectedBackground.backgroundPromptVersion does not match sceneContract",
             field="selectedBackground.backgroundPromptVersion",
         )
+    frozen_evidence: dict[str, Any] | None = None
+    evidence_sha256 = ""
+    if prompt_version == background_catalog.EMPTY_SET_PROMPT_VERSION:
+        raw_evidence = source.get("generationEvidence")
+        if not isinstance(raw_evidence, Mapping):
+            raise BatchContractError(
+                "invalid_background_generation_evidence",
+                "selectedBackground.generationEvidence is required",
+                field="selectedBackground.generationEvidence",
+            )
+        frozen_evidence = background_catalog.frozen_generation_evidence(
+            dict(raw_evidence),
+            prompt_version=prompt_version,
+            asset_sha256=asset_sha256,
+        )
+        evidence_sha256 = background_catalog.generation_evidence_sha256(
+            frozen_evidence
+        )
+        supplied_sha256 = _sha256(
+            source.get("generationEvidenceSha256"),
+            "selectedBackground.generationEvidenceSha256",
+        )
+        if (
+            canonical_json(dict(raw_evidence))
+            != canonical_json(frozen_evidence)
+            or not background_catalog.generation_evidence_valid(
+                frozen_evidence,
+                prompt_version=prompt_version,
+            )
+            or not hmac.compare_digest(evidence_sha256, supplied_sha256)
+        ):
+            raise BatchContractError(
+                "invalid_background_generation_evidence",
+                "selectedBackground generation evidence is invalid",
+                field="selectedBackground.generationEvidence",
+            )
     snapshot = {
         "assetId": asset_id,
         "styleId": style_id,
@@ -192,6 +266,9 @@ def _background_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
             library_asset_id,
             "selectedBackground.libraryAssetId",
         )
+    if frozen_evidence is not None:
+        snapshot["generationEvidence"] = frozen_evidence
+        snapshot["generationEvidenceSha256"] = evidence_sha256
     return snapshot
 
 
