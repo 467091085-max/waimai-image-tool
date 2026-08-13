@@ -820,7 +820,7 @@ def test_six_generated_backgrounds_are_reused_after_restart(
     )
     monkeypatch.setattr(
         app_module,
-        "require_generated_output_quality",
+        "require_generated_background_quality",
         lambda target: {"status": "passed", "quality_score": 100},
     )
     monkeypatch.setattr(
@@ -965,7 +965,7 @@ def test_identical_menu_cache_never_crosses_preview_owners(
     )
     monkeypatch.setattr(
         app_module,
-        "require_generated_output_quality",
+        "require_generated_background_quality",
         lambda target: {"status": "passed", "quality_score": 100},
     )
     monkeypatch.setattr(
@@ -1096,7 +1096,7 @@ def test_formal_generation_restores_selected_background_after_restart(
     )
     monkeypatch.setattr(
         app_module,
-        "require_generated_output_quality",
+        "require_generated_background_quality",
         lambda target: {"status": "passed", "quality_score": 100},
     )
     monkeypatch.setattr(
@@ -1465,7 +1465,7 @@ def test_live_background_generation_returns_503_when_persistence_fails(
     )
     monkeypatch.setattr(
         app_module,
-        "require_generated_output_quality",
+        "require_generated_background_quality",
         lambda target: {"status": "passed", "quality_score": 100},
     )
     monkeypatch.setattr(

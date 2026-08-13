@@ -24,9 +24,35 @@ gradient now fails locally as `low_information_gradient`; background,
 generation, catalog-builder, selected-background, and image-pipeline
 verification passes `149 passed`. The offline catalog builder now uses the
 same background gate, defaults to one paid attempt, enforces a conservative
-run-wide paid-call budget, and stops on the first failed asset. Deployment and
-a fresh paid v14 visual pilot remain pending. The 240 assets must not be called
-visually approved until the new outputs are manually reviewed.
+run-wide paid-call budget, and stops on the first failed asset. Commits
+`9a2c456` and `1852a3d` are now live only on Render staging. The staging-only
+`MIXED_RICE_BACKGROUND_PROMPT_VERSION` was corrected from v13 to v14 and the
+resulting manual deploy `dep-d9uhqj15efls73cmonc0` reached Live. A fresh paid
+style-1 background completed in 14.17 seconds with canonical Hunyuan 3.0/v14
+metadata and exact downloaded SHA-256
+`5dcaee52998f961d81c4268781cc73e20cc82dbec0327be3876defe528e84984`.
+It is a full-frame textured warm stone studio set rather than a color block.
+The corresponding real combo sample completed in 57.75 seconds through
+Hunyuan foreground -> Tencent Mask -> deterministic composition -> private
+COS, with full-frame 1024x768 output, selected-background identity, and exact
+downloaded SHA-256
+`c0d3b7940c1001d92208022c61a2e8a8e1fd6187fd76c3c0aeb4879b677053cf`.
+Technical composition passes, but the style remains only a pilot and not a
+customer-approved aesthetic. Styles 2-6 and the 240 assets must not be called
+visually approved until their new outputs are manually reviewed.
+
+A second paid v14 background completed in 18.29 seconds with canonical
+Hunyuan 3.0 evidence and exact downloaded SHA-256
+`ea828e5b2b66d4bad08c53f0836839336f1dbd4a49d7776affef1074dac104be`.
+Manual review rejected it: it repeated style-1's central raised stone slab and
+merely changed the scene to a near-monochrome orange-red. Paid calls stopped
+after that evidence. The new local correction front-loads a single-flat-plane
+contract, removes the central-plinth-inducing wording, assigns six distinct
+photographic scene families, uses a dark textured surface rather than a red
+surface for style-2, and allows only bounded category-specific edge accents.
+The related background generation, private preview, persistence, quality-gate,
+and catalog-review suite passes `157 passed`. A paid recheck is pending the
+independent review, commit, and staging deploy.
 
 Step 101 pending: fix menu-item semantics revealed by the same workbook. The
 store-level category is correct, but row-level parsing currently reports 18

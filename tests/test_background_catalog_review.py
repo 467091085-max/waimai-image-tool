@@ -234,7 +234,7 @@ def test_execute_uploads_category_checkpoint_and_review_sheet(
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
     ):
@@ -245,6 +245,8 @@ def test_execute_uploads_category_checkpoint_and_review_sheet(
                 "--output",
                 str(output),
                 "--execute",
+                "--max-paid-calls",
+                "6",
                 "--upload-pending",
             ]
         ) == 0
@@ -333,7 +335,7 @@ def test_selective_regeneration_replaces_only_named_pending_slot(
             ),
             mock.patch.object(
                 builder.app_module,
-                "require_generated_output_quality",
+                "require_generated_background_quality",
                 return_value={"status": "passed", "quality_score": 1.0},
             ),
         ):

@@ -456,16 +456,26 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
             f"style-background.v14 requires a classified category: {category_id}"
         )
     try:
-        style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
-            style_id
-        ]
+        _legacy_style_name, _legacy_surface_field, _legacy_geometry = (
+            STYLE_BACKGROUND_DIRECTIONS[style_id]
+        )
     except KeyError as exc:
         raise ValueError(f"unknown background style slot: {style_id}") from exc
 
     direction = CATEGORY_BACKGROUND_DIRECTIONS[normalized_category]
+    style_name, surface_field = {
+        "style-1": ("明亮晨光浅石桌景", "light_surface"),
+        "style-2": ("深色戏剧侧光桌景", "premium_surface"),
+        "style-3": ("清透俯拍浅色桌景", "light_surface"),
+        "style-4": ("温润木质用餐桌景", "warm_surface"),
+        "style-5": ("现代品类色编辑桌景", "contemporary_surface"),
+        "style-6": ("高级暗调餐厅桌景", "premium_surface"),
+    }[style_id]
     surface = provider_safe_empty_set_material(
         str(getattr(direction, surface_field))
     )
+    primary_color = provider_safe_empty_set_material(direction.primary_color)
+    contrast_color = provider_safe_empty_set_material(direction.contrast_color)
     contract = prompt_compiler.scene_contract_for(
         style_id,
         normalized_category,
@@ -477,36 +487,47 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
     highlight_x = 24 + (category_index % 8) * 7
     highlight_y = 20 + (category_index // 8) * 8
     accents = CATEGORY_EDGE_ACCENTS[normalized_category]
-    aesthetic = {
-        "style-1": "高调编辑棚拍，斜向窗格柔影与矿物微纹理形成清楚层次",
-        "style-2": "克制对比棚拍，弧形背景过渡与侧顶柔光形成空间纵深",
-        "style-3": "清透晨间桌景，天然细纹与柔和窗影可见但不过曝",
-        "style-4": "温润家常桌景，真实木纹方向统一，暖而不发黄",
-        "style-5": "现代餐饮编辑桌景，低饱和材质与非对称边缘布景干净利落",
-        "style-6": "高级暗调桌景，暗部保留真实纹理和暖色轮廓，不做黑洞",
+    material_contract, aesthetic, peripheral_contract = {
+        "style-1": (
+            f"一张真正平整的{surface}餐桌覆盖下方约74%，暖中性哑光墙面只在上方远处出现；"
+            "桌面从左、右、下三边延伸画外，全部处于同一高度，细石纹连续穿过中央",
+            "上午自然窗光从左侧掠过桌面，明亮通透，有柔和斜影和真实局部对比",
+            f"只允许{accents}在最上方一角裁切露出，合计不超过7%",
+        ),
+        "style-2": (
+            f"一张真正平整的{surface}餐桌覆盖下方约76%，深中性哑光墙面只在上方远处出现；"
+            "桌面从左、右、下三边延伸画外，全部处于同一高度，暗部纹理仍清楚",
+            f"右上侧顶柔光形成高级明暗，{contrast_color}只作为很弱的边缘反射，绝不整幅染色",
+            f"只允许{accents}在最左或最右边缘裁切露出，合计不超过7%",
+        ),
+        "style-3": (
+            f"一整块{surface}桌面从四边延伸画外，接近俯拍，纹理连续穿过中央",
+            "清透晨间编辑摄影，柔和窗影和天然细纹可见但不过曝",
+            f"只允许{accents}在对角两个边缘裁切露出，合计不超过9%",
+        ),
+        "style-4": (
+            f"一整块{surface}餐桌从四边延伸画外，木纹方向统一，中央没有拼接",
+            "温润真实的用餐桌摄影，自然家庭窗光，暖而不发黄",
+            f"只允许{accents}在上方或侧边裁切露出，合计不超过9%",
+        ),
+        "style-5": (
+            f"一整块{surface}桌面从四边延伸画外，以{primary_color}为克制辅助色，中央材质连续",
+            "现代餐饮编辑摄影，低饱和双材质层次和非对称边缘布景，干净利落",
+            f"只允许{accents}在一上角和相反侧边裁切露出，合计不超过9%",
+        ),
+        "style-6": (
+            f"一整块{surface}餐桌从左、右、下三边延伸画外，上方远处仅有深中性环境；"
+            "暗部纹理连续清楚，桌面全部处于同一高度",
+            "高级晚餐厅编辑摄影，暖色轮廓光配中性填充，不做黑洞或廉价暗角",
+            f"只允许{accents}在两侧边缘裁切露出，合计不超过8%",
+        ),
     }[style_id]
-    if style_id in {"style-1", "style-2"}:
-        material_contract = (
-            f"使用{surface}同色系摄影棚无缝弧面；下方约72%是水平承托面，"
-            "上方是同材质柔和弧形背景，转角自然且不形成地平线；"
-            "表面必须有可见的细腻矿物微纹理，不能只做平滑渐变"
-        )
-        peripheral_contract = (
-            "不放独立道具；只用真实材质细节、弧面空间和有来源的窗格柔影"
-        )
-    else:
-        material_contract = (
-            f"使用一整块{surface}承托面；{geometry}；桌面延伸到四边画外，"
-            "看不到桌沿、厚度或桌下空间，纹理连续穿过中央"
-        )
-        peripheral_contract = (
-            f"只允许{accents}出现在上方或侧边裁切区，单件面积不超过6%，"
-            "合计不超过10%，不得进入中央主承托区"
-        )
     return (
-        "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY SET, BACKPLATE ONLY. "
+        "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE. "
+        "NO PLINTH, NO RISER, NO BOARD, NO TRAY, NO CENTER OBJECT. "
+        "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY BACKPLATE. "
         "原创高品质外卖商业摄影布景底板，4:3横图，1024x768；"
-        "用于后期放置一个完整餐盘或外卖容器，但当前画面不生成菜品、容器或包装。"
+        "当前只拍摄空桌布景，不生成菜品、容器或包装。"
         f"本槽位为{style_name}：{material_contract}。"
         f"视觉质感为{aesthetic}；{peripheral_contract}。"
         f"主光方向为{contract.lighting.direction}，使用大型柔光源，"
@@ -514,10 +535,10 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
         "必须看得见真实材质颗粒、轻微表面起伏和自然局部对比。"
         f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，约"
         f"{contract.camera.lens_mm}mm标准镜头，承托面透视必须与该俯拍角度一致。"
-        "中央约62%保持完整、清楚、连续，可直接承接菜品主体和接触阴影；"
-        "禁止中央石板、展示台、底座、台阶、第二层台面、矩形垫板、边框、"
+        "中央约68%必须是同一张平桌面，完整、清楚、连续；"
+        "禁止中央石板、展示台、底座、台阶、第二层台面、矩形垫板、砧板、边框、"
         "画中画、悬浮物、文字、数字、品牌、logo、水印、人物或手。"
-        "禁止均匀色卡、低信息纯色块、廉价渐变、塑料3D面、整体虚焦或重暗角。"
+        "禁止单色统染、均匀色卡、低信息纯色块、廉价渐变、塑料3D面、整体虚焦或重暗角。"
         "真实商业摄影，不复制或模仿任何品牌的专有版式。"
     )
 

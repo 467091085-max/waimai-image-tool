@@ -187,14 +187,16 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
             prompts.add(prompt)
 
             assert prompt.startswith(
-                "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY SET, BACKPLATE ONLY"
+                "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE"
             )
+            assert "NO PLINTH, NO RISER, NO BOARD" in prompt
             assert "原创高品质外卖商业摄影布景底板" in prompt
-            assert "中央约62%保持完整" in prompt
+            assert "中央约68%必须是同一张平桌面" in prompt
             assert "低信息纯色块" in prompt
+            assert "禁止单色统染" in prompt
             assert "不复制或模仿任何品牌的专有版式" in prompt
             assert not any(term in prompt for term in forbidden_category_leaks)
-            assert len(prompt) <= 900
+            assert len(prompt) <= 980
 
         assert len(category_prompts) == 6
         assert len(set(category_prompts)) == 6
@@ -208,6 +210,20 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
     assert "炒饭/拌饭" not in mixed_prompt
     assert "温润胡桃木" in mixed_prompt
     assert "深灰粗麻餐巾边角与胡桃木筷" in mixed_prompt
+    mixed_light = background_profiles.pure_background_prompt(
+        "mixed_rice",
+        "style-1",
+        prompt_version=background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    )
+    mixed_dark = background_profiles.pure_background_prompt(
+        "mixed_rice",
+        "style-2",
+        prompt_version=background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION,
+    )
+    assert "浅暖灰石灰岩" in mixed_light
+    assert "深炭灰矿物台面" in mixed_dark
+    assert "低饱和陶土红只作为很弱的边缘反射" in mixed_dark
+    assert "绝不整幅染色" in mixed_dark
     assert (
         background_profiles.background_profile_version(
             background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
