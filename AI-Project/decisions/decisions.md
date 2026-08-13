@@ -257,6 +257,11 @@
   composition.
 - Prompt length limits are enforced by complete priority segments. Mandatory
   constraints may never be silently cut in the middle of a sentence.
+- For structured menu choice groups, provider-visible dish identity is rebuilt
+  from required components plus the selected option from each group. Raw menu
+  phrases such as `饮品自选` may not reintroduce rejected choices. A drink/cup
+  requirement is emitted only when the resolved component list actually
+  contains a selected drink.
 - Formal full-menu generation stays blocked until the six representative
   samples pass semantic, background, perspective, contact, and aesthetic QA.
 
@@ -391,14 +396,33 @@
   accepted. Its prompt may be corrected before activation while preserving the
   existing deterministic Seed/Revise and evidence contract. Prompt SHA-256
   invalidates any bytes made from an earlier draft.
-- The six slots are now two pure-color studio/cyclorama sets plus four real
-  tabletop sets. Edge props are category-specific, bounded to the crop area,
-  and excluded from the central subject region. Competitor images are research
-  references only and are never copied into COS or embedded in prompts.
+- Paid v14 pilot outputs are unapproved and remain invalidated by prompt and
+  scene-contract SHA-256 when the pilot specification changes. No v14 asset is
+  reusable or approvable unless those exact hashes match the current pilot.
+- V14 background prompts, foreground scene contracts, and catalog slot
+  metadata must all derive from `EMPTY_SET_STYLE_DIRECTIONS`; they may not
+  reuse the frozen v13 pure-color slot definitions. V11 and v13 remain
+  unchanged.
+- All six v14 slots use a single close-cropped tabletop extending beyond all
+  four frame edges. Their structured fingerprints differ by material family,
+  camera pitch, lens, light direction, and bounded category-specific accent
+  zone. Walls, horizons, table edges, thickness, legs, under-table space,
+  central boards, and second planes are prohibited.
+- Competitor images are research references only and are never copied into COS
+  or embedded in prompts.
 - A background-specific offline gate must reject smooth gradients and
   low-information color blocks before metadata persistence. Human review still
   decides aesthetics, geometry, prohibited objects, and category fit before an
   asset can be approved or multiplied to the 40 x 6 catalog.
+- Catalog approval must receive the exact prompt version explicitly and use it
+  for manifest lookup, prompt hashes, review-sheet keys, approval write-back,
+  and post-write validation. The builder's legacy default is not an approval
+  namespace.
+
+## Structured Menu Drink Choices
+- A selected structured choice group with `role=drink` requires exactly one
+  unbranded cup even when the selected value has no generic drink keyword.
+  Non-drink choice roles do not infer a cup from the group label alone.
 
 ## Product Contract Attestation
 - The public idempotency SHA-256 detects accidental request changes but is not

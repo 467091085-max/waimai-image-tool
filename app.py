@@ -7275,13 +7275,19 @@ def object_storage_background_catalog_manifest(
         ).lower()
         if not catalog_approved:
             review_status = "pending"
+        slot_metadata = background_profiles.background_style_slot_metadata(
+            style_id,
+            prompt_version,
+        )
         entry = {
             "catalogVersion": background_catalog.CATALOG_VERSION,
             "taxonomyVersion": TAXONOMY_VERSION,
             "categoryId": category_id,
             "categoryName": background_catalog.category_label(category_id),
             "styleId": style_id,
-            "styleSlotId": background_catalog.style_slot(style_id).slot_id,
+            "styleSlotId": slot_metadata["styleSlotId"],
+            "styleSlotName": slot_metadata["styleSlotName"],
+            "styleSceneType": slot_metadata["styleSceneType"],
             "promptVersion": prompt_version,
             "promptSha256": prompt_sha256,
             "pipelineVersion": prompt_version,
@@ -7495,6 +7501,10 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
             style_id,
             prompt_version=prompt_version,
         )
+        slot_metadata = background_profiles.background_style_slot_metadata(
+            style_id,
+            prompt_version,
+        )
         entries.append(
             {
                 "catalogVersion": background_catalog.CATALOG_VERSION,
@@ -7504,9 +7514,9 @@ def approved_background_catalog_manifest() -> dict[str, Any]:
                 "categoryId": str(record.get("category_id") or ""),
                 "categoryName": str(record.get("category_name") or ""),
                 "styleId": style_id,
-                "styleSlotId": background_catalog.style_slot(
-                    style_id
-                ).slot_id,
+                "styleSlotId": slot_metadata["styleSlotId"],
+                "styleSlotName": slot_metadata["styleSlotName"],
+                "styleSceneType": slot_metadata["styleSceneType"],
                 "promptVersion": str(record.get("prompt_version") or ""),
                 "promptSha256": hashlib.sha256(
                     prompt.encode("utf-8")
@@ -8748,7 +8758,10 @@ def style_background_prompt_metadata(
         style_id,
         prompt_version=resolved_prompt_version,
     )
-    slot = background_catalog.style_slot(style_id)
+    slot_metadata = background_profiles.background_style_slot_metadata(
+        style_id,
+        resolved_prompt_version,
+    )
     return {
         "category": str(context.get("category") or "复合餐饮"),
         "categoryId": category_id,
@@ -8760,9 +8773,9 @@ def style_background_prompt_metadata(
         "promptVersion": resolved_prompt_version,
         "catalogVersion": background_catalog.CATALOG_VERSION,
         "taxonomyVersion": TAXONOMY_VERSION,
-        "styleSlotId": slot.slot_id,
-        "styleSlotName": slot.name,
-        "styleSceneType": slot.scene_type,
+        "styleSlotId": slot_metadata["styleSlotId"],
+        "styleSlotName": slot_metadata["styleSlotName"],
+        "styleSceneType": slot_metadata["styleSceneType"],
         "promptSha256": hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest(),
@@ -12940,6 +12953,7 @@ def api_background_catalog():
                 }
             )
         manifest = approved_background_catalog_manifest()
+        prompt_version = str(manifest.get("promptVersion") or "")
         styles = []
         records_by_style = manifest.get("_recordsByStyle") or {}
         for index, style_id in enumerate(
@@ -12973,9 +12987,12 @@ def api_background_catalog():
                         "styleId": style_id,
                         "name": BACKGROUND_LABELS[index - 1],
                         "rawName": style_name_for(style_id),
-                        "slot": background_catalog.style_slot(
-                            style_id
-                        ).public_payload(),
+                        "slot": (
+                            background_profiles.background_style_slot_public_payload(
+                                style_id,
+                                prompt_version,
+                            )
+                        ),
                         "sample": sample,
                     }
                 )

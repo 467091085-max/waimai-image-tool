@@ -8,6 +8,7 @@ from typing import Any
 import background_catalog
 from background_design_contracts import (
     CATEGORY_BACKGROUND_DIRECTIONS,
+    EMPTY_SET_STYLE_DIRECTIONS,
     STYLE_BACKGROUND_DIRECTIONS,
 )
 import prompt_compiler
@@ -33,6 +34,45 @@ EMPTY_SET_BACKGROUND_PROMPT_VERSION = (
 )
 MIXED_CATEGORY_ID = "mixed"
 STYLE_IDS = background_catalog.STYLE_IDS
+
+
+def background_style_slot_metadata(
+    style_id: str,
+    prompt_version: Any,
+) -> dict[str, str]:
+    legacy_slot = background_catalog.style_slot(style_id)
+    if str(prompt_version or "").strip() == EMPTY_SET_BACKGROUND_PROMPT_VERSION:
+        direction = EMPTY_SET_STYLE_DIRECTIONS[style_id]
+        return {
+            "styleId": legacy_slot.style_id,
+            "styleSlotId": direction.slot_id,
+            "styleSlotName": direction.name,
+            "styleSceneType": direction.scene_type,
+        }
+    return {
+        "styleId": legacy_slot.style_id,
+        "styleSlotId": legacy_slot.slot_id,
+        "styleSlotName": legacy_slot.name,
+        "styleSceneType": legacy_slot.scene_type,
+    }
+
+
+def background_style_slot_public_payload(
+    style_id: str,
+    prompt_version: Any,
+) -> dict[str, str]:
+    metadata = background_style_slot_metadata(style_id, prompt_version)
+    legacy_slot = background_catalog.style_slot(style_id)
+    prompt = legacy_slot.prompt
+    if str(prompt_version or "").strip() == EMPTY_SET_BACKGROUND_PROMPT_VERSION:
+        prompt = EMPTY_SET_STYLE_DIRECTIONS[style_id].aesthetic
+    return {
+        "style_id": metadata["styleId"],
+        "slot_id": metadata["styleSlotId"],
+        "name": metadata["styleSlotName"],
+        "scene_type": metadata["styleSceneType"],
+        "prompt": prompt,
+    }
 
 PURE_BACKGROUND_NEGATIVE_PROMPT = (
     "食物，菜品，饮料，水果，蔬菜，香草，食材，原料，植物，叶片，花，"
@@ -440,7 +480,7 @@ CATEGORY_EDGE_ACCENTS = {
     "coffee_cocoa": "森林绿细麻餐巾边角与短柄哑光银勺",
     "bottled_drinks": "金属灰织物边角与透明亚克力色片",
     "fresh_drinks": "淡橙细麻布边角与透明亚克力色片",
-    "dessert_bakery": "浅莓粉细麻餐巾边角与哑光甜品叉",
+    "dessert_bakery": "浅莓粉细麻餐巾边角与哑光小叉",
     "fried_snacks": "暖红格纹布边角与原色防油纸",
     "fruit": "浅蓝灰细麻布边角与透明亚克力色片",
 }
@@ -456,85 +496,65 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
             f"style-background.v14 requires a classified category: {category_id}"
         )
     try:
-        _legacy_style_name, _legacy_surface_field, _legacy_geometry = (
-            STYLE_BACKGROUND_DIRECTIONS[style_id]
-        )
+        style_direction = EMPTY_SET_STYLE_DIRECTIONS[style_id]
     except KeyError as exc:
         raise ValueError(f"unknown background style slot: {style_id}") from exc
 
     direction = CATEGORY_BACKGROUND_DIRECTIONS[normalized_category]
-    style_name, surface_field = {
-        "style-1": ("明亮晨光浅石桌景", "light_surface"),
-        "style-2": ("深色戏剧侧光桌景", "premium_surface"),
-        "style-3": ("清透俯拍浅色桌景", "light_surface"),
-        "style-4": ("温润木质用餐桌景", "warm_surface"),
-        "style-5": ("现代品类色编辑桌景", "contemporary_surface"),
-        "style-6": ("高级暗调餐厅桌景", "premium_surface"),
-    }[style_id]
     surface = provider_safe_empty_set_material(
-        str(getattr(direction, surface_field))
+        str(getattr(direction, style_direction.surface_field))
     )
     primary_color = provider_safe_empty_set_material(direction.primary_color)
     contrast_color = provider_safe_empty_set_material(direction.contrast_color)
-    contract = prompt_compiler.scene_contract_for(
-        style_id,
-        normalized_category,
-        prompt_version=EMPTY_SET_BACKGROUND_PROMPT_VERSION,
-    )
     category_index = tuple(CATEGORY_BACKGROUND_DIRECTIONS).index(
         normalized_category
     )
     highlight_x = 24 + (category_index % 8) * 7
     highlight_y = 20 + (category_index // 8) * 8
     accents = CATEGORY_EDGE_ACCENTS[normalized_category]
-    material_contract, aesthetic, peripheral_contract = {
+    material_contract, peripheral_contract = {
         "style-1": (
-            f"一张真正平整的{surface}餐桌覆盖下方约74%，暖中性哑光墙面只在上方远处出现；"
-            "桌面从左、右、下三边延伸画外，全部处于同一高度，细石纹连续穿过中央",
-            "上午自然窗光从左侧掠过桌面，明亮通透，有柔和斜影和真实局部对比",
-            f"只允许{accents}在最上方一角裁切露出，合计不超过7%",
+            f"镜头近距离只拍一整块真正平整的{surface}桌面，桌面从四边延伸画外；"
+            "画面里没有墙面、地平线、桌沿、厚度、桌腿或桌下空间，细石纹连续穿过中央",
+            f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过7%",
         ),
         "style-2": (
-            f"一张真正平整的{surface}餐桌覆盖下方约76%，深中性哑光墙面只在上方远处出现；"
-            "桌面从左、右、下三边延伸画外，全部处于同一高度，暗部纹理仍清楚",
-            f"右上侧顶柔光形成高级明暗，{contrast_color}只作为很弱的边缘反射，绝不整幅染色",
-            f"只允许{accents}在最左或最右边缘裁切露出，合计不超过7%",
+            f"镜头近距离只拍一整块真正平整的{surface}桌面，桌面从四边延伸画外；"
+            "画面里没有墙面、地平线、桌沿、厚度、桌腿或桌下空间，暗部纹理仍清楚",
+            f"只允许{accents}在{style_direction.accent_zone}露出；{contrast_color}只作为很弱的边缘反射，绝不整幅染色",
         ),
         "style-3": (
             f"一整块{surface}桌面从四边延伸画外，接近俯拍，纹理连续穿过中央",
-            "清透晨间编辑摄影，柔和窗影和天然细纹可见但不过曝",
-            f"只允许{accents}在对角两个边缘裁切露出，合计不超过9%",
+            f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过9%",
         ),
         "style-4": (
             f"一整块{surface}餐桌从四边延伸画外，木纹方向统一，中央没有拼接",
-            "温润真实的用餐桌摄影，自然家庭窗光，暖而不发黄",
-            f"只允许{accents}在上方或侧边裁切露出，合计不超过9%",
+            f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过9%",
         ),
         "style-5": (
             f"一整块{surface}桌面从四边延伸画外，以{primary_color}为克制辅助色，中央材质连续",
-            "现代餐饮编辑摄影，低饱和双材质层次和非对称边缘布景，干净利落",
-            f"只允许{accents}在一上角和相反侧边裁切露出，合计不超过9%",
+            f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过9%",
         ),
         "style-6": (
-            f"一整块{surface}餐桌从左、右、下三边延伸画外，上方远处仅有深中性环境；"
-            "暗部纹理连续清楚，桌面全部处于同一高度",
-            "高级晚餐厅编辑摄影，暖色轮廓光配中性填充，不做黑洞或廉价暗角",
-            f"只允许{accents}在两侧边缘裁切露出，合计不超过8%",
+            f"镜头近距离只拍一整块{surface}桌面，桌面从四边延伸画外；"
+            "没有墙面、地平线、桌沿、厚度、桌腿或桌下空间，暗部纹理连续清楚",
+            f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过8%",
         ),
     }[style_id]
     return (
         "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE. "
-        "NO PLINTH, NO RISER, NO BOARD, NO TRAY, NO CENTER OBJECT. "
+        "NO PLINTH, NO RISER, NO BOARD, NO TRAY, NO CENTER OBJECT, "
+        "NO TABLE EDGE, NO TABLE LEGS, NO WALL, NO HORIZON. "
         "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY BACKPLATE. "
         "原创高品质外卖商业摄影布景底板，4:3横图，1024x768；"
         "当前只拍摄空桌布景，不生成菜品、容器或包装。"
-        f"本槽位为{style_name}：{material_contract}。"
-        f"视觉质感为{aesthetic}；{peripheral_contract}。"
-        f"主光方向为{contract.lighting.direction}，使用大型柔光源，"
+        f"本槽位为{style_direction.name}：{material_contract}。"
+        f"视觉质感为{style_direction.aesthetic}；{peripheral_contract}。"
+        f"主光方向为{style_direction.light_direction}，使用大型柔光源，"
         f"主亮区中心约在画面宽度{highlight_x}%、高度{highlight_y}%；"
         "必须看得见真实材质颗粒、轻微表面起伏和自然局部对比。"
-        f"相机从水平面上方{contract.camera.pitch_degrees}度俯拍，约"
-        f"{contract.camera.lens_mm}mm标准镜头，承托面透视必须与该俯拍角度一致。"
+        f"相机从水平面上方{style_direction.camera_pitch(normalized_category)}度俯拍，约"
+        f"{style_direction.lens_mm}mm标准镜头，承托面透视必须与该俯拍角度一致。"
         "中央约68%必须是同一张平桌面，完整、清楚、连续；"
         "禁止中央石板、展示台、底座、台阶、第二层台面、矩形垫板、砧板、边框、"
         "画中画、悬浮物、文字、数字、品牌、logo、水印、人物或手。"

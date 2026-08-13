@@ -9,6 +9,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 from background_design_contracts import (
     CATEGORY_BACKGROUND_DIRECTIONS,
+    EMPTY_SET_STYLE_DIRECTIONS,
     STYLE_BACKGROUND_DIRECTIONS,
     TOP_DOWN_PRODUCT_CATEGORIES,
     UPRIGHT_PRODUCT_CATEGORIES,
@@ -16,7 +17,7 @@ from background_design_contracts import (
 from matching_engine import normalize_dish
 
 
-COMPILER_VERSION = "product-image-compiler.v3"
+COMPILER_VERSION = "product-image-compiler.v4"
 SCENE_CONTRACT_VERSION = "background-scene-contract.v2"
 LEGACY_BACKGROUND_PROMPT_VERSION = "style-background.v11"
 CURRENT_BACKGROUND_PROMPT_VERSION = "style-background.v12"
@@ -124,6 +125,9 @@ class DishSpec:
     visual_name: str
     kind: str
     components: tuple[str, ...]
+    required_components: tuple[str, ...]
+    choice_groups: tuple[Mapping[str, Any], ...]
+    flavor_modifiers: tuple[str, ...]
     selected_choices: tuple[str, ...]
     rejected_choices: tuple[str, ...]
     container: str
@@ -136,6 +140,9 @@ class DishSpec:
             "visualName": self.visual_name,
             "kind": self.kind,
             "components": list(self.components),
+            "requiredComponents": list(self.required_components),
+            "choiceGroups": [dict(group) for group in self.choice_groups],
+            "flavorModifiers": list(self.flavor_modifiers),
             "selectedChoices": list(self.selected_choices),
             "rejectedChoices": list(self.rejected_choices),
             "container": self.container,
@@ -261,13 +268,28 @@ _LEGACY_SCENE_TEMPLATES: dict[str, _SceneTemplate] = {
 def _benchmarked_scene_template(
     style_id: str,
     category_id: str,
+    *,
+    prompt_version: str,
 ) -> _SceneTemplate:
     try:
         base = _SCENE_TEMPLATES[style_id]
         direction = CATEGORY_BACKGROUND_DIRECTIONS[category_id]
-        style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
-            style_id
-        ]
+        empty_style = (
+            EMPTY_SET_STYLE_DIRECTIONS[style_id]
+            if prompt_version == EMPTY_SET_BACKGROUND_PROMPT_VERSION
+            else None
+        )
+        if empty_style is None:
+            style_name, surface_field, geometry = STYLE_BACKGROUND_DIRECTIONS[
+                style_id
+            ]
+        else:
+            style_name = empty_style.name
+            surface_field = empty_style.surface_field
+            geometry = (
+                "单一平整桌面从四边延伸画外，无墙面、地平线、桌沿、"
+                "厚度、桌腿、桌下空间或第二层平面"
+            )
     except KeyError as exc:
         raise PromptCompilationError(
             f"unknown benchmarked background contract: {category_id}/{style_id}"
@@ -320,19 +342,31 @@ def _benchmarked_scene_template(
         )
 
     surface = str(getattr(direction, surface_field))
+    if empty_style is not None:
+        pitch = empty_style.camera_pitch(category_id)
+        scene_type = empty_style.scene_type
+        lens_mm = empty_style.lens_mm
+        light_direction = empty_style.light_direction
+        color_temperature_k = empty_style.color_temperature_k
+    else:
+        scene_type = base.scene_type
+        lens_mm = base.camera.lens_mm
+        light_direction = base.lighting.direction
+        color_temperature_k = base.lighting.color_temperature_k
     return replace(
         base,
         style_name=style_name,
+        scene_type=scene_type,
         scene_description=(
             f"原创{style_name}，{geometry}，中央承托区连续、真实、没有舞台感"
         ),
         surface_description=surface,
-        camera=CameraSpec(pitch, base.camera.lens_mm),
+        camera=CameraSpec(pitch, lens_mm),
         support=support,
         lighting=LightingSpec(
-            base.lighting.direction,
+            light_direction,
             direction.lighting_mood,
-            base.lighting.color_temperature_k,
+            color_temperature_k,
         ),
         placement=placement,
     )
@@ -380,6 +414,7 @@ def scene_contract_for(
             str(style_id).strip(): _benchmarked_scene_template(
                 str(style_id).strip(),
                 str(category_id or "unknown").strip() or "unknown",
+                prompt_version=resolved_prompt_version,
             )
         }
     else:
@@ -511,20 +546,133 @@ def generation_components(
     return values
 
 
+def _structured_choice_groups(row: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    raw_groups = row.get("choiceGroups")
+    if not isinstance(raw_groups, Sequence) or isinstance(raw_groups, (str, bytes)):
+        return ()
+    groups: list[dict[str, Any]] = []
+    for raw_group in raw_groups:
+        if not isinstance(raw_group, Mapping):
+            continue
+        options = tuple(
+            dict.fromkeys(
+                str(option).strip()
+                for option in raw_group.get("options") or []
+                if str(option).strip()
+            )
+        )
+        if not options:
+            continue
+        selected = str(raw_group.get("selected") or options[0]).strip()
+        selected = next(
+            (
+                option
+                for option in options
+                if normalize_dish(option) == normalize_dish(selected)
+            ),
+            options[0],
+        )
+        groups.append(
+            {
+                "name": str(raw_group.get("name") or "自选项").strip(),
+                "role": str(raw_group.get("role") or "side").strip(),
+                "choose": 1,
+                "options": list(options),
+                "selected": selected,
+            }
+        )
+    return tuple(groups)
+
+
+def _deduped_values(values: Sequence[str]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        value = str(raw_value).strip()
+        norm = normalize_dish(value)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(value)
+    return tuple(out)
+
+
+def _is_drink_component(value: str) -> bool:
+    normalized = normalize_dish(value)
+    return any(
+        term in normalized
+        for term in (
+            "饮品",
+            "饮料",
+            "奶茶",
+            "果汁",
+            "咖啡",
+            "可乐",
+            "雪碧",
+            "冰红茶",
+            "绿茶",
+            "矿泉水",
+            "纯净水",
+            "豆浆",
+            "酸梅汤",
+        )
+    )
+
+
 def analyze_dish(row: Mapping[str, Any], menu_taxonomy_id: str) -> DishSpec:
     raw_name = str(row.get("name") or "外卖菜品").strip()
-    resolved_name, choices = resolve_explicit_choices(raw_name)
-    components = tuple(generation_components(row, choices))
-    selected_choices = tuple(choice[0] for choice in choices)
-    rejected_choices = tuple(
-        option
-        for _selected, options in choices
-        for option in options[1:]
+    resolved_name, legacy_choices = resolve_explicit_choices(raw_name)
+    choice_groups = _structured_choice_groups(row)
+    if choice_groups:
+        selected_choices = _deduped_values(
+            tuple(str(group["selected"]) for group in choice_groups)
+        )
+        selected_norms = {normalize_dish(value) for value in selected_choices}
+        rejected_choices = _deduped_values(
+            tuple(
+                str(option)
+                for group in choice_groups
+                for option in group["options"]
+                if normalize_dish(option) not in selected_norms
+            )
+        )
+    else:
+        selected_choices = _deduped_values(
+            tuple(choice[0] for choice in legacy_choices)
+        )
+        selected_norms = {normalize_dish(value) for value in selected_choices}
+        rejected_choices = _deduped_values(
+            tuple(
+                option
+                for _selected, options in legacy_choices
+                for option in options[1:]
+                if normalize_dish(option) not in selected_norms
+            )
+        )
+    raw_required = row.get("requiredComponents")
+    if isinstance(raw_required, Sequence) and not isinstance(raw_required, (str, bytes)):
+        required_components = _deduped_values(tuple(str(value) for value in raw_required))
+    else:
+        required_components = _deduped_values(
+            tuple(generation_components(row, legacy_choices))
+        )
+    components = _deduped_values((*required_components, *selected_choices))
+    raw_flavors = row.get("flavorModifiers")
+    flavor_modifiers = (
+        _deduped_values(tuple(str(value) for value in raw_flavors))
+        if isinstance(raw_flavors, Sequence) and not isinstance(raw_flavors, (str, bytes))
+        else ()
     )
-    visual_name = _MARKETING_TERMS_RE.sub("", resolved_name)
-    visual_name = re.sub(r"\s+", " ", visual_name).strip(" -_｜|") or resolved_name
     kind = str(row.get("kind") or "菜品").strip() or "菜品"
-    semantic_source = " ".join((resolved_name, *components))
+    visual_source = resolved_name
+    if choice_groups and components:
+        visual_source = "+".join(components)
+        if kind == "套餐/组合":
+            visual_source += "套餐"
+    visual_name = _MARKETING_TERMS_RE.sub("", visual_source)
+    visual_name = re.sub(r"\s+", " ", visual_name).strip(" -_｜|") or resolved_name
+    semantic_identity = visual_source if choice_groups else resolved_name
+    semantic_source = " ".join((semantic_identity, *components))
     requirements: list[str] = []
     if menu_taxonomy_id in {"mixed_rice", "topped_rice"} or any(
         word in semantic_source for word in ("拌饭", "盖饭", "盖码饭", "烤肉饭")
@@ -536,7 +684,7 @@ def analyze_dish(row: Mapping[str, Any], menu_taxonomy_id: str) -> DishSpec:
         requirements.append("烤肉画成切片中式蜜汁猪肉")
     if "烤排" in semantic_source:
         requirements.append(
-            "烤排画成全熟浅棕色中式黑椒无骨猪排，切成6片整齐排列，切面没有粉红色"
+            "烤排画成全熟浅棕色中式黑椒无骨猪肉排，切成6片整齐排列，切面没有粉红色"
         )
     if "鸡排" in semantic_source:
         requirements.append("鸡排画成全熟金黄色完整鸡排")
@@ -554,7 +702,14 @@ def analyze_dish(row: Mapping[str, Any], menu_taxonomy_id: str) -> DishSpec:
         )
     elif re.search(r"(?:[二三四五六七八九十\d]+选一|任选|自选|可选)", semantic_source):
         requirements.append("标注选一、任选或自选的配菜只出现其中一种")
-    if "饮品自选" in semantic_source:
+    selected_drink_group = any(
+        str(group.get("role") or "").strip().lower() == "drink"
+        and str(group.get("selected") or "").strip()
+        for group in choice_groups
+    )
+    if selected_drink_group or any(
+        _is_drink_component(component) for component in components
+    ):
         requirements.append("饮品只放一杯，杯身纯色无品牌无文字")
     if kind == "套餐/组合":
         requirements.append("非备选的套餐核心食材必须分别可辨，不得漏项或替换")
@@ -564,6 +719,9 @@ def analyze_dish(row: Mapping[str, Any], menu_taxonomy_id: str) -> DishSpec:
         visual_name=visual_name,
         kind=kind,
         components=components,
+        required_components=required_components,
+        choice_groups=choice_groups,
+        flavor_modifiers=flavor_modifiers,
         selected_choices=selected_choices,
         rejected_choices=rejected_choices,
         container=_infer_container(semantic_source, menu_taxonomy_id, kind),
@@ -769,14 +927,14 @@ def _prompt_audit(
 
 
 def _infer_container(semantic_source: str, category_id: str, kind: str) -> str:
+    if kind == "套餐/组合":
+        return "一个水平放置的宽大低矮纯色分格餐盘"
     if any(word in semantic_source for word in ("奶茶", "果汁", "咖啡", "可乐", "饮品")):
         return "一只低矮纯色无字饮料杯"
     if any(word in semantic_source for word in ("汤", "粥", "面", "粉", "馄饨", "饺子")):
         return "一只宽口低矮陶瓷碗"
     if category_id in {"pizza"} or "披萨" in semantic_source:
         return "一个水平放置的完整圆形餐盘"
-    if kind == "套餐/组合":
-        return "一个水平放置的宽大低矮纯色分格餐盘"
     if category_id in {"mixed_rice", "topped_rice", "fried_rice"} or "饭" in semantic_source:
         return "一个水平放置的宽口浅圆陶瓷餐盘"
     return "一个水平放置的低矮纯色餐盘"

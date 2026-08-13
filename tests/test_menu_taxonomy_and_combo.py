@@ -7,6 +7,7 @@ from matching_engine import (
     TAXONOMY_VERSION,
     classify_kind,
     classify_taxonomy,
+    extract_menu_semantics,
     match_menu_to_library,
     normalize_dish,
     similarity,
@@ -47,6 +48,24 @@ class MenuTaxonomyTests(unittest.TestCase):
         self.assertEqual(normalize_dish("宫爆鸡丁"), normalize_dish("宫保鸡丁"))
         self.assertEqual(normalize_dish("肉沫茄子"), normalize_dish("肉末茄子"))
 
+    def test_combo_size_markers_survive_normalization(self) -> None:
+        normalized = {
+            normalize_dish("双拼饭套餐"),
+            normalize_dish("三拼饭套餐"),
+            normalize_dish("四拼饭套餐"),
+            normalize_dish("双人套餐"),
+            normalize_dish("三人套餐"),
+            normalize_dish("四人套餐"),
+        }
+
+        self.assertEqual(len(normalized), 6)
+        self.assertIn("2拼饭", normalized)
+        self.assertIn("3拼饭", normalized)
+        self.assertIn("4拼饭", normalized)
+        self.assertIn("2人餐", normalized)
+        self.assertIn("3人餐", normalized)
+        self.assertIn("4人餐", normalized)
+
     def test_staple_shape_prevents_rice_and_noodle_category_collision(self) -> None:
         self.assertEqual(classify_taxonomy("番茄牛腩饭"), "topped_rice")
         self.assertEqual(classify_taxonomy("番茄牛腩面"), "wheat_noodles")
@@ -77,13 +96,71 @@ class ComboRecognitionTests(unittest.TestCase):
                 self.assertEqual(parser_detect_kind(name), "套餐/组合")
                 self.assertEqual(parser_split_components(name, ""), expected_components)
 
+        self.assertEqual(
+            split_components("鸡腿堡套餐", "套餐内容#薯条#可乐##"),
+            ["鸡腿堡", "薯条", "可乐"],
+        )
+
     def test_bracketed_combo_ingredients_are_not_dropped_or_malformed(self) -> None:
         name = "豪华三拼【烤肉+烤排+鸡排】+煎蛋/热狗肠/饮品三选一"
-        expected = ["烤肉", "烤排", "鸡排", "煎蛋", "热狗肠", "饮品三选一"]
+        expected = ["烤肉", "烤排", "鸡排"]
 
         self.assertEqual(classify_kind(name), "套餐/组合")
         self.assertEqual(split_components(name), expected)
         self.assertEqual(parser_split_components(name, ""), expected)
+
+        semantics = extract_menu_semantics(name)
+        self.assertEqual(semantics["requiredComponents"], expected)
+        self.assertEqual(semantics["choiceGroups"][0]["options"], ["煎蛋", "热狗肠", "饮品"])
+        self.assertEqual(semantics["choiceGroups"][0]["selected"], "煎蛋")
+
+    def test_real_meizizi_optional_sides_do_not_hijack_rice_taxonomy(self) -> None:
+        cases = {
+            "超值爆款招牌烤肉饭+煎蛋/热狗肠/饮品三选一": "mixed_rice",
+            "每日专享招牌烤排饭+煎蛋/热狗肠/饮品三选一": "topped_rice",
+            "金黄鸡排饭+煎蛋/热狗肠/饮品三选一": "topped_rice",
+            "元气腿排饭+煎蛋/热狗肠/饮品三选一": "topped_rice",
+        }
+
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(classify_taxonomy(name), expected)
+                self.assertNotEqual(classify_taxonomy(name), "burger_hotdog")
+
+    def test_real_meizizi_single_add_ons_use_specific_leaf_categories(self) -> None:
+        cases = {
+            "点亮右上0.01元热狗肠1根（单独打包）": "fried_snacks",
+            "人气爆款 1.58元现炸香嫩小鸡腿1个（单独打包": "fried_chicken",
+            "【加】烤排100g（单独打包）【单点不送】": "barbecue",
+            "【加】腿排1片（单独打包）": "fried_chicken",
+            "康师傅冰糖雪梨盒装": "bottled_drinks",
+            "康师傅茉莉蜜茶盒装": "bottled_drinks",
+            "随机饮品": "bottled_drinks",
+            "川香鸡柳1串（加饭里）": "fried_snacks",
+            "骨肉相连1串（加饭里）": "fried_snacks",
+        }
+
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(classify_taxonomy(name), expected)
+
+    def test_real_meizizi_attributes_separate_choices_and_flavors(self) -> None:
+        name = "豪华三拼【烤肉+烤排+鸡排】+煎蛋/热狗肠/饮品三选一"
+        attrs = (
+            "口味自选#人气香辣（粉）#蜜汁味（酱）#甜辣味（酱）##"
+            "赠品三选一#热狗肠#煎蛋#随机饮品##"
+        )
+
+        semantics = extract_menu_semantics(name, attrs, "|进店|必点")
+
+        self.assertEqual(semantics["requiredComponents"], ["烤肉", "烤排", "鸡排"])
+        self.assertEqual(semantics["choiceGroups"][0]["selected"], "煎蛋")
+        self.assertEqual(
+            semantics["choiceGroups"][0]["options"],
+            ["热狗肠", "煎蛋", "随机饮品"],
+        )
+        self.assertEqual(semantics["flavorModifiers"], ["人气香辣", "蜜汁味", "甜辣味"])
+        self.assertNotIn("品", semantics["requiredComponents"])
 
     def test_unresolved_multi_item_markers_still_force_combo_generation(self) -> None:
         for name in ("人气海陆空三拼烤时蔬健康碗", "招牌全家福", "家庭分享组合"):

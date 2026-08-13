@@ -44,13 +44,19 @@ def normalize_prompt_version(value: Any) -> str:
     return version
 
 
-def background_prompt(category_id: str, style_id: str) -> str:
-    if PROMPT_VERSION == DEFAULT_PROMPT_VERSION:
+def background_prompt(
+    category_id: str,
+    style_id: str,
+    *,
+    prompt_version: str | None = None,
+) -> str:
+    version = normalize_prompt_version(prompt_version or PROMPT_VERSION)
+    if version == DEFAULT_PROMPT_VERSION:
         return background_profiles.pure_background_prompt(category_id, style_id)
     return background_profiles.pure_background_prompt(
         category_id,
         style_id,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=version,
     )
 
 
@@ -140,11 +146,14 @@ def reusable_local_entry(
 
 def remote_category_manifest_document(
     category_id: str,
+    *,
+    prompt_version: str | None = None,
 ) -> dict[str, Any] | None:
     category = background_catalog.normalize_category_id(category_id)
+    version = normalize_prompt_version(prompt_version or PROMPT_VERSION)
     key = background_catalog.catalog_manifest_key(
         category,
-        PROMPT_VERSION,
+        version,
         tenant_id=app_module.product_shared_asset_tenant_id(),
     )
     storage = object_storage_service.get_object_storage_service()
@@ -165,13 +174,18 @@ def reusable_remote_category_entries(
     category_id: str,
     *,
     replace_style_ids: set[str] | frozenset[str] = frozenset(),
+    prompt_version: str | None = None,
 ) -> list[dict[str, Any]] | None:
     category = background_catalog.normalize_category_id(category_id)
+    version = normalize_prompt_version(prompt_version or PROMPT_VERSION)
     replacement_styles = {
         background_catalog.style_slot(style_id).style_id
         for style_id in replace_style_ids
     }
-    document = remote_category_manifest_document(category)
+    document = remote_category_manifest_document(
+        category,
+        prompt_version=version,
+    )
     if document is None:
         return None
     expected_document = {
@@ -179,7 +193,7 @@ def reusable_remote_category_entries(
         "catalogVersion": background_catalog.CATALOG_VERSION,
         "taxonomyVersion": app_module.TAXONOMY_VERSION,
         "categoryId": category,
-        "promptVersion": PROMPT_VERSION,
+        "promptVersion": version,
     }
     if any(
         document.get(key) != value
@@ -208,7 +222,11 @@ def reusable_remote_category_entries(
     entries: list[dict[str, Any]] = []
     for style_id in background_catalog.STYLE_IDS:
         raw_asset = by_style[style_id]
-        prompt = background_prompt(category, style_id)
+        prompt = background_prompt(
+            category,
+            style_id,
+            prompt_version=version,
+        )
         current_prompt_sha256 = hashlib.sha256(
             prompt.encode("utf-8")
         ).hexdigest()
@@ -231,7 +249,7 @@ def reusable_remote_category_entries(
             expected_key = background_catalog.catalog_object_key(
                 category_id=category,
                 style_id=style_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=version,
                 prompt_sha256=prompt_sha256,
                 asset_sha256=asset_sha256,
                 suffix=Path(object_key).suffix,
@@ -244,7 +262,7 @@ def reusable_remote_category_entries(
             "taxonomyVersion": app_module.TAXONOMY_VERSION,
             "categoryId": category,
             "styleId": style_id,
-            "promptVersion": PROMPT_VERSION,
+            "promptVersion": version,
             "promptSha256": prompt_sha256,
             "objectKey": expected_key,
             "reviewStatus": review_status,
@@ -420,7 +438,10 @@ def generate_entry(
 
     quality_report = app_module.require_generated_background_quality(image_path)
     fingerprint = app_module.image_file_fingerprint(image_path)
-    slot = background_catalog.style_slot(style_id)
+    slot_metadata = background_profiles.background_style_slot_metadata(
+        style_id,
+        PROMPT_VERSION,
+    )
     scene_contract = prompt_compiler.scene_contract_for(
         style_id,
         category_id,
@@ -443,9 +464,9 @@ def generate_entry(
         "categoryId": category_id,
         "categoryName": background_catalog.category_label(category_id),
         "styleId": style_id,
-        "styleSlotId": slot.slot_id,
-        "styleSlotName": slot.name,
-        "styleSceneType": slot.scene_type,
+        "styleSlotId": slot_metadata["styleSlotId"],
+        "styleSlotName": slot_metadata["styleSlotName"],
+        "styleSceneType": slot_metadata["styleSceneType"],
         "promptVersion": PROMPT_VERSION,
         "promptSha256": prompt_sha256,
         "provider": generation_evidence["generationProvider"],
@@ -690,8 +711,10 @@ def upload_category_review_sheet(
     entries: list[dict[str, Any]],
     *,
     category_id: str,
+    prompt_version: str | None = None,
 ) -> dict[str, Any]:
     category = background_catalog.normalize_category_id(category_id)
+    version = normalize_prompt_version(prompt_version or PROMPT_VERSION)
     by_style = {
         str(entry.get("styleId") or ""): entry
         for entry in entries
@@ -732,10 +755,13 @@ def upload_category_review_sheet(
             (x, y + image_height, x + tile_width, y + image_height + label_height),
             fill=(24, 24, 24),
         )
-        slot = background_catalog.style_slot(style_id)
+        slot_metadata = background_profiles.background_style_slot_metadata(
+            style_id,
+            version,
+        )
         draw.text(
             (x + 10, y + image_height + 7),
-            f"{style_id}  {slot.slot_id}",
+            f"{style_id}  {slot_metadata['styleSlotId']}",
             fill=(255, 255, 255),
         )
     output = BytesIO()
@@ -744,7 +770,7 @@ def upload_category_review_sheet(
     digest = hashlib.sha256(payload).hexdigest()
     manifest_key = background_catalog.catalog_manifest_key(
         category,
-        PROMPT_VERSION,
+        version,
         tenant_id=app_module.product_shared_asset_tenant_id(),
     )
     object_key = (

@@ -14,6 +14,39 @@ class CategoryBackgroundDirection:
     lighting_mood: str
 
 
+@dataclass(frozen=True)
+class EmptySetStyleDirection:
+    slot_id: str
+    name: str
+    scene_type: str
+    surface_field: str
+    standard_pitch: int
+    upright_pitch: int
+    top_down_pitch: int
+    lens_mm: int
+    light_direction: str
+    color_temperature_k: int
+    accent_zone: str
+    aesthetic: str
+
+    def camera_pitch(self, category_id: str) -> int:
+        if category_id in UPRIGHT_PRODUCT_CATEGORIES:
+            return self.upright_pitch
+        if category_id in TOP_DOWN_PRODUCT_CATEGORIES:
+            return self.top_down_pitch
+        return self.standard_pitch
+
+    def structural_fingerprint(self, category_id: str) -> tuple[object, ...]:
+        return (
+            self.scene_type,
+            self.surface_field,
+            self.camera_pitch(category_id),
+            self.lens_mm,
+            self.light_direction,
+            self.accent_zone,
+        )
+
+
 # These directions describe original art direction, not competitor assets. Brand
 # research lives in AI-Project/research and is never embedded in generation prompts.
 CATEGORY_BACKGROUND_DIRECTIONS = {
@@ -82,9 +115,105 @@ TOP_DOWN_PRODUCT_CATEGORIES = frozenset(
 )
 
 
+# V14 is an unapproved paid pilot. These structured directions are the single
+# source for its background prompt, foreground scene contract, and catalog
+# metadata. Frozen v11/v13 directions above remain unchanged.
+EMPTY_SET_STYLE_DIRECTIONS = {
+    "style-1": EmptySetStyleDirection(
+        "table-bright-window",
+        "明亮晨光浅石桌景",
+        "full-frame-tabletop",
+        "light_surface",
+        42,
+        18,
+        62,
+        55,
+        "左上至右下",
+        5000,
+        "左上角裁切区",
+        "上午自然窗光掠过浅色纹理，明亮通透，带柔和斜影",
+    ),
+    "style-2": EmptySetStyleDirection(
+        "table-dark-side-light",
+        "深色戏剧侧光桌景",
+        "full-frame-tabletop",
+        "premium_surface",
+        36,
+        14,
+        56,
+        50,
+        "右上至左下",
+        4200,
+        "右侧边缘裁切区",
+        "深色纹理配克制侧顶光，暗部清楚并保留食欲感层次",
+    ),
+    "style-3": EmptySetStyleDirection(
+        "table-high-key-overhead",
+        "清透高俯拍浅石桌景",
+        "full-frame-tabletop",
+        "light_surface",
+        54,
+        20,
+        68,
+        52,
+        "正上方稍偏左",
+        5200,
+        "左上与右下对角裁切区",
+        "清透高调的编辑摄影，天然细纹与柔和窗影清楚但不过曝",
+    ),
+    "style-4": EmptySetStyleDirection(
+        "table-warm-wood-dining",
+        "温润木质用餐桌景",
+        "full-frame-tabletop",
+        "warm_surface",
+        46,
+        16,
+        60,
+        50,
+        "左侧至右下",
+        4600,
+        "上方与左侧边缘裁切区",
+        "真实温润的用餐桌摄影，木纹统一，暖而不发黄",
+    ),
+    "style-5": EmptySetStyleDirection(
+        "table-modern-category-color",
+        "现代品类色编辑桌景",
+        "full-frame-tabletop",
+        "contemporary_surface",
+        50,
+        17,
+        64,
+        55,
+        "左上均匀顶光",
+        5000,
+        "右上与左下非对称裁切区",
+        "现代低饱和餐饮编辑摄影，单一材质内有清楚光影层次",
+    ),
+    "style-6": EmptySetStyleDirection(
+        "table-premium-rim-light",
+        "高级暗调餐厅桌景",
+        "full-frame-tabletop",
+        "premium_surface",
+        32,
+        12,
+        52,
+        55,
+        "右后侧至左前",
+        4000,
+        "左右两侧边缘裁切区",
+        "高级晚餐厅编辑摄影，暖轮廓光配中性填充，暗部不是黑洞",
+    ),
+}
+
+if set(EMPTY_SET_STYLE_DIRECTIONS) != set(STYLE_BACKGROUND_DIRECTIONS):
+    raise RuntimeError("empty-set style directions require the same six slots")
+
+
 __all__ = [
     "CATEGORY_BACKGROUND_DIRECTIONS",
     "CategoryBackgroundDirection",
+    "EMPTY_SET_STYLE_DIRECTIONS",
+    "EmptySetStyleDirection",
     "STYLE_BACKGROUND_DIRECTIONS",
     "TOP_DOWN_PRODUCT_CATEGORIES",
     "UPRIGHT_PRODUCT_CATEGORIES",

@@ -51,13 +51,20 @@ def approve_category_manifest(
     expected_sha256: dict[str, str],
     reviewer: str,
     note: str,
+    prompt_version: str | None = None,
 ) -> dict[str, Any]:
     category = background_catalog.normalize_category_id(category_id)
+    version = builder.normalize_prompt_version(
+        prompt_version or builder.PROMPT_VERSION
+    )
     reviewer_id = str(reviewer or "").strip()
     if not REVIEWER_RE.fullmatch(reviewer_id):
         raise ValueError("reviewer must be a stable non-secret identifier")
     review_note = re.sub(r"\s+", " ", str(note or "")).strip()[:500]
-    entries = builder.reusable_remote_category_entries(category)
+    entries = builder.reusable_remote_category_entries(
+        category,
+        prompt_version=version,
+    )
     if entries is None:
         raise RuntimeError("complete current-version remote manifest not found")
     actual_hashes = {
@@ -67,7 +74,10 @@ def approve_category_manifest(
     if actual_hashes != expected_sha256:
         raise RuntimeError("reviewed SHA-256 set does not match remote manifest")
 
-    document = builder.remote_category_manifest_document(category)
+    document = builder.remote_category_manifest_document(
+        category,
+        prompt_version=version,
+    )
     if document is None:
         raise RuntimeError("remote manifest disappeared before approval")
     reviewed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -95,11 +105,12 @@ def approve_category_manifest(
     review_sheet = builder.upload_category_review_sheet(
         entries,
         category_id=category,
+        prompt_version=version,
     )
     approved["reviewSheet"] = review_sheet
     key = background_catalog.catalog_manifest_key(
         category,
-        builder.PROMPT_VERSION,
+        version,
         tenant_id=app_module.product_shared_asset_tenant_id(),
     )
     payload = json.dumps(
@@ -119,7 +130,10 @@ def approve_category_manifest(
     )
     if hashlib.sha256(readback).digest() != hashlib.sha256(payload).digest():
         raise RuntimeError("approved manifest read-back verification failed")
-    verified_entries = builder.reusable_remote_category_entries(category)
+    verified_entries = builder.reusable_remote_category_entries(
+        category,
+        prompt_version=version,
+    )
     if verified_entries is None or any(
         entry.get("reviewStatus") != "approved"
         for entry in verified_entries
@@ -127,7 +141,7 @@ def approve_category_manifest(
         raise RuntimeError("approved manifest failed post-write validation")
     return {
         "categoryId": category,
-        "promptVersion": builder.PROMPT_VERSION,
+        "promptVersion": version,
         "reviewStatus": "approved",
         "reviewedAt": reviewed_at,
         "reviewedBy": reviewer_id,
@@ -145,6 +159,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--category", required=True)
+    parser.add_argument(
+        "--prompt-version",
+        default=builder.DEFAULT_PROMPT_VERSION,
+        help="Exact background prompt namespace to review (for example style-background.v14).",
+    )
     parser.add_argument("--reviewer", required=True)
     parser.add_argument("--expected-sha", action="append", default=[])
     parser.add_argument("--note", default="six-slot visual review passed")
@@ -155,6 +174,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     hashes = expected_hashes(args.expected_sha)
+    try:
+        prompt_version = builder.normalize_prompt_version(args.prompt_version)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if not args.approve_reviewed:
         raise SystemExit("--approve-reviewed is required for the manifest write")
     result = approve_category_manifest(
@@ -162,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_sha256=hashes,
         reviewer=args.reviewer,
         note=args.note,
+        prompt_version=prompt_version,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -15,6 +15,7 @@ from matching_engine import (
     TAXONOMY_VERSION,
     classify_kind as classify_menu_kind,
     classify_taxonomy,
+    extract_menu_semantics,
     normalize_dish,
     split_components as split_menu_components,
     taxonomy_label,
@@ -381,9 +382,35 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             price = _price_number(row[candidate.price_col])
 
         attrs = " ".join(_collect_columns(row, candidate.name_extra_cols + candidate.attribute_cols))
-        components = split_components(name, attrs, category)
-        kind = detect_kind(name, " ".join(components))
+        semantics = extract_menu_semantics(name, attrs, category)
+        required_components = list(semantics["requiredComponents"])
+        selected_components = [
+            str(group.get("selected") or "").strip()
+            for group in semantics["choiceGroups"]
+            if str(group.get("selected") or "").strip()
+        ]
+        components = []
+        component_norms: set[str] = set()
+        for component in (*required_components, *selected_components):
+            component_norm = normalize(component)
+            if not component_norm or component_norm in component_norms:
+                continue
+            component_norms.add(component_norm)
+            components.append(component)
+        kind = detect_kind(name, " ".join(required_components), category)
         taxonomy = TAXONOMY_COMBO if kind == KIND_COMBO else classify_taxonomy(name, "", category)
+        if taxonomy != TAXONOMY_COMBO and taxonomy == "unknown":
+            option_taxonomies = [
+                classify_taxonomy(str(option))
+                for group in semantics["choiceGroups"]
+                for option in group.get("options") or []
+            ]
+            if (
+                option_taxonomies
+                and "unknown" not in option_taxonomies
+                and len(set(option_taxonomies)) == 1
+            ):
+                taxonomy = option_taxonomies[0]
         item = {
             "row": row_index + 1,
             "sheet": candidate.sheet_name,
@@ -396,6 +423,7 @@ def _parse_candidate(df: pd.DataFrame, candidate: TableCandidate) -> list[dict[s
             "taxonomyLabel": taxonomy_label(taxonomy),
             "taxonomyVersion": TAXONOMY_VERSION,
             "components": components,
+            **semantics,
         }
         items.append(item)
     return items

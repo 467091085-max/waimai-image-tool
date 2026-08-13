@@ -100,6 +100,62 @@ class MenuParserTests(unittest.TestCase):
         self.assertEqual({item["sheet"] for item in menu["items"]}, {"菜单"})
         self.assertEqual(menu["items"][0]["price"], "25.88")
 
+    def test_parse_real_meizizi_rows_into_structured_generation_semantics(self) -> None:
+        flavor_and_gift = (
+            "口味自选#人气香辣（粉）#蜜汁味（酱）#甜辣味（酱）##"
+            "赠品三选一#热狗肠#煎蛋#随机饮品##"
+        )
+        three_main_choices = (
+            "食材自选一#烤肉#烤排#鸡排#腿排#猪排##"
+            "食材自选二#烤排#鸡排#腿排#烤肉#猪排##"
+            "食材自选三#鸡排#腿排#烤肉#烤排#猪排##"
+            "口味自选#人气香辣味（粉）#蜜汁味（酱）##"
+            "赠品五选一#热狗肠#煎蛋#骨肉相连#川香鸡柳#随机饮品##"
+        )
+        final_combo_attrs = (
+            "肉自选#烤肉#烤排#鸡排#腿排##"
+            "口味#蜜汁味（酱）#麻辣味（酱）##"
+            "饮品#随机饮品##"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "运营数据_美滋滋烤肉拌饭（成都店）.xlsx"
+            save_workbook(
+                path,
+                {
+                    "调研结果": [
+                        ["一级分类", "二级分类", "菜单名", "规格名", "条码", "活动价", "原价", "月销", "最小购买", "属性", "描述", "折扣"],
+                        ["|进店|必点", "", "每日专享招牌烤排饭+煎蛋／热狗肠／饮品三选一", "", "", "19.98", "32", "10", "1", flavor_and_gift, "", ""],
+                        ["|进店|必点", "", "豪华三拼【烤肉+烤排+鸡排】+煎蛋／热狗肠／饮品三选一", "", "", "21.98", "40", "300", "1", flavor_and_gift, "", ""],
+                        ["|豪气|双拼", "", "【霸气任选】 三拼饭+赠品五选一", "", "", "23.98", "45", "100", "1", three_main_choices, "", ""],
+                        ["美滋滋神枪手", "", "招牌拌饭套餐自选+大鸡腿+饮品自选", "", "", "24", "24", "100", "1", final_combo_attrs, "", ""],
+                    ],
+                },
+            )
+
+            menu = parse_menu(path)
+
+        rice, fixed_combo, configurable_combo, drink_combo = menu["items"]
+        self.assertEqual(rice["taxonomy"], "topped_rice")
+        self.assertEqual(rice["requiredComponents"], ["每日专享招牌烤排饭"])
+        self.assertEqual(rice["choiceGroups"][0]["selected"], "煎蛋")
+        self.assertNotIn("热狗肠", rice["requiredComponents"])
+
+        self.assertEqual(fixed_combo["requiredComponents"], ["烤肉", "烤排", "鸡排"])
+        self.assertEqual(fixed_combo["components"], ["烤肉", "烤排", "鸡排", "煎蛋"])
+        self.assertEqual(fixed_combo["flavorModifiers"], ["人气香辣", "蜜汁味", "甜辣味"])
+
+        self.assertEqual(configurable_combo["requiredComponents"], [])
+        self.assertEqual(
+            [group["selected"] for group in configurable_combo["choiceGroups"]],
+            ["烤肉", "烤排", "鸡排", "热狗肠"],
+        )
+        self.assertEqual(configurable_combo["components"], ["烤肉", "烤排", "鸡排", "热狗肠"])
+        self.assertNotIn("品", configurable_combo["components"])
+
+        self.assertEqual(drink_combo["requiredComponents"], ["招牌拌饭", "大鸡腿"])
+        self.assertEqual(drink_combo["choiceGroups"][-1]["role"], "drink")
+        self.assertEqual(drink_combo["choiceGroups"][-1]["selected"], "随机饮品")
+
     def test_audit_menus_reports_each_valid_workbook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

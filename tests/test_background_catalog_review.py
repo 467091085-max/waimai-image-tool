@@ -20,6 +20,12 @@ def pending_category(
     entries = []
     hashes = {}
     for style_id in builder.background_catalog.STYLE_IDS:
+        slot_metadata = (
+            builder.background_profiles.background_style_slot_metadata(
+                style_id,
+                builder.PROMPT_VERSION,
+            )
+        )
         target = tmp_path / "light_food" / f"{style_id}.jpg"
         save_test_image(target)
         fingerprint = builder.app_module.image_file_fingerprint(target)
@@ -34,9 +40,9 @@ def pending_category(
             "categoryId": "light_food",
             "categoryName": "轻食/沙拉",
             "styleId": style_id,
-            "styleSlotId": builder.background_catalog.style_slot(style_id).slot_id,
-            "styleSlotName": builder.background_catalog.style_slot(style_id).name,
-            "styleSceneType": builder.background_catalog.style_slot(style_id).scene_type,
+            "styleSlotId": slot_metadata["styleSlotId"],
+            "styleSlotName": slot_metadata["styleSlotName"],
+            "styleSceneType": slot_metadata["styleSceneType"],
             "promptVersion": builder.PROMPT_VERSION,
             "promptSha256": prompt_sha,
             "provider": "tencent-hunyuan",
@@ -488,6 +494,82 @@ def test_review_approval_is_hash_locked_and_read_back_verified(
     assert document["reviewedBy"] == "catalog-reviewer"
     assert document["reviewSheet"]["objectKey"] == result["reviewSheetKey"]
     assert storage.exists(result["reviewSheetKey"])
+
+
+def test_v14_review_uses_explicit_prompt_version_while_builder_global_differs(
+    tmp_path: Path,
+) -> None:
+    storage = object_storage_service.ObjectStorageService(tmp_path / "objects")
+    prompt_version = (
+        builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    with (
+        mock.patch.object(
+            builder.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+        mock.patch.object(
+            review.object_storage_service,
+            "get_object_storage_service",
+            return_value=storage,
+        ),
+    ):
+        with mock.patch.object(builder, "PROMPT_VERSION", prompt_version):
+            hashes = pending_category(tmp_path, storage)
+
+        with mock.patch.object(
+            builder,
+            "PROMPT_VERSION",
+            builder.background_profiles.BENCHMARKED_BACKGROUND_PROMPT_VERSION,
+        ):
+            result = review.approve_category_manifest(
+                "light_food",
+                expected_sha256=hashes,
+                reviewer="catalog-reviewer",
+                note="v14 exact previews passed",
+                prompt_version=prompt_version,
+            )
+
+    assert result["promptVersion"] == prompt_version
+    assert f"/{prompt_version}/" in result["manifestKey"]
+
+
+def test_review_cli_passes_explicit_v14_prompt_version_to_approval() -> None:
+    prompt_version = (
+        builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    )
+    expected_hashes = {
+        style_id: chr(ord("a") + index) * 64
+        for index, style_id in enumerate(builder.background_catalog.STYLE_IDS)
+    }
+    argv = [
+        "--category",
+        "light_food",
+        "--reviewer",
+        "catalog-reviewer",
+        "--prompt-version",
+        prompt_version,
+        "--approve-reviewed",
+    ]
+    for style_id, digest in expected_hashes.items():
+        argv.extend(("--expected-sha", f"{style_id}={digest}"))
+
+    with mock.patch.object(
+        review,
+        "approve_category_manifest",
+        return_value={"promptVersion": prompt_version},
+    ) as approve:
+        result = review.main(argv)
+
+    assert result == 0
+    approve.assert_called_once_with(
+        "light_food",
+        expected_sha256=expected_hashes,
+        reviewer="catalog-reviewer",
+        note="six-slot visual review passed",
+        prompt_version=prompt_version,
+    )
 
 
 def test_review_approval_rejects_any_hash_mismatch(tmp_path: Path) -> None:

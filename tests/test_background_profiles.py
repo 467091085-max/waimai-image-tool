@@ -4,7 +4,10 @@ import hashlib
 
 import pytest
 
-from background_design_contracts import CATEGORY_BACKGROUND_DIRECTIONS
+from background_design_contracts import (
+    CATEGORY_BACKGROUND_DIRECTIONS,
+    EMPTY_SET_STYLE_DIRECTIONS,
+)
 import background_profiles
 import prompt_compiler
 from matching_engine import TAXONOMY_RULES
@@ -171,11 +174,13 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
         "酥皮",
         "烘焙",
         "脆壳",
+        "甜品",
     )
 
     for taxonomy_id in sorted(taxonomy_ids):
         category_prompts = []
         for style_id in background_profiles.STYLE_IDS:
+            style_direction = EMPTY_SET_STYLE_DIRECTIONS[style_id]
             prompt = background_profiles.pure_background_prompt(
                 taxonomy_id,
                 style_id,
@@ -185,11 +190,19 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
             )
             category_prompts.append(prompt)
             prompts.add(prompt)
+            scene = prompt_compiler.scene_contract_for(
+                style_id,
+                taxonomy_id,
+                prompt_version=(
+                    background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+                ),
+            )
 
             assert prompt.startswith(
                 "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE"
             )
             assert "NO PLINTH, NO RISER, NO BOARD" in prompt
+            assert "NO TABLE EDGE, NO TABLE LEGS, NO WALL, NO HORIZON" in prompt
             assert "原创高品质外卖商业摄影布景底板" in prompt
             assert "中央约68%必须是同一张平桌面" in prompt
             assert "低信息纯色块" in prompt
@@ -197,11 +210,31 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
             assert "不复制或模仿任何品牌的专有版式" in prompt
             assert not any(term in prompt for term in forbidden_category_leaks)
             assert len(prompt) <= 980
+            assert scene.style_name == style_direction.name
+            assert scene.scene_type == style_direction.scene_type
+            assert scene.camera.pitch_degrees == style_direction.camera_pitch(
+                taxonomy_id
+            )
+            assert scene.camera.lens_mm == style_direction.lens_mm
+            assert scene.lighting.direction == style_direction.light_direction
+            assert (
+                scene.surface_description
+                == getattr(
+                    CATEGORY_BACKGROUND_DIRECTIONS[taxonomy_id],
+                    style_direction.surface_field,
+                )
+            )
+            assert f"上方{scene.camera.pitch_degrees}度俯拍" in prompt
 
         assert len(category_prompts) == 6
         assert len(set(category_prompts)) == 6
 
     assert len(prompts) == 240
+    fingerprints = {
+        direction.structural_fingerprint("mixed_rice")
+        for direction in EMPTY_SET_STYLE_DIRECTIONS.values()
+    }
+    assert len(fingerprints) == 6
     mixed_prompt = background_profiles.pure_background_prompt(
         "mixed_rice",
         "style-4",
@@ -224,6 +257,9 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
     assert "深炭灰矿物台面" in mixed_dark
     assert "低饱和陶土红只作为很弱的边缘反射" in mixed_dark
     assert "绝不整幅染色" in mixed_dark
+    assert "桌面从四边延伸画外" in mixed_light
+    assert "桌面从四边延伸画外" in mixed_dark
+    assert "桌腿或桌下空间" in mixed_dark
     assert (
         background_profiles.background_profile_version(
             background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION

@@ -29,8 +29,8 @@ TAXONOMY_RULES = (
     ("chinese_wraps", "中式卷饼", ("煎饼果子", "肉夹馍", "手抓饼", "鸡蛋灌饼", "鸡蛋饼", "葱花饼", "卷饼", "春饼")),
     ("malatang_maocai", "麻辣烫/冒菜", ("麻辣烫", "冒菜", "麻辣拌", "钵钵鸡")),
     ("hotpot_skewers", "火锅/串串", ("串串香", "小火锅", "涮羊肉", "火锅", "串串", "锅底")),
-    ("barbecue", "烧烤", ("烤羊肉串", "牛肉串", "羊肉串", "烤五花肉", "烤生蚝", "火山石烤肠", "烤肠", "烧烤", "烤串", "炭烤", "烤肉")),
-    ("fried_chicken", "炸鸡", ("韩式炸鸡", "炸鸡桶", "炸鸡", "鸡排", "鸡米花", "鸡块", "翅根")),
+    ("barbecue", "烧烤", ("烤羊肉串", "牛肉串", "羊肉串", "烤五花肉", "烤生蚝", "火山石烤肠", "烤肠", "烤排", "烧烤", "烤串", "炭烤", "烤肉")),
+    ("fried_chicken", "炸鸡", ("韩式炸鸡", "炸鸡桶", "炸鸡", "小鸡腿", "鸡排", "腿排", "鸡米花", "鸡块", "翅根")),
     ("burger_hotdog", "汉堡/热狗", ("芝士汉堡", "鸡腿堡", "牛肉堡", "汉堡", "热狗")),
     ("pizza", "披萨", ("比萨饼", "比萨", "披萨")),
     ("sandwich_bagel", "三明治/贝果", ("帕尼尼", "三明治", "贝果", "吐司")),
@@ -54,10 +54,10 @@ TAXONOMY_RULES = (
     ("steamed_claypot", "蒸菜/煲仔", ("煲仔饭", "蒸排骨", "蒸鸡", "蒸鱼", "蒸菜", "砂锅", "煲仔")),
     ("milk_fruit_tea", "奶茶/果茶", ("杨枝甘露", "水果茶", "柠檬茶", "奶盖茶", "奶茶", "珍珠奶茶", "果茶")),
     ("coffee_cocoa", "咖啡/可可", ("美式咖啡", "拿铁", "卡布奇诺", "摩卡", "咖啡", "可可")),
-    ("bottled_drinks", "瓶装/酒水饮料", ("矿泉水", "纯净水", "冰红茶", "王老吉", "加多宝", "果粒橙", "红牛", "汽水", "啤酒", "白酒", "芬达", "雪碧", "可乐", "瓶装水")),
+    ("bottled_drinks", "瓶装/酒水饮料", ("矿泉水", "纯净水", "冰红茶", "冰糖雪梨", "茉莉蜜茶", "随机饮品", "自选饮品", "王老吉", "加多宝", "果粒橙", "红牛", "汽水", "啤酒", "白酒", "芬达", "雪碧", "可乐", "瓶装水")),
     ("fresh_drinks", "鲜榨饮品", ("鲜榨果汁", "手作果蔬汁", "酸奶昔", "椰子水", "鲜牛乳", "酸梅汤", "豆浆", "柠檬水", "果蔬汁", "果汁")),
     ("dessert_bakery", "甜品/烘焙", ("提拉米苏", "芝士蛋糕", "蛋挞", "红糖凉糕", "凉糕", "冰沙", "面包", "蛋糕", "甜品", "布丁", "酸奶杯")),
-    ("fried_snacks", "炸物小食", ("炸薯条", "炸年糕", "炸春卷", "炸鸡柳", "炸鲜奶", "芝士球", "包浆豆腐", "洋葱圈", "薯条", "小酥肉", "小油条", "油条", "炸物", "小食")),
+    ("fried_snacks", "炸物小食", ("骨肉相连", "川香鸡柳", "热狗肠", "炸薯条", "炸年糕", "炸春卷", "炸鸡柳", "炸鲜奶", "芝士球", "包浆豆腐", "洋葱圈", "薯条", "小酥肉", "小油条", "油条", "炸物", "小食")),
     ("fruit", "水果/果切", ("水果拼盘", "鲜果切", "果切", "水果", "西瓜", "哈密瓜")),
 )
 TAXONOMY_LABELS = {taxonomy_id: label for taxonomy_id, label, _ in TAXONOMY_RULES}
@@ -102,19 +102,20 @@ CANONICAL_REPLACEMENTS = (
     ("农家一碗香", "一碗香"),
 )
 
-FORMAT_WORDS = (
-    "单人餐",
-    "双人餐",
-    "三人餐",
-    "多人餐",
-    "家庭餐",
-    "分享餐",
-    "套餐",
-    "组合",
-    "双拼",
-    "三拼",
-    "四拼",
-    "多拼",
+FORMAT_WORDS = ("套餐", "组合")
+
+PORTION_MARKER_REPLACEMENTS = (
+    ("单人套餐", "1人餐"),
+    ("双人套餐", "2人餐"),
+    ("三人套餐", "3人餐"),
+    ("四人套餐", "4人餐"),
+    ("单人餐", "1人餐"),
+    ("双人餐", "2人餐"),
+    ("三人餐", "3人餐"),
+    ("四人餐", "4人餐"),
+    ("双拼", "2拼"),
+    ("三拼", "3拼"),
+    ("四拼", "4拼"),
 )
 
 COMPONENT_DROP_WORDS = (
@@ -218,6 +219,39 @@ BRACKET_RE = re.compile(r"[【\[]([^】\]]{0,80})[】\]]")
 TOP_LEVEL_PLUS_RE = re.compile(r"[+＋]")
 CHOICE_RE = re.compile(r"(?:\d+|[一二三四五六七八九十]+)选(?:\d+|[一二三四五六七八九十]+)|(?:^|[^A-Za-z])or(?:[^A-Za-z]|$)|或者")
 PEOPLE_MEAL_RE = re.compile(r"(?:\d+|[一二三四五六七八九十单双]+)人[^,，;；]{0,12}餐|\d+\s*件套")
+CHOICE_COUNT_RE = re.compile(r"(?P<count>[二三四五六七八九十\d]+)选(?:一|1)")
+CHOICE_SEPARATOR_RE = re.compile(
+    r"(?:[/／、,，|丨｜]|或者|或|(?i:(?<![A-Za-z])or(?![A-Za-z])))"
+)
+CHOICE_BOUNDARY_RE = re.compile(r"[+＋;；:：【】\[\]()（）]")
+CHOICE_COUNTS = {
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+GENERIC_CHOICE_COMPONENT_RE = re.compile(
+    r"^(?:赠?品|赠品|小吃饮品|饮料?|饮品|食材|肉|配菜)?"
+    r"(?:自选|任选|可选|[二三四五六七八九十\d]+选(?:一|1))$"
+)
+GENERIC_OPTIONAL_COMPONENTS = {"赠品", "品", "小吃饮品"}
+FLAVOR_GROUP_WORDS = ("口味", "酱料", "味型")
+CHOICE_GROUP_WORDS = (
+    "自选",
+    "任选",
+    "可选",
+    "选一",
+    "赠品",
+    "小吃饮品",
+    "饮料类型",
+    "饮品",
+    "食材",
+)
 
 
 def _taxonomy_signal_text(value: Any) -> str:
@@ -233,8 +267,11 @@ def normalize_dish(text: str) -> str:
     text = re.sub(r"[【\[].*?[】\]]", "", text)
     text = re.sub(r"[（(][^）)]{0,40}[）)]", "", text)
     text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|盒|两)", "", text)
+    for source, target in PORTION_MARKER_REPLACEMENTS:
+        text = text.replace(source, target)
+    text = re.sub(r"赠品[二三四五六七八九十\d]+选(?:一|1)", "", text)
     text = re.sub(r"(买一送一|第二份半价|限时|折扣|满减|赠|送)", "", text)
-    text = re.sub(r"(单人|双人|三人|多人|家庭|分享)?套餐", "", text)
+    text = re.sub(r"(多人|家庭|分享)?套餐", "", text)
     for source, target in CANONICAL_REPLACEMENTS:
         text = text.replace(source, target)
     for word in MARKETING_WORDS + FORMAT_WORDS:
@@ -257,7 +294,7 @@ def _clean_component_label(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or ""))
     text = re.sub(r"[【\[].*?[】\]]", "", text)
     text = re.sub(r"[（(].*?[）)]", "", text)
-    text = re.sub(r"^\s*(含有?|内含|配|加|赠送?|另附|包含|搭配)[:：]?\s*", "", text)
+    text = re.sub(r"^\s*(含有?|内含|配|加|赠送|赠(?!品)|另附|包含|搭配)[:：]?\s*", "", text)
     text = re.sub(r"\d+(\.\d+)?\s*(元|ml|毫升|l|克|g|kg|斤|个|只|份|瓶|罐|盒|两)", "", text)
     text = re.sub(r"\s*[xX×*]\s*\d+\s*$", "", text)
     text = re.sub(r"\s+", " ", text).strip(" -_·:：")
@@ -268,7 +305,197 @@ def _clean_component_label(text: str) -> str:
     return text.strip(" -_·:：")
 
 
-def split_components(name: str, attrs: str = "", category: str = "") -> list[str]:
+def _choice_groups_from_name(name: str) -> list[dict[str, Any]]:
+    normalized = unicodedata.normalize("NFKC", str(name or ""))
+    groups: list[dict[str, Any]] = []
+    for count_match in CHOICE_COUNT_RE.finditer(normalized):
+        count_text = count_match.group("count")
+        count = int(count_text) if count_text.isdigit() else CHOICE_COUNTS.get(count_text, 0)
+        if count < 2:
+            continue
+        preceding = normalized[: count_match.start()]
+        boundary = None
+        for candidate in CHOICE_BOUNDARY_RE.finditer(preceding):
+            boundary = candidate
+        segment_start = boundary.end() if boundary is not None else 0
+        segment = normalized[segment_start : count_match.start()]
+        parts = [part.strip() for part in CHOICE_SEPARATOR_RE.split(segment) if part.strip()]
+        if len(parts) < count:
+            continue
+        options = parts[-count:]
+        groups.append(
+            {
+                "name": f"{count_text}选一",
+                "role": "side",
+                "choose": 1,
+                "options": options,
+                "selected": options[0],
+            }
+        )
+    return groups
+
+
+def _clean_attribute_option(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = re.sub(r"[（(](?:酱|粉)[）)]$", "", text).strip()
+    return text
+
+
+def _choice_group_role(name: str) -> str:
+    if any(word in name for word in ("食材", "主菜", "肉自选")):
+        return "main"
+    if any(word in name for word in ("饮料", "饮品")) and "小吃" not in name:
+        return "drink"
+    return "side"
+
+
+def _attribute_semantics(attrs: str) -> tuple[list[dict[str, Any]], list[str]]:
+    choices: list[dict[str, Any]] = []
+    flavors: list[str] = []
+    source = unicodedata.normalize("NFKC", str(attrs or ""))
+    for raw_group in re.split(r"##+", source):
+        values = [
+            _clean_attribute_option(value)
+            for value in raw_group.split("#")
+            if _clean_attribute_option(value)
+        ]
+        if len(values) < 2:
+            continue
+        label, options = values[0], list(dict.fromkeys(values[1:]))
+        if any(word in label for word in FLAVOR_GROUP_WORDS):
+            flavors.extend(options)
+            continue
+        if not options or not any(word in label for word in CHOICE_GROUP_WORDS):
+            continue
+        choices.append(
+            {
+                "name": label,
+                "role": _choice_group_role(label),
+                "choose": 1,
+                "options": options,
+                "selected": options[0],
+            }
+        )
+    return choices, list(dict.fromkeys(flavors))
+
+
+def _merge_choice_groups(
+    name_groups: Sequence[Mapping[str, Any]],
+    attribute_groups: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(group) for group in attribute_groups]
+    for name_group in name_groups:
+        name_options = [str(value) for value in name_group.get("options") or []]
+        name_norms = {normalize_dish(value) for value in name_options}
+        selected = str(name_group.get("selected") or "")
+        target = next(
+            (
+                group
+                for group in merged
+                if len(
+                    name_norms
+                    & {normalize_dish(value) for value in group.get("options") or []}
+                )
+                >= min(2, len(name_norms))
+            ),
+            None,
+        )
+        if target is None:
+            merged.append(dict(name_group))
+            continue
+        matching = next(
+            (
+                str(option)
+                for option in target.get("options") or []
+                if normalize_dish(option) == normalize_dish(selected)
+            ),
+            "",
+        )
+        if matching:
+            target["selected"] = matching
+    return merged
+
+
+def extract_menu_semantics(
+    name: str,
+    attrs: str = "",
+    category: str = "",
+) -> dict[str, Any]:
+    """Separate visual requirements from choices and non-visual flavor options."""
+    name_groups = _choice_groups_from_name(name)
+    attribute_groups, flavor_modifiers = _attribute_semantics(attrs)
+    choice_groups = _merge_choice_groups(name_groups, attribute_groups)
+    option_norms = {
+        normalize_dish(option)
+        for group in choice_groups
+        for option in group.get("options") or []
+        if normalize_dish(option)
+    }
+    option_norms.update(
+        normalize_dish(option)
+        for group in name_groups
+        for option in group.get("options") or []
+        if normalize_dish(option)
+    )
+
+    required: list[str] = []
+    seen: set[str] = set()
+    required_attrs = (
+        attrs
+        if any(
+            word in unicodedata.normalize("NFKC", str(attrs or ""))
+            for word in ("套餐内容", "组合内容", "包含", "含有", "内含")
+        )
+        else ""
+    )
+    for raw in _split_component_candidates(name, attrs=required_attrs, category=category):
+        value = unicodedata.normalize("NFKC", str(raw or "")).strip()
+        if not value:
+            continue
+        if CHOICE_COUNT_RE.search(value) and CHOICE_SEPARATOR_RE.search(value):
+            continue
+        value = CHOICE_COUNT_RE.sub("", value).strip()
+        if value.endswith(("自选", "任选", "可选")):
+            trimmed = re.sub(r"(?:自选|任选|可选)$", "", value).strip()
+            if not any(word in trimmed for word in MAIN_FOOD_WORDS):
+                continue
+            value = trimmed
+        norm = normalize_dish(value)
+        if (
+            not norm
+            or norm in option_norms
+            or norm in GENERIC_OPTIONAL_COMPONENTS
+            or GENERIC_CHOICE_COMPONENT_RE.fullmatch(norm)
+            or norm in seen
+        ):
+            continue
+        seen.add(norm)
+        required.append(value)
+
+    return {
+        "semanticVersion": "menu-semantics.v1",
+        "requiredComponents": required[:8],
+        "choiceGroups": choice_groups,
+        "flavorModifiers": flavor_modifiers,
+    }
+
+
+def primary_dish_name(name: str) -> str:
+    """Return the main product segment without optional side/drink choices."""
+    text = unicodedata.normalize("NFKC", str(name or "")).strip()
+    top_level = PAREN_RE.sub(" ", text)
+    plus = TOP_LEVEL_PLUS_RE.search(top_level)
+    if plus is not None and (
+        CHOICE_COUNT_RE.search(top_level[plus.end() :])
+        or any(word in top_level[plus.end() :] for word in ("任选", "自选", "可选"))
+    ):
+        primary = top_level[: plus.start()].strip()
+        if primary:
+            return primary
+    return text
+
+
+def _split_component_candidates(name: str, attrs: str = "", category: str = "") -> list[str]:
     """Split combo/set-meal names into matchable dish components."""
     name_source = unicodedata.normalize("NFKC", str(name or ""))
     explicit_combo = any(word in name_source for word in COMBO_WORDS) or bool(PEOPLE_MEAL_RE.search(name_source))
@@ -322,6 +549,11 @@ def split_components(name: str, attrs: str = "", category: str = "") -> list[str
     return out[:8]
 
 
+def split_components(name: str, attrs: str = "", category: str = "") -> list[str]:
+    """Return required components only; optional choices are separate semantics."""
+    return list(extract_menu_semantics(name, attrs, category)["requiredComponents"])
+
+
 def _has_combo_signal(name: str, attrs: str = "", category: str = "") -> bool:
     name_text = unicodedata.normalize("NFKC", str(name or ""))
     full_text = unicodedata.normalize("NFKC", f"{name_text} {attrs or ''}")
@@ -365,12 +597,13 @@ def classify_taxonomy(name: str, attrs: str = "", category: str = "") -> str:
     """Return a stable taxonomy id, preserving unknown instead of guessing."""
     if _has_combo_signal(name, attrs, category):
         return TAXONOMY_COMBO
-    name_text = _taxonomy_signal_text(f"{category or ''} {name or ''}")
-    text = _taxonomy_signal_text(f"{name_text} {attrs or ''}")
+    primary_name = primary_dish_name(name)
+    name_text = _taxonomy_signal_text(f"{category or ''} {primary_name}")
+    text = name_text
     for source, target in CANONICAL_REPLACEMENTS:
         name_text = name_text.replace(source, target)
         text = text.replace(source, target)
-    compact_name = normalize_dish(name)
+    compact_name = normalize_dish(primary_name)
     if "锅贴" in name_text:
         return "dumpling_wonton"
     if any(word in name_text for word in ("炒饭", "拌饭", "烤肉饭")):

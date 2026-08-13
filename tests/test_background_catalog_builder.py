@@ -307,6 +307,12 @@ def test_v14_generation_omits_negative_prompt_and_requires_v3_action(
     assert entry["providerSeedPresent"] is False
     assert entry["promptRevisionControlSubmitted"] is True
     assert entry["promptRevisionControlApplied"] is False
+    assert entry["styleSlotId"] == "table-bright-window"
+    assert entry["styleSlotName"] == "明亮晨光浅石桌景"
+    assert entry["styleSceneType"] == "full-frame-tabletop"
+    assert entry["sceneContract"]["styleName"] == entry["styleSlotName"]
+    assert entry["sceneContract"]["sceneType"] == entry["styleSceneType"]
+    assert entry["sceneContract"]["camera"]["pitch_degrees"] == 42
 
 
 @pytest.mark.parametrize("returned_seed", [None, "123", 123.5, True, 999])
@@ -788,7 +794,7 @@ def test_register_entry_writes_shared_private_object_pending(
         "categoryId": "light_food",
         "categoryName": "轻食/沙拉",
         "styleId": "style-1",
-        "styleSlotName": "暖色纯色棚拍",
+        "styleSlotName": "明亮晨光浅石桌景",
         "promptVersion": prompt_version,
         "promptSha256": prompt_sha,
         **v14_generation_evidence(),

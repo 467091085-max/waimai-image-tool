@@ -184,6 +184,39 @@ def test_v14_global_catalog_version_is_explicit_and_category_wide() -> None:
         )
 
 
+def test_v14_runtime_metadata_uses_empty_set_style_contract() -> None:
+    prompt_version = background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
+    with mock.patch.object(
+        app_module,
+        "active_category_context",
+        side_effect=mixed_rice_context,
+    ):
+        metadata = app_module.style_background_prompt_metadata(
+            "style-1",
+            prompt_version,
+        )
+
+    assert metadata["styleSlotId"] == "table-bright-window"
+    assert metadata["styleSlotName"] == "明亮晨光浅石桌景"
+    assert metadata["styleSceneType"] == "full-frame-tabletop"
+
+
+def test_v13_runtime_metadata_keeps_frozen_legacy_style_contract() -> None:
+    with mock.patch.object(
+        app_module,
+        "active_category_context",
+        side_effect=mixed_rice_context,
+    ):
+        metadata = app_module.style_background_prompt_metadata(
+            "style-1",
+            "style-background.v13",
+        )
+
+    assert metadata["styleSlotId"] == "solid-warm"
+    assert metadata["styleSlotName"] == "暖色纯色棚拍"
+    assert metadata["styleSceneType"] == "seamless-solid"
+
+
 def test_v12_global_value_remains_scoped_to_mixed_rice() -> None:
     with mock.patch.dict(
         app_module.os.environ,
@@ -523,6 +556,9 @@ def test_v14_cos_manifest_requires_generation_evidence(tmp_path) -> None:
 
     assert manifest["ready"] is True
     assert len(manifest["assets"]) == 6
+    assert manifest["assets"][0]["styleSlotId"] == "table-bright-window"
+    assert manifest["assets"][0]["styleSlotName"] == "明亮晨光浅石桌景"
+    assert manifest["assets"][0]["styleSceneType"] == "full-frame-tabletop"
 
     document["assets"][0]["providerAction"] = "TextToImageLite"
     document["assets"][0]["seedApplied"] = False

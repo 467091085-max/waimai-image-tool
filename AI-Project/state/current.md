@@ -4,6 +4,65 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
+Step 104 in progress: the two final independent-review P1 gaps are corrected
+locally. Structured choice groups with `role=drink` now add the single-cup
+constraint even when the selected product is a brand name such as `王老吉`;
+ordinary side choices do not. The offline catalog approval path now accepts an
+explicit prompt version and uses that exact version for manifest lookup,
+prompt hashing, review-sheet generation, approval write-back, and post-write
+verification, so a v14 catalog cannot be silently reviewed as v11. The focused
+compiler/catalog/runtime/selection suite passes `122 passed`; Python
+compilation and `git diff --check` pass. The exact 60-row workbook compiles
+against all six v14 scenes (`360/360`) with zero rejected-choice prompt leaks.
+Full regression reports `1543 passed, 20 skipped` and only the established
+untouched-baseline demo-library self-check failure. The generated test upload
+fixture was removed. Final independent review, staging deploy, and paid visual
+recheck remain pending. No provider call or deployment occurred in this step.
+Independent review reports P0 PASS and P1 PASS. Its only P2 observation was
+that the repository tests did not explicitly prove CLI-to-approval propagation
+while the builder global differed. That evidence is now permanent: the v14
+approval test forces the builder global to v13, and the CLI test invokes
+`main` and asserts v14 reaches the approval call. The strengthened review and
+compiler tests pass `28 passed`.
+
+Step 103 in progress: an exact-workbook audit found a prompt leak before
+deployment. A structured combo selected `热狗肠` and rejected `随机饮品`, but
+the raw menu phrase `饮品自选` still added a cup requirement and remained in
+the provider-visible dish name. The minimal local correction rebuilds the
+visual dish name from required components plus actually selected choices and
+adds drink requirements only when the resolved component list contains a
+drink. A real selected-drink combo still keeps one cup. The parser/compiler/
+background focused suite passes `115 passed`; exact-workbook and full
+regression rechecks are complete. All 26 real workbook combos have zero
+rejected-drink prompt leaks; row 2 resolves to `蜜汁烤肉拌饭+黑椒烤排+热狗肠套餐`.
+Full regression reports `1538 passed, 20 skipped` plus only the established
+baseline demo-library self-check failure. Compilation and `git diff --check`
+pass. Independent review and staging deployment remain; no provider call or
+deployment occurred.
+
+The exact-workbook compile gate was expanded to all 60 rows across all six v14
+scene contracts. It initially found 18 QA failures, all from the same three
+rows: selected `烤排` correctly required a pork cutlet while rejected `猪排`
+matched that wording as a substring. The corrected explicit term `无骨猪肉排`
+retains the meat identity without representing the rejected menu option. The
+complete 60 x 6 matrix now compiles `360/360` with zero failure; the affected
+parser/compiler/selected-background suite passes `79 passed`. The final full
+regression reports `1539 passed, 20 skipped` and only the already established
+baseline demo-library self-check failure. Generated upload fixtures were
+removed. Independent review is the remaining local gate.
+
+Step 102 in progress: the final v14 metadata mismatch is corrected locally.
+Runtime sidecars, COS catalog reads, PostgreSQL catalog reads, the catalog API,
+offline catalog records, and review-sheet labels now resolve their slot ID,
+name, and scene type through one prompt-version-aware helper. V14 receives the
+six `EMPTY_SET_STYLE_DIRECTIONS`; frozen v11-v13 assets retain their legacy
+definitions. The focused background/catalog/selection/menu/compiler suite
+passes `159 passed`, Python compilation and `git diff --check` pass. Full
+regression now reports `1537 passed, 20 skipped` with only the established
+demo-library self-check failure that was previously reproduced on the untouched
+baseline. Independent review, staging deploy, and a paid style-2 visual recheck
+remain pending; no new paid request has been made in this step.
+
 Step 100 in progress: a fresh paid staging run on 2026-08-12 disproved the
 older visual-completion claim. The exact workbook
 `运营数据_美滋滋烤肉拌饭（成都店）.xlsx` uploaded successfully as 60 rows and
@@ -54,13 +113,39 @@ The related background generation, private preview, persistence, quality-gate,
 and catalog-review suite passes `157 passed`. A paid recheck is pending the
 independent review, commit, and staging deploy.
 
-Step 101 pending: fix menu-item semantics revealed by the same workbook. The
-store-level category is correct, but row-level parsing currently reports 18
-unknown rows, lets optional hot-dog/drink choices influence category scores,
-collapses double/triple/quadruple combos, and can choose a drink container for
-a meal combo. Required components, choice groups, flavor modifiers, and
-duplicate visual fingerprints must be separated before the formal 60-image
-run is accepted.
+Commit `77fe4f3` then reached Render staging as Live in auto-deploy
+`dep-d9ui593l550s73dde0s0`. The paid style-2 recheck completed in 25.50
+seconds with Hunyuan 3.0/v14 SHA-256
+`b1c56869488ab95f9550d93dc3c4e70593a79b60fa56ee5851e0ae48a6d39626`.
+It fixed the orange single-hue failure but still failed visual review because
+the model exposed the front table edge, thickness, legs, and space under the
+table. Paid calls stopped again. The next local prompt correction requires a
+close-cropped single tabletop extending beyond all four image edges and
+front-loads explicit bans on walls, horizons, table edges, thickness, legs,
+and under-table space. Its affected suite again passes `157 passed`; it is not
+yet deployed or paid-verified.
+
+Independent review found the deeper P0: the v14 background prompt had changed
+while foreground and catalog metadata still inherited v13's pure-color scene
+contract. The local correction now derives v14 prompt, foreground scene
+contract, and catalog slot metadata from one structured six-style definition.
+Each style has a unique structural fingerprint across surface family, camera
+pitch, lens, light direction, and accent zone; v11/v13 remain unchanged. The
+provider-visible dessert accent no longer contains a food entity, and style-5
+no longer requests a second material. Background plus menu-semantic focused
+verification passes `321 passed`.
+
+Step 101 local correction complete: required components, choice groups, and
+flavor modifiers are separate; optional hot-dog/drink choices no longer
+contaminate the main category; meal combos always use a horizontal divided
+platter; double/triple/quadruple combo and people-count fingerprints remain
+distinct; the ghost component `品` is removed; and black-pepper grilled cutlet
+is explicitly a fully cooked boneless pork cutlet. Re-running the exact 60-row
+workbook yields 26 combos, zero `burger_hotdog` contamination, and 4 unknowns
+(one non-product greeting plus three egg add-ons), down from 18. Full regression
+passes `1535`, skips 20 live infrastructure tests, and retains only the known
+baseline demo-library self-check failure. Staging deployment and paid visual
+recheck of the unified scene contract remain pending.
 
 Step 92 complete: the full 40-category x 6-style catalog is generated,
 manually reviewed, hash-lock approved in private COS, frozen in commit
@@ -1359,9 +1444,9 @@ checking the exact staged diff before commit and staging deployment.
    seconds; configuration alone cannot satisfy it.
 3. Add `GEMINI_API_KEY` only after the service is purchased, then run a bounded
    single-image refinement smoke test through the dedicated revision queue.
-4. Generate and visually approve the six v12 `mixed_rice` backgrounds before
-   promoting that category. Keep the existing approved v11 catalog live until
-   all six pass.
+4. Deploy the unified v14 scene-contract correction only to staging, then
+   generate and visually approve the six v14 `mixed_rice` backgrounds one at a
+   time. Keep the existing approved v11 catalog live until all six pass.
 
 ## Latest Verified Checkpoint
 - Render image staging acceptance: commit `37429f9`, real 56-row Excel parsed with zero errors, six pipeline-v4 paid samples passed visual/SHA/background checks, and the formal compositor probe passed one row. Evidence: `AI-Project/handoffs/2026-07-31/RENDER_IMAGE_STAGING_ACCEPTANCE.md`.

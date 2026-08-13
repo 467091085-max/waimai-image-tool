@@ -331,7 +331,7 @@ class SelectedBackgroundPipelineTests(unittest.TestCase):
             prompt = app_module.prompt_for_chroma_foreground(row, "standard")
 
         self.assertIn("必须清楚出现白米饭", prompt)
-        self.assertIn("全熟浅棕色中式黑椒无骨猪排", prompt)
+        self.assertIn("全熟浅棕色中式黑椒无骨猪肉排", prompt)
         self.assertIn("切成6片整齐排列", prompt)
         self.assertNotIn("牛排", prompt)
         self.assertIn("三拼必须呈现3种不同肉类", prompt)
