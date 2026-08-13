@@ -519,8 +519,10 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
             f"只允许{accents}在{style_direction.accent_zone}露出，合计不超过7%",
         ),
         "style-2": (
-            f"镜头近距离只拍一整块真正平整的{surface}桌面，桌面从四边延伸画外；"
-            "画面里没有墙面、地平线、桌沿、厚度、桌腿或桌下空间，暗部纹理仍清楚",
+            f"镜头以较高俯角近距离只拍一整块无缝整体现浇的{surface}，"
+            "桌面从四边延伸画外，整幅画面是同一个连续表面；画面里没有墙面、"
+            "地平线、桌沿、厚度、桌腿或桌下空间；没有接缝、拼缝、"
+            "裂缝、沟槽、切口、板材边界、断层或横跨画面的长暗线，暗部细纹仍清楚",
             f"只允许{accents}在{style_direction.accent_zone}露出；{contrast_color}只作为很弱的边缘反射，绝不整幅染色",
         ),
         "style-3": (
@@ -542,7 +544,9 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
         ),
     }[style_id]
     return (
-        "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE. "
+        "EMPTY FOOD-PHOTOGRAPHY TABLE. ONE SEAMLESS TABLETOP SURFACE FILLS EVERY PIXEL. "
+        "NO SEAM, NO JOINT, NO CRACK, NO GROOVE, NO SLAB BOUNDARY, NO CUT EDGE. "
+        "SINGLE FLAT TABLE PLANE. "
         "NO PLINTH, NO RISER, NO BOARD, NO TRAY, NO CENTER OBJECT, "
         "NO TABLE EDGE, NO TABLE LEGS, NO WALL, NO HORIZON. "
         "ORIGINAL COMMERCIAL FOOD-PHOTOGRAPHY BACKPLATE. "
@@ -552,11 +556,12 @@ def commercial_empty_set_prompt(category_id: str, style_id: str) -> str:
         f"视觉质感为{style_direction.aesthetic}；{peripheral_contract}。"
         f"主光方向为{style_direction.light_direction}，使用大型柔光源，"
         f"主亮区中心约在画面宽度{highlight_x}%、高度{highlight_y}%；"
-        "必须看得见真实材质颗粒、轻微表面起伏和自然局部对比。"
+        "必须看得见真实材质的细腻平面颗粒和自然局部对比，但不能形成长直线或断层。"
         f"相机从水平面上方{style_direction.camera_pitch(normalized_category)}度俯拍，约"
         f"{style_direction.lens_mm}mm标准镜头，承托面透视必须与该俯拍角度一致。"
         "中央约68%必须是同一张平桌面，完整、清楚、连续；"
         "禁止中央石板、展示台、底座、台阶、第二层台面、矩形垫板、砧板、边框、"
+        "接缝、裂缝、沟槽、切边、板材边界、横跨画面的长暗线、"
         "画中画、悬浮物、文字、数字、品牌、logo、水印、人物或手。"
         "禁止单色统染、均匀色卡、低信息纯色块、廉价渐变、塑料3D面、整体虚焦或重暗角。"
         "真实商业摄影，不复制或模仿任何品牌的专有版式。"

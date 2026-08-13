@@ -138,7 +138,7 @@ EMPTY_SET_STYLE_DIRECTIONS = {
         "深色戏剧侧光桌景",
         "full-frame-tabletop",
         "premium_surface",
-        36,
+        50,
         14,
         56,
         50,

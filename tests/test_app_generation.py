@@ -1412,7 +1412,7 @@ class AppGenerationTests(unittest.TestCase):
             self.assertEqual(payloads[0][0], "TextToImageLite")
             self.assertNotIn("ProductUrl", payloads[0][1])
             self.assertIn(
-                "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE",
+                "EMPTY FOOD-PHOTOGRAPHY TABLE. ONE SEAMLESS TABLETOP SURFACE FILLS EVERY PIXEL",
                 str(payloads[0][1]["Prompt"]),
             )
             self.assertNotIn("炒饭", str(payloads[0][1]["Prompt"]))

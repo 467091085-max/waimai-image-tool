@@ -199,8 +199,9 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
             )
 
             assert prompt.startswith(
-                "EMPTY FOOD-PHOTOGRAPHY TABLE. SINGLE FLAT TABLE PLANE"
+                "EMPTY FOOD-PHOTOGRAPHY TABLE. ONE SEAMLESS TABLETOP SURFACE FILLS EVERY PIXEL"
             )
+            assert "NO SEAM, NO JOINT, NO CRACK, NO GROOVE" in prompt
             assert "NO PLINTH, NO RISER, NO BOARD" in prompt
             assert "NO TABLE EDGE, NO TABLE LEGS, NO WALL, NO HORIZON" in prompt
             assert "原创高品质外卖商业摄影布景底板" in prompt
@@ -255,9 +256,12 @@ def test_v14_produces_240_category_specific_commercial_backplates() -> None:
     )
     assert "浅暖灰石灰岩" in mixed_light
     assert "深炭灰矿物台面" in mixed_dark
+    assert "无缝整体现浇" in mixed_dark
+    assert "横跨画面的长暗线" in mixed_dark
     assert "低饱和陶土红只作为很弱的边缘反射" in mixed_dark
     assert "绝不整幅染色" in mixed_dark
     assert "桌面从四边延伸画外" in mixed_light
+    assert EMPTY_SET_STYLE_DIRECTIONS["style-2"].camera_pitch("mixed_rice") == 50
     assert "桌面从四边延伸画外" in mixed_dark
     assert "桌腿或桌下空间" in mixed_dark
     assert (

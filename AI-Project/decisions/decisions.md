@@ -418,6 +418,12 @@
   for manifest lookup, prompt hashes, review-sheet keys, approval write-back,
   and post-write validation. The builder's legacy default is not an approval
   namespace.
+- A full-frame v14 tabletop is one seamless surface. Provider-visible prompts
+  must prohibit seams, joints, cracks, grooves, cut edges, slab boundaries,
+  and long dark lines; a central material boundary is a visual rejection even
+  when generic texture and file-quality checks pass. Normal-product style-2
+  uses a 50-degree high view so the selected background and generated dish
+  share the same non-upright geometry.
 
 ## Structured Menu Drink Choices
 - A selected structured choice group with `role=drink` requires exactly one

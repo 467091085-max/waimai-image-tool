@@ -4,6 +4,32 @@
 把外卖菜品图工具做成可上线的产品级系统，并解决 Codex 长任务失忆和上下文断裂。
 
 ## Current Step
+Step 105 in progress: commit `41c9d25` deployed successfully to Render staging
+as `dep-d9uiu5rbc2fs739gavo0`. Public health, Hunyuan, and private COS readiness
+passed. A fresh paid mixed-rice style-2 background completed through
+`TokenHubImageV3` in 26.486 seconds with v14 metadata and exact downloaded
+SHA-256 `b54c0f89c991217b29dca5d0777208a70cd559efc467203b738cfd7e3e330753`.
+Technical generation passed, but visual review rejected the image: a strong
+diagonal slab boundary crossed the center, creating a second stone plane.
+
+The minimal local correction raises normal-product style-2 from 36 to 50
+degrees, positively requires one seamless poured surface, forbids seams,
+joints, cracks, grooves, cut edges, slab boundaries, and long dark lines, and
+removes the phrase `轻微表面起伏` that encouraged a broken slab. V11-v13 are
+untouched. The affected background/generation/catalog/compiler/selection suite
+passes `200 passed`; the exact workbook remains `360/360` across all six v14
+scenes. Full regression reports `1543 passed, 20 skipped` and the same one
+untouched-baseline demo-library self-check failure. Independent review,
+staging deployment, and another single paid style-2 visual canary remain. No
+other paid image was requested.
+Independent review now reports P0 PASS and P1 PASS: prompt and scene hashes
+invalidate the rejected cache, background and foreground share the 50-degree
+contract, v11-v13 hashes remain frozen, and all 240 v14 prompts remain unique
+and within length limits. A P2 remains for later catalog expansion: 12 other
+categories still use positive `板岩/岩板/石板` material names; they require
+category-by-category paid visual gating before 240-asset generation. The
+current `mixed_rice` material is `深炭灰矿物台面` and does not carry that risk.
+
 Step 104 in progress: the two final independent-review P1 gaps are corrected
 locally. Structured choice groups with `role=drink` now add the single-cup
 constraint even when the selected product is a brand name such as `王老吉`;
