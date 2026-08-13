@@ -418,7 +418,7 @@ def generate_entry(
         image_path,
     )
 
-    quality_report = app_module.require_generated_output_quality(image_path)
+    quality_report = app_module.require_generated_background_quality(image_path)
     fingerprint = app_module.image_file_fingerprint(image_path)
     slot = background_catalog.style_slot(style_id)
     scene_contract = prompt_compiler.scene_contract_for(
@@ -790,7 +790,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         default=None,
     )
-    parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=1,
+        help=(
+            "Maximum paid provider submissions for one asset. The safe "
+            "default is one; retries must be explicitly authorized."
+        ),
+    )
+    parser.add_argument(
+        "--max-paid-calls",
+        type=int,
+        default=1,
+        help=(
+            "Conservative run-wide paid-call budget. Reused local or remote "
+            "assets do not consume it."
+        ),
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue after a failed asset; default behavior is fail-fast.",
+    )
     parser.add_argument(
         "--regenerate-selected",
         action="store_true",
@@ -837,6 +859,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.seed_revision < 0:
         raise SystemExit("--seed-revision must be zero or greater")
+    if args.attempts < 1 or args.attempts > 5:
+        raise SystemExit("--attempts must be between 1 and 5")
+    if args.max_paid_calls < 0:
+        raise SystemExit("--max-paid-calls must be zero or greater")
     if args.regenerate_selected:
         if len(categories) != 1 or not args.category:
             raise SystemExit(
@@ -874,6 +900,9 @@ def main(argv: list[str] | None = None) -> int:
         "registerPending": bool(args.register_pending),
         "regenerateSelected": bool(args.regenerate_selected),
         "seedRevision": int(args.seed_revision),
+        "attemptsPerAsset": int(args.attempts),
+        "maxPaidCalls": int(args.max_paid_calls),
+        "failFast": not bool(args.continue_on_error),
     }
     if not args.execute:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -895,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[dict[str, str]] = []
     manifest_keys: list[str] = []
     manifested_categories: set[str] = set()
+    reserved_paid_calls = 0
     remote_entries: dict[tuple[str, str], dict[str, Any]] = {}
     if args.upload_pending and not args.register_pending:
         for category_id in categories:
@@ -935,6 +965,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--regenerate-selected refuses to replace an approved manifest"
             )
     for category_id, style_id in pairs:
+        stop_after_failure = False
         image_path, sidecar_path = entry_paths(
             output,
             category_id,
@@ -955,11 +986,20 @@ def main(argv: list[str] | None = None) -> int:
                     prompt_sha256=prompt_sha256,
                 )
             if entry is None:
+                requested_attempts = int(args.attempts)
+                if (
+                    reserved_paid_calls + requested_attempts
+                    > int(args.max_paid_calls)
+                ):
+                    raise RuntimeError(
+                        "paid call budget exhausted before provider submission"
+                    )
+                reserved_paid_calls += requested_attempts
                 entry = generate_entry(
                     category_id=category_id,
                     style_id=style_id,
                     image_path=image_path,
-                    attempts=max(1, min(5, int(args.attempts))),
+                    attempts=requested_attempts,
                     seed_revision=int(args.seed_revision),
                 )
             if args.register_pending and not entry.get("registered"):
@@ -1040,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error": re.sub(r"\s+", " ", str(exc))[:500],
             }
             failures.append(failure)
+            stop_after_failure = True
             print(
                 f"FAIL {category_id}/{style_id} "
                 f"{failure['errorType']}: {failure['error']}"
@@ -1051,10 +1092,13 @@ def main(argv: list[str] | None = None) -> int:
                 "completedAssetCount": len(entries),
                 "failureCount": len(failures),
                 "manifestKeys": manifest_keys,
+                "reservedPaidCalls": reserved_paid_calls,
                 "entries": entries,
                 "failures": failures,
             },
         )
+        if stop_after_failure and not args.continue_on_error:
+            break
 
     final_report = {
         **plan,
@@ -1066,6 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
             for entry in entries
         ),
         "manifestKeys": manifest_keys,
+        "reservedPaidCalls": reserved_paid_calls,
         "entries": entries,
         "failures": failures,
     }

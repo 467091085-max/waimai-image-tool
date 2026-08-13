@@ -122,6 +122,86 @@ def test_v14_builder_plan_covers_the_complete_240_asset_catalog(capsys) -> None:
     assert '"plannedAssetCount": 240' in output
 
 
+def test_execute_fails_fast_after_first_asset_failure(
+    tmp_path: Path,
+) -> None:
+    with (
+        mock.patch.object(builder.app_module, "tencent_ready", return_value=True),
+        mock.patch.object(
+            builder,
+            "generate_entry",
+            side_effect=RuntimeError("visual quality rejected"),
+        ) as generate,
+    ):
+        result = builder.main(
+            [
+                "--execute",
+                "--category",
+                "mixed_rice",
+                "--style",
+                "style-1",
+                "--style",
+                "style-2",
+                "--max-paid-calls",
+                "2",
+                "--output",
+                str(tmp_path),
+            ]
+        )
+
+    assert result == 1
+    assert generate.call_count == 1
+    report = builder.json.loads(
+        (tmp_path / "run-report.json").read_text(encoding="utf-8")
+    )
+    assert report["failureCount"] == 1
+    assert report["reservedPaidCalls"] == 1
+
+
+def test_execute_stops_before_exceeding_paid_call_budget(
+    tmp_path: Path,
+) -> None:
+    generated = {
+        "categoryId": "mixed_rice",
+        "styleId": "style-1",
+        "sha256": "a" * 64,
+        "reviewStatus": "pending",
+    }
+    with (
+        mock.patch.object(builder.app_module, "tencent_ready", return_value=True),
+        mock.patch.object(
+            builder,
+            "generate_entry",
+            return_value=generated,
+        ) as generate,
+    ):
+        result = builder.main(
+            [
+                "--execute",
+                "--category",
+                "mixed_rice",
+                "--style",
+                "style-1",
+                "--style",
+                "style-2",
+                "--max-paid-calls",
+                "1",
+                "--output",
+                str(tmp_path),
+            ]
+        )
+
+    assert result == 1
+    assert generate.call_count == 1
+    report = builder.json.loads(
+        (tmp_path / "run-report.json").read_text(encoding="utf-8")
+    )
+    assert report["completedAssetCount"] == 1
+    assert report["failureCount"] == 1
+    assert report["reservedPaidCalls"] == 1
+    assert "paid call budget exhausted" in report["failures"][0]["error"]
+
+
 def test_runtime_and_builder_share_the_v14_deterministic_seed() -> None:
     prompt_version = (
         builder.background_profiles.EMPTY_SET_BACKGROUND_PROMPT_VERSION
@@ -205,7 +285,7 @@ def test_v14_generation_omits_negative_prompt_and_requires_v3_action(
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
     ):
@@ -438,7 +518,7 @@ def test_generate_entry_is_pending_and_prompt_bound(tmp_path: Path) -> None:
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
     ):
@@ -493,7 +573,7 @@ def test_cloud_fallback_does_not_claim_seed_or_revision_control(
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
     ):
@@ -569,7 +649,7 @@ def test_generation_retry_uses_stable_distinct_seed(tmp_path: Path) -> None:
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
         mock.patch.object(builder.time, "sleep"),
@@ -647,7 +727,7 @@ def test_generation_seed_revision_starts_from_next_deterministic_seed(
         ),
         mock.patch.object(
             builder.app_module,
-            "require_generated_output_quality",
+            "require_generated_background_quality",
             return_value={"status": "passed", "quality_score": 1.0},
         ),
     ):

@@ -22,9 +22,11 @@ real tabletop slots with tightly bounded edge styling. It adds a
 background-only high-frequency/detail-coverage gate. The rejected live v13
 gradient now fails locally as `low_information_gradient`; background,
 generation, catalog-builder, selected-background, and image-pipeline
-verification passes `147 passed`. Deployment and a fresh paid v14 visual pilot
-remain pending. The 240 assets must not be called visually approved until the
-new outputs are manually reviewed.
+verification passes `149 passed`. The offline catalog builder now uses the
+same background gate, defaults to one paid attempt, enforces a conservative
+run-wide paid-call budget, and stops on the first failed asset. Deployment and
+a fresh paid v14 visual pilot remain pending. The 240 assets must not be called
+visually approved until the new outputs are manually reviewed.
 
 Step 101 pending: fix menu-item semantics revealed by the same workbook. The
 store-level category is correct, but row-level parsing currently reports 18
